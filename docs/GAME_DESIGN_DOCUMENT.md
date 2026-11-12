@@ -119,27 +119,58 @@ Chaque insecte possède ses **capacités réelles de déplacement** (escalade de
 
 ## 6. 🦎 Les 5 Petits Animaux (Prédateurs Majeurs & Chasse)
 
-Ces 5 créatures donnent l'impression d'être face à des **Monstres Géants (Kaijus)**. Ils patrouillent dans leurs zones respectives.
+Ces 5 créatures donnent l'impression d'être face à des **Monstres Géants (Kaijus)**. Ils patrouillent dans leurs zones respectives, mais possèdent aussi un **cycle de vie réaliste** : ils construisent des **nids ou creusent des terriers dans le sol**, et lorsqu'ils meurent, ils laissent derrière eux une **carcasse géante qui pourrit progressivement**.
 
 1. 🐦 **L'Oiseau (Rouge-Gorge / Martin-Pêcheur)**
    * **Comportement :** Se pose sur les branches et au sol. S'il voit un insecte bouger à découvert, il fond dessus à grande vitesse.
-   * **Interaction :** Impossible à tuer seul, mais les frelons/abeilles peuvent lui piquer les yeux pour le faire fuir.
+   * **Nidification :** Ramasse des brindilles, de la mousse et des plumes pour **construire un nid géant** dans les hautes branches du Grand Chêne. Le nid contient des œufs/oisillons et attire des parasites ou des insectes chercheurs de chaleur en hiver.
+   * **Interaction :** Impossible à tuer seul, mais les frelons/abeilles peuvent lui piquer les yeux pour le faire fuir (ou un essaim massif peut finir par l'abattre).
 2. 🦎 **Le Caméléon**
    * **Comportement :** Grimpe lentement dans le Grand Chêne en changeant de couleur. Ses yeux tournent dans tous les sens.
+   * **Creusement & Ponte :** Descend parfois au pied de l'arbre pour **creuser un trou dans le sol meuble** afin d'y pondre ses œufs ou s'abriter des fortes chaleurs.
    * **Attaque :** **Langue grappin** ultra-rapide ! Si tu es dans son champ de vision à moyenne portée, il te colle et t'avale (un allié peut mordre la langue pour te libérer !).
 3. 🐠 **Le Poisson Rouge (et Bancs d'Alevins)**
    * **Comportement :** Nage dans la mare. Les **petits poissons (alevins)** peuvent être chassés par la *Punaise d'eau géante*, le *Dytique*, la *Nèpe* ou la *Larve de Libellule*.
-   * **Le Gros Poisson Rouge :** Un boss aquatique qui aspire les insectes proches et saute hors de l'eau. Si une meute d'insectes aquatiques réussit à le vaincre, il donne de la nourriture pour tout le serveur !
+   * **Nid Aquatique :** Creuse des **cuvettes de frai dans la vase et le gravier** au fond de la mare pour y déposer ses œufs (que les insectes aquatiques peuvent tenter de voler !).
+   * **Le Gros Poisson Rouge :** Un boss aquatique qui aspire les insectes proches et saute hors de l'eau. Si une meute d'insectes aquatiques réussit à le vaincre, sa carcasse coule au fond ou échoue sur la berge, offrant un festin géant pour tout le serveur !
 4. 🦀 **Le Crabe de Rivière**
    * **Comportement :** Patrouille au fond de l'eau et sur les berges rocheuses.
+   * **Terrier dans le Sol :** **Creuse de profonds terriers boueux** dans la berge entre l'eau et la terre ferme. Les insectes peuvent s'y faufiler pour voler ses restes de nourriture, au risque de se faire piéger dans le noir !
    * **Interaction :** Sa carapace est impénétrable de face et ses pinces tuent en un coup. Mais une colonie de fourmis ou de dytiques peut l'attaquer par l'arrière (articulations) pour le chasser !
 5. 🐿️ **L'Écureuil Roux**
    * **Comportement :** Bondit de branche en branche dans le Grand Chêne (provoque des tremblements d'écran pour les insectes sur l'arbre !).
+   * **Nid (Hote) & Cachettes dans le Sol :** Construit un **nid sphérique (une « hote »)** de feuilles et de brindilles dans les fourches de l'arbre, et **creuse constamment des trous dans le sol** pour y enterrer des glands et des noisettes (créant des garde-mangers souterrains que les fourmis, scarabées et termites peuvent piller !).
    * **Interaction :** Cherche des glands et des fruits. En cassant des noix et des fruits géants, il laisse tomber plein de miettes nutritives pour les insectes herbivores/omnivores.
 
 ---
 
-## 7. ⚔️ Systèmes de Gameplay Avancés (Roblox Studio)
+## 7. 🪺 Nids, Terriers (Creusement dans le Sol) & Cycle de Décomposition (Carcasses)
+
+### A. Construction de Nids & Creusement dans le Sol (Insectes & Animaux)
+Aussi bien les **insectes** que les **5 grands animaux** modifient dynamiquement le terrain en construisant des abris ou en creusant dans le sol :
+
+* **Creusement dynamique dans le sol (Système de Voxel / Galeries) :**
+  * **Pour les Insectes Fouisseurs** (*Fourmi, Termite, Scorpion, Cigale larve, Scarabée, Araignée, Éphémère*) : Possibilité de **creuser directement dans la terre, le sable, la vase ou le bois pourri** (touche **C**). Les joueurs excavent des boulettes de terre pour sculpter des tunnels, des chambres de ponte, des greniers à nourriture et des pièges souterrains.
+  * **Pour les 5 Animaux Géants :** Le Crabe creuse des galeries humides sur les berges, l'Écureuil creuse des trous pour cacher ses provisions et le Caméléon creuse des terriers de ponte. Ces excavations laissent de **véritables cavités dans le sol** que les insectes peuvent explorer, habiter ou piller.
+* **Construction de Nids en surface et en hauteur :**
+  * **Nids d'Insectes :** Alvéoles de cire (Abeilles), nids en papier mâché (Frelons), toiles-abris et cocons (Araignées), oothèques accrochées aux branches (Mantes), cloches d'air sous-marines (Argyronète).
+  * **Nids des Grands Animaux :** Le nid géant de l'Oiseau et la hote de l'Écureuil deviennent de **véritables mini-biomes** en hauteur. Ils offrent un bonus de chaleur (+Température en Hiver) et regorgent de matériaux, mais restent extrêmement dangereux si le propriétaire rentre au nid !
+
+### B. Système de Carcasse & Pourrissement (Décomposition Réaliste)
+Lorsqu'un insecte ou l'un des **5 grands animaux** meurt (tué par des joueurs, par un autre prédateur, de vieillesse ou par le froid de l'hiver), son corps ne disparaît pas : il laisse une **Carcasse physique** qui suit **4 étapes de décomposition** :
+
+| Étape | État de la Carcasse | Effets Visuels & Gameplay | Qui en profite ? |
+| :--- | :--- | :--- | :--- |
+| **1. Carcasse Fraîche** *(0 à 3 min)* | Chair intacte, sang frais. | Donne un maximum de points de Faim et d'XP. Peut être découpée en morceaux transportables vers le nid. | **Carnivores & Sanguinaires** (*Mante, Araignée, Frelon, Dytique, Moustique, Punaise d'eau*). |
+| **2. Début de Putréfaction** *(3 à 8 min)* | Changement de couleur, **nuage d'odeur vert** visible à longue distance (attire les nécrophages sur le radar). | La viande devient toxique pour les carnivores stricts (risque de maladie/ralentissement), mais **double sa valeur nutritive** pour les charognards ! Les mouches peuvent y pondre leurs œufs (bonus de croissance +50% pour les larves/asticots). | **Omnivores & Nécrophages** (*Mouche, Fourmi, Crabe, Scarabée, Scolopendre, Larve de Phrygane*). |
+| **3. Pourrissement Avancé** *(8 à 12 min)* | Chair liquéfiée et sombre, apparition de **champignons et moisissures** autour du corps. | Génère des **champignons nutritifs** et de l'humus riche autour de la carcasse. Les insectes herbivores/omnivores viennent récolter ces champignons. | **Herbivores / Mycophages & Fouisseurs** (*Termite, Scarabée Hercule, Fourmi*). |
+| **4. Squelette / Exosquelette Sec** *(12+ min)* | Os blanchis (pour les 5 animaux) ou carapace vide et sèche (pour les insectes). | Plus de nourriture, mais **devient un élément du décor !** Le squelette d'un oiseau, d'un poisson ou la carapace d'un crabe sert d'**abri solide** contre la pluie, le vent et les prédateurs, ou de matériau pour renforcer son nid, avant de s'effriter dans le sol. | **Tous les joueurs** (Abri temporaire, cachette et matériaux de construction). |
+
+> **💡 Événement « Festin de Kaiju » :** Lorsqu'un des 5 grands animaux (comme l'Oiseau, le Crabe ou le Gros Poisson Rouge) meurt, sa carcasse géante devient un **point d'intérêt majeur sur la carte** pendant plusieurs minutes. Des dizaines d'insectes convergent pour se disputer la viande fraîche, puis les mouches et les fourmis prennent le relais pendant le pourrissement, avant que la cage thoracique ou la carapace vide ne serve de forteresse de fortune !
+
+---
+
+## 8. ⚔️ Systèmes de Gameplay Avancés (Roblox Studio)
 
 ### 1. Système d'Escalade "Spider-Walk" (Raycasting)
 * Les insectes qui grimpent dans la vraie vie (Fourmis, Araignées, Mouches, Coléoptères, Mantes) s'alignent automatiquement avec la surface qu'ils touchent : troncs d'arbres verticaux, dessous des feuilles, plafonds des grottes.
@@ -159,17 +190,18 @@ Ces 5 créatures donnent l'impression d'être face à des **Monstres Géants (Ka
 
 ---
 
-## 8. 📅 Plan de Développement Recommandé (Étapes pour créer le jeu)
+## 9. 📅 Plan de Développement Recommandé (Étapes pour créer le jeu)
 
 1. **Prototype (Étape 1) :**
    * Coder le contrôleur d'insecte (marche normale + marche sur les murs/arbres + vol).
    * Créer le système de croissance : **Œuf -> Larve -> Cocon/Mue -> Adulte**.
-2. **Survie & Map (Étape 2) :**
+2. **Survie, Nids & Map (Étape 2) :**
    * Ajouter les jauges de **Faim (Herbivore/Carnivore/Omnivore)**, **Soif** et **Température**.
+   * Intégrer le **creusement de galeries dans le sol**, la **construction de nids** et le système de **carcasses avec pourrissement progressif**.
    * Construire une première zone (ex: Autour de la Mare + 1 Grand Arbre) avec le changement des **4 Saisons**.
 3. **Premiers Insectes & Chasse (Étape 3) :**
    * Intégrer 6 premiers insectes (2 terrestres, 2 volants, 2 aquatiques : ex. *Fourmi, Mante, Abeille, Libellule, Dytique, Punaise d'eau*).
-   * Ajouter le **Poisson Rouge** (et les petits poissons à chasser) + l'**Oiseau**.
+   * Ajouter le **Poisson Rouge** (et les petits poissons à chasser) + l'**Oiseau** (avec son nid et sa carcasse géante).
 4. **Expansion Complète (Étape 4) :**
-   * Ajouter le reste des **30 insectes** et les **5 animaux** (*Caméléon, Crabe, Écureuil*).
+   * Ajouter le reste des **30 insectes** et les **5 animaux** (*Caméléon, Crabe, Écureuil* et leurs terriers/cachettes).
    * Ajouter les **Colonies**, les **Mutations rares (Skins)** et les classements PvP.
