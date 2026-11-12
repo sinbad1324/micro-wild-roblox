@@ -1,24 +1,71 @@
 {
-  "name": "MicroWildSurvival",
+  "name": "MicroWild",
   "tree": {
     "$className": "DataModel",
     "ReplicatedStorage": {
-      "$className": "ReplicatedStorage",
-      "Shared": {
-        "$path": "src/ReplicatedStorage/Shared"
+      "shared": {
+        "$path": "src/shared",
+        "packages": {
+          "$path": "Packages"
+        }
       }
     },
     "ServerScriptService": {
-      "$className": "ServerScriptService",
-      "Server": {
-        "$path": "src/ServerScriptService/Server"
+      "domain": {
+        "$path": "src/server/domain"
+      },
+      "services": {
+        "$path": "src/server/services"
+      },
+      "data": {
+        "$path": "src/server/data"
+      },
+      "bootstrap": {
+        "$path": "src/server/bootstrap"
+      },
+      "serverPackages": {
+        "$path": "ServerPackages"
+      },
+      "types": {
+        "$path": "src/server/types"
+      },
+      "utils": {
+        "$path": "src/server/utils"
+      },
+      "constant": {
+        "$path": "src/server/constant"
       }
     },
     "StarterPlayer": {
-      "$className": "StarterPlayer",
+      "StarterPlayerScripts": {
+        "controllers": {
+          "$path": "src/client/controllers"
+        },
+        "managers": {
+          "$path": "src/client/managers"
+        },
+        "state": {
+          "$path": "src/client/state"
+        },
+        "views": {
+          "$path": "src/client/views"
+        },
+        "bootstrap": {
+          "$path": "src/client/bootstrap"
+        }
+      },
       "StarterCharacterScripts": {
-        "$className": "StarterCharacterScripts",
-        "$path": "src/StarterPlayer/StarterCharacterScripts"
+        "characterControllers": {
+          "$path": "src/clientCharacter/charactercontrollers"
+        },
+        "characterState": {
+          "$path": "src/clientCharacter/characterstate"
+        }
+      }
+    },
+    "ReplicatedFirst": {
+      "startFirst": {
+        "$path": "src/starterFirst"
       }
     }
   }

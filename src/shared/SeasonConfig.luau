@@ -1,6 +1,6 @@
 --!strict
 -- SeasonConfig.luau
--- Gestion des 4 saisons (Printemps, Été, Automne, Hiver)
+-- Configuration partagée des 4 saisons (Printemps, Été, Automne, Hiver)
 
 export type SeasonName = "Printemps" | "Ete" | "Automne" | "Hiver"
 
@@ -23,7 +23,7 @@ local SeasonConfig = {
 		Printemps = {
 			Name = "Printemps",
 			DisplayName = "🌸 Printemps",
-			DurationSeconds = 900, -- 15 minutes
+			DurationSeconds = 900,
 			DayAmbientTemp = 22,
 			NightAmbientTemp = 12,
 			GrowthSpeedMultiplier = 1.25,

@@ -1,18 +1,18 @@
 --!strict
 -- WallClimbController.client.luau
--- Permet aux insectes qui grimpent dans la vraie vie de marcher sur les murs, les troncs d'arbres et les plafonds
+-- Permet aux insectes grimpeurs de marcher sur les murs, les troncs d'arbres et les plafonds (StarterCharacterScripts.characterControllers)
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
-local character = script.Parent :: Model
+local character = script.Parent.Parent :: Model
 local rootPart = character:WaitForChild("HumanoidRootPart") :: BasePart
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 
-local Shared = ReplicatedStorage:WaitForChild("Shared")
-local InsectData = require(Shared:WaitForChild("InsectData"))
+local InsectData = require(ReplicatedStorage.shared.InsectData)
+local CharacterState = require(character:WaitForChild("characterState"):WaitForChild("CharacterState"))
 
 local RAY_DISTANCE = 4.5
 local CLIMB_SPEED_FACTOR = 0.85
@@ -52,17 +52,16 @@ RunService.RenderStepped:Connect(function()
 	if not canPlayerClimb() or humanoid.Health <= 0 then
 		alignOrientation.Enabled = false
 		linearVelocity.Enabled = false
-		humanoid.PlatformStand = false
+		CharacterState.IsClimbingWall = false
 		return
 	end
 
-	-- Raycast devant et sous l'insecte pour détecter un mur, un tronc d'arbre ou une feuille
 	local lookResult = workspace:Raycast(rootPart.Position, rootPart.CFrame.LookVector * RAY_DISTANCE, rayParams)
 	local downResult = workspace:Raycast(rootPart.Position, -rootPart.CFrame.UpVector * RAY_DISTANCE, rayParams)
 
 	local hitResult = lookResult or downResult
 	if hitResult and hitResult.Normal.Y < 0.75 then
-		-- Surface inclinée, verticale (arbre/mur) ou plafond (dessous de feuille)
+		CharacterState.IsClimbingWall = true
 		local normal = hitResult.Normal
 		local forward = rootPart.CFrame.LookVector
 		local right = forward:Cross(normal)
@@ -73,15 +72,14 @@ RunService.RenderStepped:Connect(function()
 
 		local moveDir = humanoid.MoveDirection
 		if moveDir.Magnitude > 0 then
-			-- Projette le mouvement le long de la paroi et plaque légèrement l'insecte contre l'arbre/mur
 			local climbVelocity = (newForward * (humanoid.WalkSpeed * CLIMB_SPEED_FACTOR)) - (normal * 4)
 			linearVelocity.VectorVelocity = climbVelocity
 		else
-			-- Maintient l'insecte collé à la paroi quand il s'arrête
 			linearVelocity.VectorVelocity = -normal * 2
 		end
 		linearVelocity.Enabled = true
 	else
+		CharacterState.IsClimbingWall = false
 		alignOrientation.Enabled = false
 		linearVelocity.Enabled = false
 	end

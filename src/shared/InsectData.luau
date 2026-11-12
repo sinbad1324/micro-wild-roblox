@@ -1,10 +1,10 @@
 --!strict
 -- InsectData.luau
--- Base de données des 30 espèces d'insectes (Terrestres, Volants, Aquatiques)
+-- Base de données partagée des 30 espèces d'insectes (Terrestres, Volants, Aquatiques)
 
 export type DietType = "Herbivore" | "Carnivore" | "Omnivore"
 export type CategoryType = "Terrestre" | "Volant" | "Aquatique"
-export type GrowthStyle = "Metamorphose" | "Mue" -- Cocon (Holométabole) ou Mue progressive (Hémimétabole)
+export type GrowthStyle = "Metamorphose" | "Mue"
 
 export type InsectInfo = {
 	Id: string,
@@ -293,7 +293,7 @@ local InsectData: { [string]: InsectInfo } = {
 		GrowthType = "Mue",
 		CanClimbWalls = true,
 		CanFly = true,
-		CanSwim = true, -- Larve aquatique !
+		CanSwim = true,
 		CanWalkOnWater = false,
 		MaxHealth = 120,
 		WalkSpeed = 32,
@@ -329,7 +329,7 @@ local InsectData: { [string]: InsectInfo } = {
 		GrowthType = "Metamorphose",
 		CanClimbWalls = true,
 		CanFly = true,
-		CanSwim = true, -- Larve aquatique
+		CanSwim = true,
 		CanWalkOnWater = true,
 		MaxHealth = 45,
 		WalkSpeed = 26,

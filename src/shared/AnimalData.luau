@@ -1,6 +1,6 @@
 --!strict
 -- AnimalData.luau
--- Configuration des 5 petits animaux géants (Oiseau, Caméléon, Poisson Rouge, Crabe, Écureuil)
+-- Configuration partagée des 5 petits animaux géants (Oiseau, Caméléon, Poisson Rouge, Crabe, Écureuil)
 
 export type AnimalInfo = {
 	Id: string,
@@ -21,7 +21,7 @@ local AnimalData: { [string]: AnimalInfo } = {
 		Habitat = "Grand Chêne & Prairie",
 		MaxHealth = 1500,
 		AttackDamage = 120,
-		CanBeHunted = false, -- Trop grand, mais peut être repoussé en essaim
+		CanBeHunted = false,
 		MeatReward = 0,
 		SpecialMechanic = "PiqueDuCiel",
 		Description = "Patrouille depuis les branches et fond sur les insectes non camouflés.",
@@ -41,7 +41,7 @@ local AnimalData: { [string]: AnimalInfo } = {
 		Id = "PoissonRouge",
 		Name = "Poisson Rouge (& Bancs d'alevins)",
 		Habitat = "La Mare & Le Ruisseau",
-		MaxHealth = 800, -- Les petits poissons ont 120 PV et sont chassables en solo
+		MaxHealth = 800,
 		AttackDamage = 80,
 		CanBeHunted = true,
 		MeatReward = 350,
