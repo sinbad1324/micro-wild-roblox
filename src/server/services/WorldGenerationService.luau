@@ -31,6 +31,30 @@ local POND_CENTER = Vector3.new(170, GROUND_TOP_Y, -170) -- "La Mare & Le Ruisse
 local STUMP_CENTER = Vector3.new(-170, GROUND_TOP_Y, -170) -- "La Souche Pourrie & Les Galeries Souterraines"
 local TREE_POSITION = Vector3.new(0, GROUND_TOP_Y, 0) -- "Le Grand Chêne"
 
+local TRUNK_HEIGHT = 120
+local TRUNK_DIAMETER = 16
+local STUMP_HEIGHT = 7
+local STUMP_DIAMETER = 14
+-- L'entrée des galeries est décalée hors de l'emprise de la souche/racines (rayon ~12.6 studs) :
+-- sinon le cylindre plein de la souche bloquerait physiquement le tunnel d'accès. Partagé par
+-- generateStumpAndGalleries (qui creuse la salle/le tunnel) et generateFoodNodes (qui évite d'y
+-- faire apparaître des nœuds de bois).
+local GALLERY_COLUMN = STUMP_CENTER + Vector3.new(STUMP_DIAMETER * 0.5 + 8, 0, 0)
+
+-- Salle souterraine : dimensions hissées au niveau module pour que le tunnel de secours
+-- ci-dessous (et generateFoodNodes) puissent calculer les mêmes points sans dupliquer les chiffres.
+local ROOM_CENTER_Y = 20 -- plafond à ROOM_CENTER_Y + ROOM_INNER_SIZE.Y/2 = 24, au moins 16 studs sous la surface
+local ROOM_OUTER_SIZE = Vector3.new(20, 16, 20)
+local ROOM_INNER_SIZE = Vector3.new(12, 8, 12)
+local ROOM_FLOOR_Y = ROOM_CENTER_Y - ROOM_INNER_SIZE.Y / 2 -- 16
+
+-- Tunnel en pente à 45° (jamais un puits vertical) reliant la surface au sol de la salle : son
+-- SOL passe exactement par ces deux points (voir carveRamp), donc aucune marche ni chute n'y
+-- subsiste. Une espèce non-grimpeuse et non-volante (ex. le Scorpion Empereur) doit pouvoir
+-- redescendre ET remonter à pied.
+local GALLERY_TUNNEL_BOTTOM = Vector3.new(GALLERY_COLUMN.X + ROOM_INNER_SIZE.X / 2, ROOM_FLOOR_Y, GALLERY_COLUMN.Z)
+local GALLERY_TUNNEL_TOP = Vector3.new(GALLERY_TUNNEL_BOTTOM.X + (GROUND_TOP_Y - ROOM_FLOOR_Y), GROUND_TOP_Y, GALLERY_COLUMN.Z)
+
 type PartOptions = {
 	CanCollide: boolean?,
 	CanQuery: boolean?,
@@ -98,6 +122,15 @@ local function linkPart(parent: Instance, from: Vector3, to: Vector3, thickness:
 	return part
 end
 
+-- Carve un Air en forme de rampe dont le SOL passe exactement par top et bottom (et pas l'axe
+-- central du bloc) : pas de marche ni de lèvre à l'arrivée. Toujours praticable à pied, à
+-- l'inverse d'un puits vertical qui piégerait une espèce non-grimpeuse et non-volante.
+local function carveRamp(terrain: Terrain, top: Vector3, bottom: Vector3, width: number, headroom: number)
+	local length = (bottom - top).Magnitude
+	local cf = CFrame.lookAt(top:Lerp(bottom, 0.5), bottom) * CFrame.new(0, headroom / 2, 0)
+	terrain:FillBlock(cf, Vector3.new(width, headroom, length), Enum.Material.Air)
+end
+
 local function tagShelter(instance: Instance)
 	CollectionService:AddTag(instance, "Shelter")
 end
@@ -117,9 +150,25 @@ local function spawnFoodNode(parent: Instance, position: Vector3, foodType: Food
 	CollectionService:AddTag(node, "FoodNode")
 end
 
-------------------------------------------------------------------------------------------------
--- 1. Sol : grande plaine herbeuse 500x500.
-------------------------------------------------------------------------------------------------
+-- Position aléatoire dans un anneau [minRadius, maxRadius] autour de center, en évitant un point
+-- (et son rayon) si fourni — quelques tentatives suffisent, l'échec total est négligeable.
+local function pickScatterPosition(center: Vector3, minRadius: number, maxRadius: number, avoidPosition: Vector3?, avoidRadius: number?): Vector3
+	for _ = 1, 6 do
+		local angle = rng:NextNumber() * math.pi * 2
+		local distance = minRadius + rng:NextNumber() * math.max(maxRadius - minRadius, 0)
+		local candidate = center + Vector3.new(math.cos(angle) * distance, 0, math.sin(angle) * distance)
+		if not avoidPosition or not avoidRadius then
+			return candidate
+		end
+		local flatDelta = Vector3.new(candidate.X - avoidPosition.X, 0, candidate.Z - avoidPosition.Z)
+		if flatDelta.Magnitude >= avoidRadius then
+			return candidate
+		end
+	end
+	return center + Vector3.new(minRadius, 0, 0)
+end
+
+-- Sol : grande plaine herbeuse 500x500.
 local function generateGround()
 	workspace.Terrain:FillBlock(
 		CFrame.new(0, GROUND_CENTER_Y, 0),
@@ -128,20 +177,27 @@ local function generateGround()
 	)
 end
 
-------------------------------------------------------------------------------------------------
 -- "Le Coin des Rochers Arides" : patches de Rock/Sable surélevés, rochers épars, et un surplomb
 -- qui sert de 2e abri d'hiver (en plus de l'écorce du Chêne et de la galerie de la Souche).
-------------------------------------------------------------------------------------------------
 local function generateRockyCorner(root: Folder)
 	local terrain = workspace.Terrain
 	local folder = Instance.new("Folder")
 	folder.Name = "RochersArides"
 	folder.Parent = root
 
+	local overhangCenter = ROCKY_CORNER + Vector3.new(15, 0, -15)
+	local overhangClearRadius = 15
+	local pillarHeight = 10
+
 	for _ = 1, 5 do
 		local offset = Vector3.new(rng:NextInteger(-45, 45), 0, rng:NextInteger(-45, 45))
 		local center = ROCKY_CORNER + offset
 		local footprint = rng:NextInteger(25, 45)
+		-- Si ce patch empièterait sur le site du surplomb, il le laisserait entouré d'un plateau
+		-- surélevé (donc piégé) une fois la zone dégagée plus bas : on l'ignore complètement.
+		if math.abs(center.X - overhangCenter.X) < footprint / 2 + 14 and math.abs(center.Z - overhangCenter.Z) < footprint / 2 + 11 then
+			continue
+		end
 		local raisedTop = GROUND_TOP_Y + rng:NextInteger(3, 9)
 		local patchHeight = rng:NextInteger(10, 18)
 		local material = if rng:NextNumber() < 0.5 then Enum.Material.Rock else Enum.Material.Sand
@@ -152,10 +208,22 @@ local function generateRockyCorner(root: Folder)
 		)
 	end
 
+	-- Dégage le site du surplomb quels que soient les patches aléatoires ci-dessus : la dalle et
+	-- son marqueur Shelter ne doivent jamais se retrouver enterrés dans un patch surélevé.
+	terrain:FillBlock(
+		CFrame.new(overhangCenter.X, GROUND_TOP_Y + 12, overhangCenter.Z),
+		Vector3.new(28, 24, 22),
+		Enum.Material.Air
+	)
+
 	for i = 1, 8 do
 		local pos = ROCKY_CORNER + Vector3.new(rng:NextInteger(-45, 45), 0, rng:NextInteger(-45, 45))
+		local flatDelta = Vector3.new(pos.X - overhangCenter.X, 0, pos.Z - overhangCenter.Z)
+		if flatDelta.Magnitude < overhangClearRadius then
+			continue
+		end
 		local size = rng:NextInteger(4, 9)
-		local baseY = GROUND_TOP_Y + rng:NextInteger(2, 8)
+		local baseY = GROUND_TOP_Y - size * 0.2 -- s'enfonce légèrement dans le relief plutôt que de flotter dessus
 		newPart(
 			folder,
 			"Rocher" .. i,
@@ -169,8 +237,6 @@ local function generateRockyCorner(root: Folder)
 	end
 
 	-- Surplomb rocheux : pierres chaudes au soleil le jour, abri la nuit/en hiver (GDD section 4/8).
-	local overhangCenter = ROCKY_CORNER + Vector3.new(15, 0, -15)
-	local pillarHeight = 10
 	newPart(
 		folder, "SurplombPilierA", Vector3.new(4, pillarHeight, 4),
 		CFrame.new(overhangCenter.X - 7, GROUND_TOP_Y + pillarHeight / 2, overhangCenter.Z),
@@ -186,7 +252,7 @@ local function generateRockyCorner(root: Folder)
 		CFrame.new(overhangCenter.X, GROUND_TOP_Y + pillarHeight + 1.5, overhangCenter.Z),
 		Enum.Material.Rock, Color3.fromRGB(130, 118, 104)
 	)
-	-- Marqueur au ras du sol (pas la dalle en hauteur) : reste à <=14 tiges (SHELTER_CHECK_RADIUS)
+	-- Marqueur au ras du sol (pas la dalle en hauteur) : reste à <=14 studs (SHELTER_CHECK_RADIUS)
 	-- de tout joueur réfugié dessous.
 	local shelterMarker = newPart(
 		folder, "SurplombAbri", Vector3.new(16, 1, 10),
@@ -196,9 +262,7 @@ local function generateRockyCorner(root: Folder)
 	tagShelter(shelterMarker)
 end
 
-------------------------------------------------------------------------------------------------
--- 2. "La Mare & Le Ruisseau".
-------------------------------------------------------------------------------------------------
+-- "La Mare & Le Ruisseau".
 local function generatePond(root: Folder)
 	local terrain = workspace.Terrain
 	local zonesFolder = Instance.new("Folder")
@@ -206,7 +270,7 @@ local function generatePond(root: Folder)
 	zonesFolder.Parent = root
 
 	local waterTop = GROUND_TOP_Y - 8 -- en contrebas du sol : berges visibles tout autour
-	local basinBottom = waterTop - 8 -- au moins 16 tiges sous la surface, loin de toute galerie
+	local basinBottom = waterTop - 8 -- au moins 16 studs sous la surface, loin de toute galerie
 	local airCenterY = (waterTop + GROUND_TOP_Y) / 2
 	local airHeight = GROUND_TOP_Y - waterTop
 	local waterCenterY = (basinBottom + waterTop) / 2
@@ -220,17 +284,60 @@ local function generatePond(root: Folder)
 	terrain:FillBlock(CFrame.new(POND_CENTER.X, airCenterY, POND_CENTER.Z), mareAirFootprint, Enum.Material.Air)
 	terrain:FillBlock(CFrame.new(POND_CENTER.X, waterCenterY, POND_CENTER.Z), mareWaterFootprint, Enum.Material.Water)
 
+	-- Rampe d'accès côté sud de la mare (pente douce ~25°) : son sol est ancré exactement sur la
+	-- plaine (GROUND_TOP_Y) d'un côté et sur la berge déjà creusée (waterTop) de l'autre, donc
+	-- sans marche. Sans elle, une espèce non-grimpeuse et non-volante qui descend sur la berge
+	-- resterait bloquée face au mur de 8 studs.
+	local pitEdgeZ = POND_CENTER.Z + mareAirFootprint.Z / 2
+	carveRamp(
+		terrain,
+		Vector3.new(POND_CENTER.X, GROUND_TOP_Y, pitEdgeZ + 16),
+		Vector3.new(POND_CENTER.X, waterTop, pitEdgeZ - 1),
+		14,
+		10
+	)
+
 	-- "Le Ruisseau" : bras allongé vers l'intérieur de la carte, même niveau d'eau. Chevauche la
-	-- mare de quelques tiges pour qu'il n'y ait pas de coupure visuelle entre les deux.
-	local streamCenterX = POND_CENTER.X - 80
+	-- mare de plusieurs studs (empreintes eau ET air) pour qu'il n'y ait pas de coupure visuelle.
+	local streamCenterX = POND_CENTER.X - 66
 	local streamAirFootprint = Vector3.new(96, airHeight, 16)
 	local streamWaterFootprint = Vector3.new(84, waterHeight, 8)
 	terrain:FillBlock(CFrame.new(streamCenterX, airCenterY, POND_CENTER.Z), streamAirFootprint, Enum.Material.Air)
 	terrain:FillBlock(CFrame.new(streamCenterX, waterCenterY, POND_CENTER.Z), streamWaterFootprint, Enum.Material.Water)
 
-	-- Le niveau d'eau est dérivé directement des paramètres de remplissage ci-dessus (pas de
-	-- Terrain:ReadVoxels) : on contrôle exactement la géométrie remplie, donc aucune ambiguïté
-	-- d'occupation de voxel à interpréter.
+	-- Relit le voxel d'eau réellement empli pour vérifier la valeur analytique ci-dessus (plutôt
+	-- que de lui faire confiance aveuglément). Protégé par pcall : ReadVoxels ne doit jamais faire
+	-- planter le boot serveur, l'attribut final reste de toute façon la valeur analytique exacte.
+	local function readWaterTopY(x: number, z: number, fromY: number, toY: number): number?
+		local success, result = pcall(function(): number?
+			local region = Region3.new(Vector3.new(x - 2, fromY, z - 2), Vector3.new(x + 2, toY, z + 2)):ExpandToGrid(4)
+			local materials, occupancies = terrain:ReadVoxels(region, 4)
+			local baseY = region.CFrame.Position.Y - region.Size.Y / 2
+			local bestY: number? = nil
+			for xi = 1, #materials do
+				for yi = 1, #materials[xi] do
+					for zi = 1, #materials[xi][yi] do
+						if materials[xi][yi][zi] == Enum.Material.Water and occupancies[xi][yi][zi] > 0 then
+							local topY = baseY + (yi - 1) * 4 + occupancies[xi][yi][zi] * 4
+							if not bestY or topY > bestY then
+								bestY = topY
+							end
+						end
+					end
+				end
+			end
+			return bestY
+		end)
+		if success then
+			return result :: number?
+		end
+		return nil
+	end
+
+	local measuredTop = readWaterTopY(POND_CENTER.X, POND_CENTER.Z, basinBottom - 4, GROUND_TOP_Y + 4)
+	if measuredTop and math.abs(measuredTop - waterTop) > 0.1 then
+		warn(string.format("WorldGenerationService: niveau d'eau mesuré (%.1f) != valeur analytique (%.1f)", measuredTop, waterTop))
+	end
 	workspace:SetAttribute("PondWaterLevel", waterTop)
 	workspace:SetAttribute("PondFrozen", false) -- informatif seulement ; SurvivalService gère "PondFrozenNow"
 
@@ -253,23 +360,19 @@ local function generatePond(root: Folder)
 	CollectionService:AddTag(streamZone, "PondZone")
 end
 
-------------------------------------------------------------------------------------------------
--- 3. "Le Grand Chêne".
-------------------------------------------------------------------------------------------------
+-- "Le Grand Chêne".
 local function generateGrandChene(root: Folder)
 	local model = Instance.new("Model")
 	model.Name = "GrandChene"
 	model.Parent = root
 
-	local trunkHeight = 120
-	local trunkDiameter = 16
 	local barkColor = Color3.fromRGB(74, 52, 36)
 
 	local trunk = Instance.new("Part")
 	trunk.Name = "Tronc"
 	trunk.Shape = Enum.PartType.Cylinder
-	trunk.Size = Vector3.new(trunkHeight, trunkDiameter, trunkDiameter)
-	trunk.CFrame = verticalCylinderCFrame(TREE_POSITION, trunkHeight)
+	trunk.Size = Vector3.new(TRUNK_HEIGHT, TRUNK_DIAMETER, TRUNK_DIAMETER)
+	trunk.CFrame = verticalCylinderCFrame(TREE_POSITION, TRUNK_HEIGHT)
 	trunk.Anchored = true
 	trunk.CanCollide = true
 	trunk.Material = Enum.Material.Wood
@@ -282,8 +385,8 @@ local function generateGrandChene(root: Folder)
 	for i = 1, branchCount do
 		local angleY = (i / branchCount) * math.pi * 2 + rng:NextNumber(-0.2, 0.2)
 		local heightRatio = 0.65 + ((i - 1) % 3) * 0.1
-		local startHeight = trunkHeight * heightRatio
-		local startRadius = trunkDiameter * 0.5
+		local startHeight = TRUNK_HEIGHT * heightRatio
+		local startRadius = TRUNK_DIAMETER * 0.5
 		local branchLength = 26 + rng:NextInteger(0, 14)
 		local startPoint = TREE_POSITION + Vector3.new(math.cos(angleY) * startRadius, startHeight, math.sin(angleY) * startRadius)
 		local endPoint = TREE_POSITION + Vector3.new(
@@ -294,8 +397,9 @@ local function generateGrandChene(root: Folder)
 		linkPart(model, startPoint, endPoint, 3 + rng:NextInteger(0, 2), "Branche" .. i, Enum.Material.Wood, barkColor)
 	end
 
-	-- Canopée : amas de feuillage sphérique au sommet du tronc.
-	local canopyCenter = TREE_POSITION + Vector3.new(0, trunkHeight * 0.92, 0)
+	-- Canopée : amas de feuillage sphérique au sommet du tronc. Solide et escaladable comme le
+	-- reste de l'arbre (sinon WallClimbController "accroche" dessus sans vrai support physique).
+	local canopyCenter = TREE_POSITION + Vector3.new(0, TRUNK_HEIGHT * 0.92, 0)
 	for i = 1, 16 do
 		local offset = Vector3.new(rng:NextInteger(-28, 28), rng:NextInteger(-10, 14), rng:NextInteger(-28, 28))
 		local leafSize = 10 + rng:NextInteger(0, 8)
@@ -306,21 +410,21 @@ local function generateGrandChene(root: Folder)
 			CFrame.new(canopyCenter + offset),
 			Enum.Material.Grass,
 			Color3.fromRGB(50 + rng:NextInteger(0, 40), 110 + rng:NextInteger(0, 50), 40 + rng:NextInteger(0, 30)),
-			{ CanCollide = false }
+			{ Shape = Enum.PartType.Ball }
 		)
 	end
 
 	-- Points d'ancrage laissés en commentaire pour de futurs systèmes (pas construits ici) :
 	--   nid d'oiseau   ~ canopyCenter + Vector3.new(15, 10, 0)   (hautes branches, cf. GDD 5.1)
 	--   hotte écureuil ~ canopyCenter + Vector3.new(-14, -6, 12) (fourche de branche, cf. GDD 5.5)
-	--   ruche          ~ TREE_POSITION + Vector3.new(startRadius + 4, trunkHeight * 0.55, 0)
+	--   ruche          ~ TREE_POSITION + Vector3.new(TRUNK_DIAMETER / 2 + 4, TRUNK_HEIGHT * 0.55, 0)
 
 	-- Chambre creusée à la base de l'écorce : 1er abri d'hiver du GDD ("s'abriter dans l'écorce").
 	local chamberFloor = newPart(
 		model,
 		"ChambreEcorce_Sol",
 		Vector3.new(10, 1, 10),
-		CFrame.new(TREE_POSITION.X + trunkDiameter * 0.5 + 6, TREE_POSITION.Y + 0.5, TREE_POSITION.Z),
+		CFrame.new(TREE_POSITION.X + TRUNK_DIAMETER * 0.5 + 6, TREE_POSITION.Y + 0.5, TREE_POSITION.Z),
 		Enum.Material.Wood,
 		Color3.fromRGB(58, 40, 28),
 		{ CanCollide = true }
@@ -328,9 +432,8 @@ local function generateGrandChene(root: Folder)
 	tagShelter(chamberFloor)
 end
 
-------------------------------------------------------------------------------------------------
--- 4. "La Prairie Fleurie".
-------------------------------------------------------------------------------------------------
+-- "La Prairie Fleurie". Herbes/fleurs solides et escaladables (GDD : "hautes herbes géantes") :
+-- en CanCollide=false elles agiraient comme des surfaces fantômes pour WallClimbController.
 local function generatePrairieFleurie(root: Folder)
 	local folder = Instance.new("Folder")
 	folder.Name = "PrairieFleurie"
@@ -349,8 +452,7 @@ local function generatePrairieFleurie(root: Folder)
 			CFrame.new(position.X, position.Y + height / 2, position.Z)
 				* CFrame.Angles(0, math.rad(rng:NextInteger(0, 359)), math.rad(rng:NextInteger(-6, 6))),
 			Enum.Material.Grass,
-			Color3.fromRGB(60 + rng:NextInteger(0, 40), 120 + rng:NextInteger(0, 60), 40 + rng:NextInteger(0, 30)),
-			{ CanCollide = false }
+			Color3.fromRGB(60 + rng:NextInteger(0, 40), 120 + rng:NextInteger(0, 60), 40 + rng:NextInteger(0, 30))
 		)
 		if i % 50 == 0 then
 			task.wait()
@@ -370,7 +472,7 @@ local function generatePrairieFleurie(root: Folder)
 		newPart(
 			folder, "FleurTige", Vector3.new(0.8, stemHeight, 0.8),
 			CFrame.new(position.X, position.Y + stemHeight / 2, position.Z),
-			Enum.Material.Grass, Color3.fromRGB(70, 130, 60), { CanCollide = false }
+			Enum.Material.Grass, Color3.fromRGB(70, 130, 60)
 		)
 		newPart(
 			folder,
@@ -379,14 +481,12 @@ local function generatePrairieFleurie(root: Folder)
 			CFrame.new(position.X, position.Y + stemHeight, position.Z),
 			Enum.Material.Neon,
 			flowerColors[rng:NextInteger(1, #flowerColors)],
-			{ CanCollide = false, Shape = Enum.PartType.Ball }
+			{ Shape = Enum.PartType.Ball }
 		)
 	end
 end
 
-------------------------------------------------------------------------------------------------
--- 5. "La Souche Pourrie & Les Galeries Souterraines".
-------------------------------------------------------------------------------------------------
+-- "La Souche Pourrie & Les Galeries Souterraines".
 local function generateStumpAndGalleries(root: Folder)
 	local terrain = workspace.Terrain
 	local model = Instance.new("Model")
@@ -397,14 +497,12 @@ local function generateStumpAndGalleries(root: Folder)
 	terrain:FillBlock(CFrame.new(STUMP_CENTER.X, GROUND_TOP_Y - 4, STUMP_CENTER.Z), Vector3.new(80, 8, 80), Enum.Material.Mud)
 
 	-- La souche elle-même : cylindre large et bas + quelques racines qui dépassent au sol.
-	local stumpHeight = 7
-	local stumpDiameter = 14
 	local woodColor = Color3.fromRGB(90, 72, 58)
 	local stump = Instance.new("Part")
 	stump.Name = "Souche"
 	stump.Shape = Enum.PartType.Cylinder
-	stump.Size = Vector3.new(stumpHeight, stumpDiameter, stumpDiameter)
-	stump.CFrame = verticalCylinderCFrame(STUMP_CENTER, stumpHeight)
+	stump.Size = Vector3.new(STUMP_HEIGHT, STUMP_DIAMETER, STUMP_DIAMETER)
+	stump.CFrame = verticalCylinderCFrame(STUMP_CENTER, STUMP_HEIGHT)
 	stump.Anchored = true
 	stump.CanCollide = true
 	stump.Material = Enum.Material.Wood
@@ -414,73 +512,64 @@ local function generateStumpAndGalleries(root: Folder)
 
 	for i = 1, 3 do
 		local angle = (i / 3) * math.pi * 2
-		local rootStart = STUMP_CENTER + Vector3.new(math.cos(angle) * stumpDiameter * 0.4, 1, math.sin(angle) * stumpDiameter * 0.4)
-		local rootEnd = STUMP_CENTER + Vector3.new(math.cos(angle) * (stumpDiameter * 0.9), 0, math.sin(angle) * (stumpDiameter * 0.9))
+		local rootStart = STUMP_CENTER + Vector3.new(math.cos(angle) * STUMP_DIAMETER * 0.4, 1, math.sin(angle) * STUMP_DIAMETER * 0.4)
+		local rootEnd = STUMP_CENTER + Vector3.new(math.cos(angle) * (STUMP_DIAMETER * 0.9), 0, math.sin(angle) * (STUMP_DIAMETER * 0.9))
 		linkPart(model, rootStart, rootEnd, 2.5, "Racine" .. i, Enum.Material.Wood, Color3.fromRGB(70, 56, 44))
 	end
 
-	-- L'entrée des galeries est décalée loin de l'emprise de la souche/racines (rayon ~12.6) :
-	-- sinon le cylindre plein de la souche bloquerait physiquement le puits d'accès.
-	local galleryColumn = STUMP_CENTER + Vector3.new(stumpDiameter * 0.5 + 8, 0, 0)
-
-	-- Trou d'entrée visible, au ras du sol, juste au-dessus du puits creusé plus bas.
-	newPart(
-		model, "TrouEntree", Vector3.new(6, 0.2, 6),
-		CFrame.new(galleryColumn.X, GROUND_TOP_Y + 0.1, galleryColumn.Z),
-		Enum.Material.SmoothPlastic, Color3.fromRGB(10, 8, 6), { CanCollide = false }
-	)
-
-	-- Petite salle souterraine pré-creusée (Terrain:FillRegion), murée de Boue, + puits d'accès
-	-- vertical depuis la surface. Reste volontairement compacte : le marqueur Shelter doit rester
-	-- à <=14 tiges (GameConstants.SHELTER_CHECK_RADIUS) de tout joueur présent dans la salle.
-	local roomCenterY = 20 -- au moins 16 tiges sous la surface (GROUND_TOP_Y - roomCenterY = 28)
-	local outerSize = Vector3.new(20, 16, 20)
-	local innerSize = Vector3.new(12, 8, 12)
-
+	-- Petite salle souterraine pré-creusée (Terrain:FillRegion), murée de Boue. Reste compacte :
+	-- le marqueur Shelter doit rester à <=14 studs (GameConstants.SHELTER_CHECK_RADIUS) de tout
+	-- joueur présent dans la salle.
 	local function regionFromCenterSize(center: Vector3, size: Vector3): Region3
 		local half = size / 2
 		return Region3.new(center - half, center + half):ExpandToGrid(4)
 	end
 
-	local roomCenter = Vector3.new(galleryColumn.X, roomCenterY, galleryColumn.Z)
-	terrain:FillRegion(regionFromCenterSize(roomCenter, outerSize), 4, Enum.Material.Mud)
-	terrain:FillRegion(regionFromCenterSize(roomCenter, innerSize), 4, Enum.Material.Air)
+	local roomCenter = Vector3.new(GALLERY_COLUMN.X, ROOM_CENTER_Y, GALLERY_COLUMN.Z)
+	terrain:FillRegion(regionFromCenterSize(roomCenter, ROOM_OUTER_SIZE), 4, Enum.Material.Mud)
+	terrain:FillRegion(regionFromCenterSize(roomCenter, ROOM_INNER_SIZE), 4, Enum.Material.Air)
 
-	-- Puits vertical : relie le trou d'entrée (surface) au plafond de la salle, sans interruption.
-	local shaftTopY = GROUND_TOP_Y
-	local shaftBottomY = roomCenterY + innerSize.Y / 2
-	local shaftCenterY = (shaftTopY + shaftBottomY) / 2
-	local shaftSize = Vector3.new(8, shaftTopY - shaftBottomY, 8)
-	terrain:FillRegion(
-		regionFromCenterSize(Vector3.new(galleryColumn.X, shaftCenterY, galleryColumn.Z), shaftSize),
-		4,
-		Enum.Material.Air
+	-- Tunnel en pente (GALLERY_TUNNEL_TOP/BOTTOM, module-level) reliant la surface au sol de la
+	-- salle sans marche ni chute.
+	carveRamp(terrain, GALLERY_TUNNEL_TOP, GALLERY_TUNNEL_BOTTOM, 8, 10)
+
+	-- Trou d'entrée visible, au ras du sol, à l'embouchure du tunnel.
+	newPart(
+		model, "TrouEntree", Vector3.new(6, 0.2, 6),
+		CFrame.new(GALLERY_TUNNEL_TOP.X, GROUND_TOP_Y + 0.1, GALLERY_TUNNEL_TOP.Z),
+		Enum.Material.SmoothPlastic, Color3.fromRGB(10, 8, 6), { CanCollide = false }
 	)
 
-	local floorY = roomCenterY - innerSize.Y / 2 + 0.5
+	local floorY = ROOM_FLOOR_Y + 0.5
 	local floorPart = newPart(
-		model, "Galerie_Sol", Vector3.new(innerSize.X - 2, 1, innerSize.Z - 2),
-		CFrame.new(galleryColumn.X, floorY, galleryColumn.Z),
+		model, "Galerie_Sol", Vector3.new(ROOM_INNER_SIZE.X - 2, 1, ROOM_INNER_SIZE.Z - 2),
+		CFrame.new(GALLERY_COLUMN.X, floorY, GALLERY_COLUMN.Z),
 		Enum.Material.Ground, Color3.fromRGB(64, 48, 36), { CanCollide = true }
 	)
 	tagShelter(floorPart)
 end
 
-------------------------------------------------------------------------------------------------
--- 6. Nœuds de nourriture/eau par biome (FoodData.FoodTypeId).
-------------------------------------------------------------------------------------------------
+-- Nœuds de nourriture/eau par biome (FoodData.FoodTypeId), en évitant les solides du décor.
 local function generateFoodNodes(root: Folder)
 	local folder = Instance.new("Folder")
 	folder.Name = "FoodNodes"
 	folder.Parent = root
 
 	local placedCount = 0
-	local function scatter(center: Vector3, radius: number, count: number, foodType: FoodData.FoodTypeId, color: Color3, heightOffset: number)
+	local function scatter(
+		center: Vector3,
+		minRadius: number,
+		maxRadius: number,
+		count: number,
+		foodType: FoodData.FoodTypeId,
+		color: Color3,
+		heightOffset: number,
+		avoidPosition: Vector3?,
+		avoidRadius: number?
+	)
 		for _ = 1, count do
-			local angle = rng:NextNumber() * math.pi * 2
-			local distance = rng:NextNumber() * radius
-			local offset = Vector3.new(math.cos(angle) * distance, heightOffset, math.sin(angle) * distance)
-			spawnFoodNode(folder, center + offset, foodType, color)
+			local candidate = pickScatterPosition(center, minRadius, maxRadius, avoidPosition, avoidRadius)
+			spawnFoodNode(folder, Vector3.new(candidate.X, center.Y + heightOffset, candidate.Z), foodType, color)
 			placedCount += 1
 			if placedCount % 50 == 0 then
 				task.wait()
@@ -488,22 +577,21 @@ local function generateFoodNodes(root: Folder)
 		end
 	end
 
-	-- Prairie : feuilles/nectar/graines/miettes.
-	scatter(PRAIRIE_CENTER, 65, 8, "Feuille", Color3.fromRGB(90, 180, 70), 1)
-	scatter(PRAIRIE_CENTER, 65, 6, "Nectar", Color3.fromRGB(240, 190, 40), 1)
-	scatter(PRAIRIE_CENTER, 65, 4, "Graine", Color3.fromRGB(200, 170, 110), 1)
-	scatter(PRAIRIE_CENTER, 65, 3, "Miette", Color3.fromRGB(210, 180, 140), 1)
-	-- Chêne : pollen/sève sur le tronc, fruits sous la canopée.
-	scatter(TREE_POSITION, 35, 5, "Pollen", Color3.fromRGB(250, 220, 80), 2)
-	scatter(TREE_POSITION, 35, 5, "Seve", Color3.fromRGB(150, 100, 40), 3)
-	scatter(TREE_POSITION, 30, 8, "Fruit", Color3.fromRGB(220, 60, 50), 2)
-	-- Souche : bois mort.
-	scatter(STUMP_CENTER, 40, 10, "Bois", Color3.fromRGB(120, 90, 60), 1)
+	-- Prairie : feuilles/nectar/graines/miettes, pas d'obstacle à éviter.
+	scatter(PRAIRIE_CENTER, 0, 65, 8, "Feuille", Color3.fromRGB(90, 180, 70), 1)
+	scatter(PRAIRIE_CENTER, 0, 65, 6, "Nectar", Color3.fromRGB(240, 190, 40), 1)
+	scatter(PRAIRIE_CENTER, 0, 65, 4, "Graine", Color3.fromRGB(200, 170, 110), 1)
+	scatter(PRAIRIE_CENTER, 0, 65, 3, "Miette", Color3.fromRGB(210, 180, 140), 1)
+	-- Chêne : pollen/sève/fruits, hors du tronc (rayon TRUNK_DIAMETER / 2 = 8 + marge).
+	scatter(TREE_POSITION, 11, 35, 5, "Pollen", Color3.fromRGB(250, 220, 80), 2)
+	scatter(TREE_POSITION, 11, 35, 5, "Seve", Color3.fromRGB(150, 100, 40), 3)
+	scatter(TREE_POSITION, 11, 30, 8, "Fruit", Color3.fromRGB(220, 60, 50), 2)
+	-- Souche : bois mort, hors de la souche (rayon STUMP_DIAMETER / 2 = 7 + marge) et de
+	-- l'embouchure du tunnel (la salle elle-même est sous 20+ studs de terrain plein).
+	scatter(STUMP_CENTER, 10, 40, 10, "Bois", Color3.fromRGB(120, 90, 60), 1, GALLERY_TUNNEL_TOP, 10)
 end
 
-------------------------------------------------------------------------------------------------
--- 7. Spawn des œufs près du nid (zone de la Souche), + désactivation des spawns préexistants.
-------------------------------------------------------------------------------------------------
+-- Spawn des œufs près du nid (zone de la Souche), + désactivation des spawns préexistants.
 local function generateSpawnLocation(root: Folder)
 	for _, instance in ipairs(workspace:GetDescendants()) do
 		if instance:IsA("SpawnLocation") then
