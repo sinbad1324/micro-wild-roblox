@@ -2,30 +2,27 @@
 -- ServerBootstrap.server.luau
 -- Point d'entrée principal du serveur (ServerScriptService.bootstrap)
 
-local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
-local PlayerDataRepository = require(ServerScriptService.data.PlayerDataRepository)
-local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
+local Remotes = require(ReplicatedStorage.shared.Remotes)
+
+local MovementService = require(ServerScriptService.services.MovementService)
+local PlayerLifecycleService = require(ServerScriptService.services.PlayerLifecycleService)
 local SeasonService = require(ServerScriptService.services.SeasonService)
+local WorldGenerationService = require(ServerScriptService.services.WorldGenerationService)
 local SurvivalService = require(ServerScriptService.services.SurvivalService)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
+local SpawnMenuNetworkService = require(ServerScriptService.services.SpawnMenuNetworkService)
 
-local function onPlayerAdded(player: Player)
-	PlayerDataRepository.InitPlayerAttributes(player)
-	player.CharacterAdded:Connect(function(character)
-		task.wait(0.2)
-		local speciesId = (player:GetAttribute("Species") :: string) or "FourmiRousse"
-		local stage = (player:GetAttribute("Stage") :: string) or "Oeuf"
-		EvolutionDomain.ApplyStageStats(character, speciesId, stage)
-	end)
-end
+-- Les remotes doivent exister AVANT que le moindre client ne se connecte ou n'appelle Remotes.Get.
+Remotes.EnsureServerRemotes()
 
-Players.PlayerAdded:Connect(onPlayerAdded)
-for _, player in ipairs(Players:GetPlayers()) do
-	onPlayerAdded(player)
-end
-
+MovementService.Start()
+PlayerLifecycleService.Start()
 SeasonService.Start()
+-- AVANT SurvivalService : il lit PondWaterLevel/PondZone/Shelter dès son tout premier tick.
+WorldGenerationService.Start()
 SurvivalService.Start()
 GrowthAndNestService.Start()
+SpawnMenuNetworkService.Start()

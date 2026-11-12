@@ -39,8 +39,9 @@ alignOrientation.Parent = rootPart
 linearVelocity.Parent = rootPart
 
 local function canPlayerClimb(): boolean
+	-- Allowlist (pas blocklist) : un Stage pas encore répliqué (nil) ne doit pas autoriser l'escalade.
 	local stage = player:GetAttribute("Stage")
-	if stage == "Oeuf" or stage == "Cocon" then
+	if stage ~= "Larve" and stage ~= "Mue" and stage ~= "Adulte" then
 		return false
 	end
 	local speciesId = (player:GetAttribute("Species") :: string) or "FourmiRousse"
@@ -49,7 +50,8 @@ local function canPlayerClimb(): boolean
 end
 
 RunService.RenderStepped:Connect(function()
-	if not canPlayerClimb() or humanoid.Health <= 0 then
+	-- Cède la main à Flight/Swim : sinon leurs LinearVelocity/AlignOrientation respectifs se battent.
+	if not canPlayerClimb() or humanoid.Health <= 0 or CharacterState.IsFlying or CharacterState.IsSwimming then
 		alignOrientation.Enabled = false
 		linearVelocity.Enabled = false
 		CharacterState.IsClimbingWall = false
