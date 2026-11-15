@@ -10,7 +10,7 @@ export type FoodTypeId =
 	"Feuille" | "Pollen" | "Nectar" | "Seve" | "Bois"
 	| "Insecte" | "Larve" | "Poisson" | "Sang"
 	| "Fruit" | "Graine" | "Miette" | "Champignon"
-	| "CarcasseFraiche" | "CarcassePutride"
+	| "CarcasseFraiche" | "CarcassePutride" | "OeufsPoisson"
 
 export type FoodInfo = {
 	Diets: { DietType },
@@ -32,6 +32,8 @@ local FoodTable: { [string]: FoodInfo } = {
 	Graine = { Diets = { "Herbivore", "Omnivore" }, NutritionValue = 10 },
 	Miette = { Diets = { "Omnivore" }, NutritionValue = 6 },
 	Champignon = { Diets = { "Herbivore", "Omnivore" }, NutritionValue = 16 },
+	-- Oeufs volés dans les cuvettes de frai du Poisson Rouge (GDD §6.3).
+	OeufsPoisson = { Diets = { "Carnivore", "Omnivore" }, NutritionValue = 26 },
 	-- Carcasse fraîche : valeur max pour carnivores/sanguinaires.
 	CarcasseFraiche = { Diets = { "Carnivore", "Omnivore" }, NutritionValue = 35 },
 	-- Début de putréfaction : toxique pour les carnivores stricts, mais 2x la valeur pour

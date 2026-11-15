@@ -55,11 +55,11 @@ local function buildFallbackVisual(ownerName: string, sizeScale: number): Model
 	return model
 end
 
-local function spawnMushroomsAround(position: Vector3, count: number)
+local function spawnMushroomsAround(position: Vector3, count: number, radius: number)
 	local foliage = getCarcassesFolder()
 	for i = 1, count do
 		local angle = (i / count) * math.pi * 2
-		local offset = Vector3.new(math.cos(angle) * 3, 0, math.sin(angle) * 3)
+		local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
 
 		local mushroom = Instance.new("Part")
 		mushroom.Name = "FoodNode_Champignon"
@@ -73,6 +73,8 @@ local function spawnMushroomsAround(position: Vector3, count: number)
 		mushroom.Parent = foliage
 
 		mushroom:SetAttribute("FoodType", "Champignon")
+		mushroom:SetAttribute("NoRespawn", true)
+		mushroom:SetAttribute("Uses", 3)
 		CollectionService:AddTag(mushroom, "FoodNode")
 		Debris:AddItem(mushroom, ADVANCED_SECONDS + SKELETON_LIFETIME_SECONDS)
 	end
@@ -111,23 +113,27 @@ function CarcassService.SpawnCarcassFor(
 		model = buildFallbackVisual(ownerName, scale)
 	end
 
+	if not model.PrimaryPart then
+		local anyPart = model:FindFirstChildWhichIsA("BasePart", true)
+		if anyPart then
+			model.PrimaryPart = anyPart
+		end
+	end
+	-- Un gabarit (corps 3D figé) est déjà posé à l'endroit de la mort ; le bloc de secours, lui,
+	-- doit être déplacé EN ENTIER (PivotTo), pas seulement sa PrimaryPart.
+	if not visualTemplate then
+		model:PivotTo(CFrame.new(position))
+	end
+
 	model:SetAttribute("OwnerName", ownerName)
 	model:SetAttribute("IsGiantAnimal", isGiantAnimal)
 	model:SetAttribute("Stage", "Frais")
 	model:SetAttribute("SpawnedAt", os.clock())
 	model:SetAttribute("CarcassFoodType", "CarcasseFraiche")
+	-- Viande disponible (FoodService la consomme bouchée par bouchée).
+	model:SetAttribute("MeatLeft", if isGiantAnimal then 2500 else math.floor(60 * math.max(scale, 0.5)))
 	CollectionService:AddTag(model, "Carcass")
-
 	model.Parent = getCarcassesFolder()
-	if not model.PrimaryPart then
-		local anyPart = model:FindFirstChildWhichIsA("BasePart")
-		if anyPart then
-			model.PrimaryPart = anyPart
-		end
-	end
-	if model.PrimaryPart then
-		model.PrimaryPart.CFrame = CFrame.new(position)
-	end
 
 	if isGiantAnimal then
 		local kaijuEvent = Remotes.Get("KaijuFeastEvent")
@@ -139,7 +145,14 @@ function CarcassService.SpawnCarcassFor(
 			return
 		end
 		model:SetAttribute("Stage", "Putrefaction")
-		model:SetAttribute("CarcassFoodType", "CarcassePutride")
+		if ((model:GetAttribute("MeatLeft") :: number?) or 0) > 0 then
+			model:SetAttribute("CarcassFoodType", "CarcassePutride")
+		end
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Color = descendant.Color:Lerp(Color3.fromRGB(95, 110, 60), 0.45)
+			end
+		end
 		if model.PrimaryPart then
 			addOdorCloud(model.PrimaryPart)
 		end
@@ -151,7 +164,12 @@ function CarcassService.SpawnCarcassFor(
 		end
 		model:SetAttribute("Stage", "Pourrissement")
 		model:SetAttribute("CarcassFoodType", nil)
-		spawnMushroomsAround(position, if isGiantAnimal then 5 else 2)
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Color = descendant.Color:Lerp(Color3.fromRGB(45, 40, 30), 0.5)
+			end
+		end
+		spawnMushroomsAround(position, if isGiantAnimal then 8 else 2, if isGiantAnimal then 14 else 3)
 	end)
 
 	task.delay(FRESH_SECONDS + PUTREFACTION_SECONDS + ADVANCED_SECONDS, function()
@@ -159,10 +177,13 @@ function CarcassService.SpawnCarcassFor(
 			return
 		end
 		model:SetAttribute("Stage", "Squelette")
+		model:SetAttribute("CarcassFoodType", nil)
 		CollectionService:AddTag(model, "Shelter")
-		if model.PrimaryPart then
-			model.PrimaryPart.Color = Color3.fromRGB(225, 220, 205)
-			model.PrimaryPart.Material = Enum.Material.Limestone
+		for _, descendant in ipairs(model:GetDescendants()) do
+			if descendant:IsA("BasePart") then
+				descendant.Color = Color3.fromRGB(225, 220, 205)
+				descendant.Material = Enum.Material.Limestone
+			end
 		end
 	end)
 

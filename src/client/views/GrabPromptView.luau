@@ -6,8 +6,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
-local RunService = game:GetService("RunService")
+local ContextActionService = game:GetService("ContextActionService")
 
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 
@@ -15,8 +14,9 @@ local GrabPromptView = {}
 
 local mounted = false
 
-local BAR_BUMP_PER_PRESS = 0.15
-local BAR_DECAY_PER_SECOND = 0.08
+local ESCAPE_ACTION = "MW_GrabEscape"
+-- Repli si le serveur n'envoie pas le nombre d'appuis requis.
+local DEFAULT_PRESSES_NEEDED = 12
 
 function GrabPromptView.Mount()
 	if mounted then
@@ -90,6 +90,7 @@ function GrabPromptView.Mount()
 
 	local isGrabbed = false
 	local escapeProgress = 0
+	local pressesNeeded = DEFAULT_PRESSES_NEEDED
 	local requestGrabEscapeRemote: RemoteEvent? = nil
 
 	task.spawn(function()
@@ -106,9 +107,25 @@ function GrabPromptView.Mount()
 		fill.Size = UDim2.new(escapeProgress, 0, 1, 0)
 	end
 
+	local function onEscapeAction(_actionName: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+		if inputState ~= Enum.UserInputState.Begin or not isGrabbed then
+			return Enum.ContextActionResult.Pass
+		end
+		-- Une barre fidèle au compteur serveur : 1/N par appui, sans décroissance.
+		setEscapeProgress(escapeProgress + 1 / pressesNeeded)
+		if requestGrabEscapeRemote then
+			requestGrabEscapeRemote:FireServer()
+		end
+		return Enum.ContextActionResult.Sink
+	end
+
 	local function showPrompt(grabberName: string?)
 		isGrabbed = true
 		setEscapeProgress(0)
+		-- Espace / bouton A / bouton tactile "Libérer" : le QTE marche sur tous les appareils.
+		ContextActionService:BindActionAtPriority(ESCAPE_ACTION, onEscapeAction, true, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space, Enum.KeyCode.ButtonA)
+		ContextActionService:SetTitle(ESCAPE_ACTION, "Libérer")
+		ContextActionService:SetPosition(ESCAPE_ACTION, UDim2.new(0.5, -40, 0.6, 0))
 		promptLabel.Text = string.format(
 			"AGRIPPÉ PAR %s — Appuie sur ESPACE pour te libérer !",
 			grabberName or "un prédateur"
@@ -118,6 +135,7 @@ function GrabPromptView.Mount()
 
 	local function hidePrompt()
 		isGrabbed = false
+		ContextActionService:UnbindAction(ESCAPE_ACTION)
 		promptFrame.Visible = false
 		setEscapeProgress(0)
 	end
@@ -128,7 +146,8 @@ function GrabPromptView.Mount()
 			warn("[GrabPromptView] GrabStateChanged indisponible : " .. tostring(grabRemote))
 			return
 		end
-		(grabRemote :: RemoteEvent).OnClientEvent:Connect(function(grabbed: boolean, grabberName: string?)
+		(grabRemote :: RemoteEvent).OnClientEvent:Connect(function(grabbed: boolean, grabberName: string?, needed: unknown)
+			pressesNeeded = if typeof(needed) == "number" and needed > 0 then needed :: number else DEFAULT_PRESSES_NEEDED
 			if grabbed then
 				showPrompt(grabberName)
 			else
@@ -145,28 +164,6 @@ function GrabPromptView.Mount()
 		end
 	end)
 
-	UserInputService.InputBegan:Connect(function(input: InputObject)
-		if not isGrabbed then
-			return
-		end
-		if input.KeyCode ~= Enum.KeyCode.Space then
-			return
-		end
-		if UserInputService:GetFocusedTextBox() ~= nil then
-			return
-		end
-		setEscapeProgress(escapeProgress + BAR_BUMP_PER_PRESS)
-		if requestGrabEscapeRemote then
-			requestGrabEscapeRemote:FireServer()
-		end
-	end)
-
-	RunService.Heartbeat:Connect(function(deltaTime: number)
-		if not isGrabbed or escapeProgress <= 0 then
-			return
-		end
-		setEscapeProgress(escapeProgress - BAR_DECAY_PER_SECOND * deltaTime)
-	end)
 end
 
 return GrabPromptView

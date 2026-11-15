@@ -13,13 +13,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 
 local UIManager = require(playerScripts.managers.UIManager)
-local SurvivalHudView = require(playerScripts.views.SurvivalHudView)
 local AbilityController = require(playerScripts.controllers.AbilityController)
+local StatusEffectController = require(playerScripts.controllers.StatusEffectController)
+local MarkerController = require(playerScripts.controllers.MarkerController)
+local AbilityHotbarView = require(playerScripts.views.AbilityHotbarView)
 
 -- Les RemoteEvents sont créés par ServerBootstrap au boot ; on attend qu'ils existent avant de
 -- câbler quoi que ce soit qui en dépend.
 Remotes.Get("NotifyClient")
 
 UIManager.Init()
-SurvivalHudView.Mount()
 AbilityController.Start()
+AbilityHotbarView.Mount(AbilityController.CooldownStarted)
+StatusEffectController.Start()
+MarkerController.Start()

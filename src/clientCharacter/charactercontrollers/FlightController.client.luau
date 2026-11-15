@@ -89,7 +89,24 @@ RunService.RenderStepped:Connect(function()
 
 	local speciesId = (player:GetAttribute("Species") :: string) or "FourmiRousse"
 	local species = InsectData[speciesId]
-	local flightSpeed = (if species then species.WalkSpeed else 16) * FLIGHT_SPEED_MULTIPLIER
+	-- Bonus d'été (endurance des volants) et "Courant ascendant" du Papillon (pouvoir R).
+	local seasonBonus = (workspace:GetAttribute("FlightSeasonBonus") :: number?) or 1
+	local abilityBoost = (player:GetAttribute("FlightBoost") :: number?) or 1
+	-- Passifs de vol : "Reine du ciel" (Libellule) et maniabilité de la Guêpe émeraude.
+	if species and table.find(species.Abilities, "Vol360Stationnaire") then
+		abilityBoost *= 1.25
+	elseif species and table.find(species.Abilities, "VolAcrobatique") then
+		abilityBoost *= 1.15
+	end
+	local flightSpeed = (if species then species.WalkSpeed else 16) * FLIGHT_SPEED_MULTIPLIER * seasonBonus * abilityBoost
+	-- Statuts serveur : étourdi = plané immobile, glu/ralenti = vol lourd.
+	if character:GetAttribute("Status_Stun") == true then
+		flightSpeed = 0
+	elseif character:GetAttribute("Status_Glue") == true then
+		flightSpeed *= 0.25
+	elseif character:GetAttribute("Status_Slow") == true then
+		flightSpeed *= 0.5
+	end
 
 	-- Recalculé chaque frame : ApplyStageStats change l'échelle du personnage donc sa masse.
 	vectorForce.Force = Vector3.new(0, workspace.Gravity * rootPart.AssemblyMass, 0)
@@ -100,7 +117,9 @@ RunService.RenderStepped:Connect(function()
 		elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then -1
 		else 0
 	local horizontal = humanoid.MoveDirection * flightSpeed
-	linearVelocity.VectorVelocity = horizontal + Vector3.new(0, ascend * flightSpeed * VERTICAL_SPEED_FACTOR, 0)
+	-- Vents forts d'automne : poussent les insectes en vol (GDD §4).
+	local wind = (workspace:GetAttribute("WindVector") :: Vector3?) or Vector3.zero
+	linearVelocity.VectorVelocity = horizontal + wind + Vector3.new(0, ascend * flightSpeed * VERTICAL_SPEED_FACTOR, 0)
 	linearVelocity.Enabled = true
 
 	-- Atterrissage naturel : pieds au sol et pas de tentative de montée => on referme le vol.

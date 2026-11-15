@@ -14,6 +14,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local AbilityCatalog = require(ReplicatedStorage.shared.AbilityCatalog)
+local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
 
 local DamageService = {}
@@ -23,7 +24,14 @@ export type DamageSource = {
 	AbilityId: string?,
 	IgnoreArmor: boolean?,
 	FromBehind: boolean?, -- requis pour blesser un animal avec FrontInvulnerable=true (ex: Crabe)
+	IsDamageOverTime: boolean?, -- poison/saignement : ne réinitialise pas l'attribution du kill
+	Quiet: boolean?, -- dégâts en continu (prise) : petit chiffre côté client, sans flash ni secousse
 }
+
+local fxRemote: RemoteEvent? = nil
+
+-- Multiplicateur de dégâts reçus d'une cible "marquée" par un Frelon (MarquagePheromoneCible).
+local MARKED_DAMAGE_MULTIPLIER = 1.25
 
 local function isSameFamily(attackerPlayer: Player, victimPlayer: Player): boolean
 	local attackerFamily = attackerPlayer:GetAttribute("FamilyId")
@@ -85,7 +93,33 @@ function DamageService.ApplyDamage(victimCharacter: Model, rawAmount: number, so
 		end
 	end
 
-	humanoid:TakeDamage(math.max(0, amount))
+	-- Armure active temporaire (ex: Coccinelle "RepliSousCarapace") posée en attribut par
+	-- CombatService : lue ici sans require pour garder ce module sans dépendance de service.
+	local activeArmor = victimCharacter:GetAttribute("ActiveArmor") :: number?
+	if activeArmor and not resolvedSource.IgnoreArmor then
+		amount *= (1 - math.clamp(activeArmor, 0, 0.9))
+	end
+	if victimCharacter:GetAttribute("Marked") == true then
+		amount *= MARKED_DAMAGE_MULTIPLIER
+	end
+
+	if resolvedSource.AttackerUserId then
+		victimCharacter:SetAttribute("LastAttackerUserId", resolvedSource.AttackerUserId)
+		if not resolvedSource.IsDamageOverTime then
+			victimCharacter:SetAttribute("LastAttackAt", os.clock())
+		end
+	end
+
+	amount = math.max(0, amount)
+	humanoid:TakeDamage(amount)
+	if amount > 0 then
+		-- Chiffre de dégâts + flash d'impact rendus par les clients (CombatFxController).
+		if not fxRemote then
+			fxRemote = Remotes.Get("CombatFx")
+		end
+		local quiet = resolvedSource.IsDamageOverTime == true or resolvedSource.Quiet == true
+		;(fxRemote :: RemoteEvent):FireAllClients("Hit", victimCharacter, amount, resolvedSource.AttackerUserId or 0, quiet)
+	end
 	return true
 end
 

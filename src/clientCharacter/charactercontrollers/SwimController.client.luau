@@ -134,6 +134,13 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	vectorForce.Enabled = true
 
 	local swimSpeed = (if species then species.WalkSpeed else 16) * SWIM_SPEED_FACTOR
+	if character:GetAttribute("Status_Stun") == true or player:GetAttribute("IsGrabbed") == true then
+		swimSpeed = 0
+	elseif character:GetAttribute("Status_Glue") == true then
+		swimSpeed *= 0.25
+	elseif character:GetAttribute("Status_Slow") == true then
+		swimSpeed *= 0.5
+	end
 	local ascend = if UserInputService:IsKeyDown(Enum.KeyCode.Space)
 		then 1
 		elseif UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then -1

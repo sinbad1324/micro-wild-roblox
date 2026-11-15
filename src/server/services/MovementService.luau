@@ -39,6 +39,9 @@ function MovementService.SetBaseJumpPower(player: Player, jumpPower: number)
 	baseJumpPower[player] = jumpPower
 	local humanoid = getHumanoid(player)
 	if humanoid then
+		-- Les places récentes utilisent JumpHeight par défaut : sans ça JumpPower est ignoré et un
+		-- Oeuf/Cocon (JumpPower 0) pourrait encore sauter.
+		humanoid.UseJumpPower = true
 		humanoid.JumpPower = jumpPower
 	end
 end

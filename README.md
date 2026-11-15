@@ -6,56 +6,98 @@ Un jeu de survie, d'évolution et de PvP à l'échelle microscopique sur **Roblo
 
 ---
 
+## ▶️ Lancer le jeu dans Roblox Studio
+
+1. Installer les outils du projet : `aftman install` (installe Rojo 7.7.1).
+2. Lancer le serveur de synchronisation : `rojo serve` (à la racine du projet).
+3. Dans Roblox Studio : plugin **Rojo** → *Connect*, puis **Play**.
+4. Tout le contenu (carte, arbre, mare, animaux, insectes, nids) est généré en code au démarrage :
+   aucun asset à importer. Pour la sauvegarde des Points d'Évolution, activer
+   *Game Settings → Security → Enable Studio Access to API Services* (sinon le jeu tourne sans sauvegarde).
+
+### 🖼️ Galerie 3D (tous les modèles en exemple)
+
+* **En jeu** : une galerie est construite à l'ouest de la carte (marcher vers l'ouest depuis le spawn, ou mode **Run (F8)** + caméra libre). Désactivable avec `SHOWCASE_IN_GAME = false` dans `GameConstants`.
+* **En mode édition** (pour garder les modèles dans la place, sans lancer le jeu) : Rojo connecté, puis dans la *Command Bar* de Studio :
+  `require(game.ServerScriptService.services.ShowcaseService).Build()` — et `.Clear()` pour l'effacer.
+
+## 🎮 Commandes
+
+| Touche | Action |
+| :--- | :--- |
+| **Clic gauche** | Morsure / coup de griffe (ou morsure spéciale de l'espèce : venin, mâchoires...) |
+| **E / R** | Pouvoirs de l'espèce (acide, toile, flash, camouflage, cri sonique, charge...) — adulte |
+| **F** | Agripper une proie plus petite (QTE : la proie martèle **Espace**) — appuyer à nouveau pour lâcher |
+| **C** (maintenir) | Creuser là où regarde la caméra (espèces fouisseuses) |
+| **G** | Manger / Boire (approcher une nourriture, une goutte, la berge, une carcasse) |
+| **T** | Transporter la nourriture / un morceau de carcasse jusqu'au nid |
+| **Espace** | Sauter, puis décoller (volants adultes) ; monter en vol / à la nage. **Ctrl** pour descendre |
+
+## ✅ Systèmes implémentés
+
+* **Cycle de vie** Œuf → Larve → Cocon (holométaboles) ou Mues (hémimétaboles) → Adulte, retour à l'œuf à la mort.
+* **Menu de spawn** : choix parmi les 30 espèces, ou naissance dans le nid d'une Maman joueuse (on hérite de son espèce).
+* **Modèles 3D procéduraux des 30 insectes** (+ œuf, larves, chenille, nymphes aquatiques, fourreau de phrygane, cocon/chrysalide) et **mutations rares** (Albinos, Mélanique, Dorée, Néon, Arc-en-ciel).
+* **Survie** : faim (régime), soif (rosée, flaques, mare), température (abris, galeries, nids chauds), oxygène.
+* **Combat & chasse** : morsure, pouvoirs actifs E/R/F de chaque espèce via 11 primitives (quelques passifs restent à brancher : Vie souterraine de la larve de cigale, Nage sur le dos, Enfouissement dans le sable), agrippement + QTE, statuts (poison, glu, étourdissement, aveuglement, contrôles inversés), esquive passive, ailes toxiques.
+* **Nids & colonies** : fourmilière, termitière, ruche, nid de papier, toile, oothèque, cloche de plongée ; réserve de nourriture partagée, larves nourries au nid, pas de tir ami en famille, icônes de famille ; nids sauvages (IA).
+* **Creusement** de galeries dans le Terrain (touche C) — un tunnel est un abri.
+* **5 animaux géants** avec IA, nids/terriers et carcasses : Oiseau (piqué, nid géant), Caméléon (langue-grappin, terrier), Poisson Rouge (aspiration, saut, alevins, cuvettes de frai), Crabe (blindé de face, terrier), Écureuil (tremblements, miettes, caches enterrées).
+* **Carcasses** en 4 étapes (fraîche → putréfaction → champignons → squelette-abri) et **Festin de Kaiju**.
+* **4 saisons visibles** : pluie et bombes d'eau, rosée, flaques qui sèchent l'été, feuilles mortes, fruits qui tombent, vent, neige, mare gelée.
+* **Progression** : Points d'Évolution, kills, classement (leaderstats), sauvegarde DataStore.
+
 ## 📁 Structure Rojo du Projet (Identique à `Battelgrounds`)
 
 ```text
 micro-wild-roblox/
 ├── default.project.json                      # Configuration Rojo
-├── wally.toml                                # Gestionnaire de packages Wally
-├── Packages/                                 # ReplicatedStorage.shared.packages
-├── ServerPackages/                           # ServerScriptService.serverPackages
-├── docs/
-│   └── GAME_DESIGN_DOCUMENT.md               # Fiche complète du projet
+├── wally.toml / aftman.toml                  # Packages / outils
+├── docs/GAME_DESIGN_DOCUMENT.md              # Fiche complète du projet
 └── src/
     ├── shared/                               # ReplicatedStorage.shared
-    │   ├── InsectData.luau                   # Les 30 insectes, régimes, stats et pouvoirs
-    │   ├── AnimalData.luau                   # Les 5 animaux géants (Oiseau, Caméléon, Poisson, Crabe, Écureuil)
-    │   └── SeasonConfig.luau                 # Configuration des 4 saisons et températures
+    │   ├── InsectData.luau                   # Les 30 insectes : régime, stats, pouvoirs
+    │   ├── InsectBodyPlans.luau              # Morphologie 3D des 30 insectes + larves + mutations
+    │   ├── AbilityCatalog.luau               # 75 pouvoirs classés en 11 primitives
+    │   ├── AnimalData.luau                   # Les 5 animaux géants
+    │   ├── FoodData.luau                     # Qui peut manger quoi
+    │   ├── SeasonConfig.luau                 # Les 4 saisons
+    │   └── Remotes.luau                      # Contrat réseau (RemoteEvents)
     ├── server/                               # ServerScriptService
-    │   ├── bootstrap/
-    │   │   └── ServerBootstrap.server.luau   # Point d'entrée serveur
-    │   ├── constant/
-    │   │   └── GameConstants.luau            # Constantes de survie et paliers d'évolution
-    │   ├── data/
-    │   │   └── PlayerDataRepository.luau     # Attributs et données des joueurs
-    │   ├── domain/
-    │   │   └── EvolutionDomain.luau          # Logique métier : Œuf -> Larve -> Cocon/Mue -> Adulte
+    │   ├── bootstrap/ServerBootstrap.server.luau   # Ordre de démarrage des services
+    │   ├── constant/GameConstants.luau
+    │   ├── data/PlayerDataRepository.luau
+    │   ├── domain/EvolutionDomain.luau       # Stades + SetStage (stats + corps 3D)
     │   ├── services/
-    │   │   ├── SurvivalService.luau          # Faim, Soif, Température, Oxygène
-    │   │   ├── GrowthAndNestService.luau     # Système de Maman/Nid et Croissance
-    │   │   └── SeasonService.luau            # Cycle des 4 saisons
-    │   ├── types/
-    │   │   └── ServerTypes.luau              # Types Luau serveur
-    │   └── utils/
-    │       └── MathUtils.luau                # Fonctions utilitaires
+    │   │   ├── WorldGenerationService.luau   # Carte : Chêne, Mare, Prairie, Souche, Rochers
+    │   │   ├── SeasonService.luau / SeasonVisualService.luau  # Cycle + effets des saisons
+    │   │   ├── SurvivalService.luau          # Faim, Soif, Température, Oxygène, jour/nuit
+    │   │   ├── GrowthAndNestService.luau     # Croissance, nids 3D, nids IA, laisse des larves
+    │   │   ├── FoodService.luau              # Manger / boire / transporter / nourrir le nid
+    │   │   ├── CombatService.luau            # Morsure, pouvoirs, agrippement + QTE
+    │   │   ├── StatusEffectService.luau      # Poison, glu, étourdissement, aveuglement...
+    │   │   ├── DamageService.luau            # Point d'entrée unique des dégâts
+    │   │   ├── MovementService.luau          # Vitesse/saut (modificateurs empilables)
+    │   │   ├── DigService.luau               # Creusement du Terrain
+    │   │   ├── AnimalService.luau            # IA des 5 animaux + alevins, nids, terriers
+    │   │   ├── AnimalModels.luau             # Modèles 3D des animaux et de leurs nids
+    │   │   ├── CarcassService.luau           # Décomposition + Festin de Kaiju
+    │   │   ├── InsectVisualService.luau      # Corps 3D procéduraux des insectes
+    │   │   ├── ProgressionService.luau       # PE, kills, mutations, DataStore, leaderstats
+    │   │   ├── PlayerLifecycleService.luau   # Apparition / mort
+    │   │   └── SpawnMenuNetworkService.luau  # Choix d'espèce, nids, fondation de colonie
+    │   ├── types/ServerTypes.luau
+    │   └── utils/MathUtils.luau
     ├── client/                               # StarterPlayer.StarterPlayerScripts
-    │   ├── bootstrap/
-    │   │   └── ClientBootstrap.client.luau   # Point d'entrée client
-    │   ├── controllers/
-    │   │   └── AbilityController.luau        # Contrôles des pouvoirs (E, R) et chasse (F)
-    │   ├── managers/
-    │   │   └── UIManager.luau                # Gestionnaire d'interfaces
-    │   ├── state/
-    │   │   └── ClientState.luau              # État client
-    │   └── views/
-    │       └── SurvivalHudView.luau          # Affichage HUD (Faim, Soif, Température, Stade)
+    │   ├── bootstrap/ClientBootstrap.client.luau
+    │   ├── controllers/                      # AbilityController, StatusEffectController, MarkerController
+    │   ├── managers/UIManager.luau
+    │   ├── state/ClientState.luau
+    │   └── views/                            # HUD survie, barre de pouvoirs, menu de spawn, QTE, notifications
     ├── clientCharacter/                      # StarterPlayer.StarterCharacterScripts
-    │   ├── charactercontrollers/
-    │   │   └── WallClimbController.client.luau # Escalade 360° sur les murs, arbres et feuilles
-    │   └── characterstate/
-    │       └── CharacterState.luau           # État du personnage (grimpe, vol, nage)
-    └── starterFirst/                         # ReplicatedFirst.startFirst
-        └── LoadingScreen.client.luau         # Chargement initial
+    │   ├── charactercontrollers/             # Escalade 360°, Vol, Nage
+    │   └── characterstate/CharacterState.luau
+    └── starterFirst/LoadingScreen.client.luau  # ReplicatedFirst
 ```
 
 ---

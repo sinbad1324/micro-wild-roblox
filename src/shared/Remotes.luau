@@ -13,19 +13,27 @@ export type RemoteEventName =
 	| "RequestGrab" -- ()
 	| "RequestGrabEscape" -- (): QTE mash pendant qu'on est agrippé
 	| "RequestDig" -- (targetPosition: Vector3)
-	| "RequestEatFood" -- (foodInstance: Instance)
-	| "RequestDrink" -- (sourceInstance: Instance)
 	| "RequestCreateNest" -- ()
 	| "RequestJoinNest" -- (motherUserId: number)
 	| "RequestLeaveNest" -- ()
 	| "RequestSelectSpecies" -- (speciesId: string)
-	| "RequestCarcassInteract" -- (carcassInstance: Instance)
 	-- Diffusions serveur -> client
 	| "NestListChanged" -- ({ NestSummary })
 	| "AbilityFeedback" -- (success: boolean, reason: string?)
-	| "GrabStateChanged" -- (isGrabbed: boolean, grabberName: string?)
+	| "GrabStateChanged" -- (isGrabbed: boolean, grabberName: string?, escapePressesNeeded: number?)
 	| "NotifyClient" -- (message: string, kind: string)
 	| "KaijuFeastEvent" -- (animalName: string, position: Vector3)
+	| "AbilityCast" -- (slot: string, primitive: string, cooldown: number, range: number, extra: Vector3?): mouvement/VFX local
+	| "CameraShake" -- (intensity: number, duration: number)
+	-- VFX de combat rendus par chaque client (CombatFxController), diffusés à tous. (kind, a, b, c, d) :
+	--   "Hit"    (victim: Model, amount: number, attackerUserId: number, quiet: boolean)
+	--   "Proj"   (from: Vector3, to: Vector3, color: Color3, travelSeconds: number)
+	--   "Flash"  (position: Vector3, color: Color3, size: number)
+	--   "Cone"   (origin: Vector3, lookTimesRange: Vector3, color: Color3)
+	--   "Tele"   (caster: Model, primitive: "Lunge" | "Leap", lookTimesRange | landing: Vector3)
+	--   "Web"    (web: BasePart)
+	--   "Status" (victim: Model, status: string, duration: number)
+	| "CombatFx"
 
 local Remotes = {}
 
@@ -37,21 +45,26 @@ Remotes.EventNames = {
 	"RequestGrab",
 	"RequestGrabEscape",
 	"RequestDig",
-	"RequestEatFood",
-	"RequestDrink",
 	"RequestCreateNest",
 	"RequestJoinNest",
 	"RequestLeaveNest",
 	"RequestSelectSpecies",
-	"RequestCarcassInteract",
 	"NestListChanged",
 	"AbilityFeedback",
 	"GrabStateChanged",
 	"NotifyClient",
 	"KaijuFeastEvent",
+	"AbilityCast",
+	"CameraShake",
+	"CombatFx",
 }
 
 function Remotes.GetFolder(): Folder
+	-- Côté client, ne JAMAIS créer le dossier : un dossier local vide masquerait celui du serveur
+	-- (pas encore répliqué) et chaque Remotes.Get échouerait après 15 s.
+	if game:GetService("RunService"):IsClient() then
+		return ReplicatedStorage:WaitForChild(Remotes.FolderName) :: Folder
+	end
 	local folder = ReplicatedStorage:FindFirstChild(Remotes.FolderName)
 	if not folder then
 		folder = Instance.new("Folder")

@@ -119,7 +119,8 @@ local AbilityCatalog: { [string]: AbilityDefinition } = {
 	Vol360Stationnaire = Def("Utility", "Passive", 0, 1, 0, 0, "Vol avant/arrière/latéral à très haute vitesse."),
 	InterceptionAerienne = Def("Grab", "F", 7, 20, 10, 0, "Capture les insectes en plein vol."),
 
-	AilesToxiques = Def("ArmorBuff", "Passive", 0, 1, 0, 0, "Tout prédateur qui mord ce papillon subit du poison en retour.", "Poison", 6, 0.3),
+	-- Utility (pas ArmorBuff) : sinon Power=1 compterait comme -75% de dégâts passifs.
+	AilesToxiques = Def("Utility", "Passive", 0, 0, 0, 0, "Tout prédateur qui mord ce papillon subit du poison en retour.", "Poison", 6, 0.3),
 	CourantAscendant = Def("Utility", "R", 12, 1.4, 0, 6, "Endurance de vol immense, plane sans dépense d'énergie."),
 
 	SuccionDeSangXP = Def("StatusBite", "F", 8, 10, 4, 0, "Boit le sang d'un animal géant ou gros insecte pour un boost d'XP.", "Bleed", 4, 0.2),

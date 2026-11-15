@@ -9,6 +9,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
 local MovementService = require(ServerScriptService.services.MovementService)
+local InsectVisualService = require(ServerScriptService.services.InsectVisualService)
 local ServerTypes = require(ServerScriptService.types.ServerTypes)
 
 local EvolutionDomain = {}
@@ -50,39 +51,104 @@ function EvolutionDomain.ShouldTriggerMolt(speciesId: string, previousGrowth: nu
 	return false
 end
 
-function EvolutionDomain.ApplyStageStats(player: Player, character: Model, speciesId: string, stage: ServerTypes.StageType)
-	local humanoid = character:FindFirstChildOfClass("Humanoid")
-	if not humanoid then
-		return
-	end
+-- Transition de stade : l'échelle est interpolée par paliers (pas de tween par frame côté serveur),
+-- l'ancien corps grossit/rétrécit puis le nouveau corps est construit à la fin.
+local STAGE_TWEEN_SECONDS = 0.9
+local STAGE_TWEEN_STEPS = 8
+local STAGE_TOKEN_ATTRIBUTE = "StageToken" -- sur le personnage : invalide une transition remplacée
 
+-- Échelle du personnage pour un stade. Une larve grossit avec sa croissance : les espèces à mues
+-- grandissent ainsi visiblement à chaque mue au lieu de passer d'un coup de 0.45 à 1.
+function EvolutionDomain.GetStageScale(stage: ServerTypes.StageType, growth: number): number
+	if stage == "Oeuf" then
+		return 0.25
+	elseif stage == "Cocon" then
+		return 0.6
+	elseif stage == "Adulte" then
+		return 1.0
+	end
+	local thresholds = GameConstants.STAGE_THRESHOLDS
+	local alpha = math.clamp((growth - thresholds.LARVE) / (thresholds.ADULTE - thresholds.LARVE), 0, 1)
+	return 0.45 + 0.25 * alpha
+end
+
+-- Vitesse, saut et vie du stade (sans toucher à l'échelle).
+local function applyStats(player: Player, humanoid: Humanoid, speciesId: string, stage: ServerTypes.StageType)
 	local species = InsectData[speciesId] or InsectData[GameConstants.DEFAULT_SPECIES]
 
 	if stage == "Oeuf" then
 		MovementService.SetBaseWalkSpeed(player, 0)
 		MovementService.SetBaseJumpPower(player, 0)
-		character:ScaleTo(0.25)
 	elseif stage == "Larve" then
 		MovementService.SetBaseWalkSpeed(player, math.max(6, species.WalkSpeed * 0.4))
 		MovementService.SetBaseJumpPower(player, 15)
-		character:ScaleTo(0.45)
 	elseif stage == "Mue" then
 		-- Carapace molle qui vient de muer : un peu plus rapide qu'une larve, mais toujours
 		-- très vulnérable (voir DamageService.MOLT_DAMAGE_MULTIPLIER).
 		MovementService.SetBaseWalkSpeed(player, math.max(6, species.WalkSpeed * 0.5))
 		MovementService.SetBaseJumpPower(player, 10)
-		character:ScaleTo(0.55)
 	elseif stage == "Cocon" then
 		MovementService.SetBaseWalkSpeed(player, 0)
 		MovementService.SetBaseJumpPower(player, 0)
-		character:ScaleTo(0.6)
 	elseif stage == "Adulte" then
-		MovementService.SetBaseWalkSpeed(player, species.WalkSpeed)
+		-- Passif "Sprint ondulant" : vitesse de base augmentée (ex: Scolopendre).
+		local sprint = if table.find(species.Abilities, "SprintOndulant") then 1.3 else 1
+		MovementService.SetBaseWalkSpeed(player, species.WalkSpeed * sprint)
 		MovementService.SetBaseJumpPower(player, 50)
-		character:ScaleTo(1.0)
 		humanoid.MaxHealth = species.MaxHealth
 		humanoid.Health = species.MaxHealth
 	end
+end
+
+-- Stats + échelle appliquées d'un coup (API historique ; SetStage gère la transition douce).
+function EvolutionDomain.ApplyStageStats(player: Player, character: Model, speciesId: string, stage: ServerTypes.StageType)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid then
+		return
+	end
+	applyStats(player, humanoid, speciesId, stage)
+	character:ScaleTo(EvolutionDomain.GetStageScale(stage, (player:GetAttribute("Growth") :: number?) or 0))
+end
+
+-- Point d'entrée UNIQUE pour changer de stade : attribut + stats + corps 3D. Sans le visuel, un
+-- joueur resterait un oeuf à l'écran pour toujours (ApplyVisual ne tournait qu'au spawn).
+-- Cède ~1 s pendant la transition d'échelle (appeler via task.spawn dans une boucle) ; `instant`
+-- = vrai pour un corps neuf (apparition, choix d'espèce) : pas de transition, pas d'attente.
+function EvolutionDomain.SetStage(player: Player, speciesId: string, stage: ServerTypes.StageType, instant: boolean?)
+	player:SetAttribute("Stage", stage)
+	local character = player.Character
+	if not character then
+		return
+	end
+	-- Un nouvel appel (mue qui se termine, mutation tirée...) remplace la transition en cours.
+	local token = ((character:GetAttribute(STAGE_TOKEN_ATTRIBUTE) :: number?) or 0) + 1
+	character:SetAttribute(STAGE_TOKEN_ATTRIBUTE, token)
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		applyStats(player, humanoid, speciesId, stage)
+	end
+
+	local targetScale = EvolutionDomain.GetStageScale(stage, (player:GetAttribute("Growth") :: number?) or 0)
+	local startScale = character:GetScale()
+	if not instant and character:FindFirstChild("InsectVisual") and math.abs(targetScale - startScale) > 0.02 then
+		for step = 1, STAGE_TWEEN_STEPS - 1 do
+			local remaining = 1 - step / STAGE_TWEEN_STEPS
+			character:ScaleTo(startScale + (targetScale - startScale) * (1 - remaining * remaining))
+			task.wait(STAGE_TWEEN_SECONDS / STAGE_TWEEN_STEPS)
+			if character.Parent == nil or character:GetAttribute(STAGE_TOKEN_ATTRIBUTE) ~= token then
+				return
+			end
+		end
+	end
+
+	-- Détruit l'ancien corps AVANT le ScaleTo final (une passe de redimensionnement en moins).
+	local oldVisual = character:FindFirstChild("InsectVisual")
+	if oldVisual then
+		oldVisual:Destroy()
+	end
+	character:ScaleTo(targetScale)
+	InsectVisualService.ApplyVisual(character, speciesId, stage, player:GetAttribute("Mutation") :: string?)
 end
 
 return EvolutionDomain

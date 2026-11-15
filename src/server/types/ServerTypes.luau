@@ -11,6 +11,8 @@ export type NestData = {
 	Position: Vector3,
 	StoredFood: number,
 	Children: { Player },
+	Model: Model?, -- modèle 3D du nid (fourmilière, ruche, toile...)
+	Style: string?, -- nom affiché du type de nid
 }
 
 export type NestSummary = {
