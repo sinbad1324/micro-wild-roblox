@@ -120,9 +120,7 @@ local function ellipsoid(b: Builder, name: string, size: Vector3, cf: CFrame, co
 	part.CFrame = cf
 	part.Color = color
 	part.Material = material or Enum.Material.SmoothPlastic
-	local mesh = Instance.new("SpecialMesh")
-	mesh.MeshType = Enum.MeshType.Sphere
-	mesh.Parent = part
+	-- Style "blocky" Roblox : bloc à la place de la sphère (même taille, attaches inchangées).
 	weldTo(b, part)
 	return part
 end
@@ -147,8 +145,7 @@ local function limb(b: Builder, name: string, a: Vector3, c: Vector3, diameter: 
 	local up = if math.abs(delta.Unit.Y) > 0.98 then Vector3.xAxis else Vector3.yAxis
 	local part = Instance.new("Part")
 	part.Name = name
-	part.Shape = Enum.PartType.Cylinder
-	part.Size = Vector3.new(delta.Magnitude, diameter, diameter)
+	part.Size = Vector3.new(delta.Magnitude, diameter, diameter) -- bloc allongé (style blocky)
 	part.CFrame = CFrame.lookAt(a:Lerp(c, 0.5), c, up) * CFrame.Angles(0, math.rad(90), 0)
 	part.Color = color
 	part.Material = material or Enum.Material.SmoothPlastic

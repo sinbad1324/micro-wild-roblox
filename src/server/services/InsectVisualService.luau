@@ -132,11 +132,8 @@ local function addPart(ctx: Ctx, name: string, size: Vector3, localCf: CFrame, r
 	local part = Instance.new("Part")
 	part.Name = name
 	part.Size = Vector3.new(math.max(size.X, 0.05), math.max(size.Y, 0.05), math.max(size.Z, 0.05))
-	if shape == "Cylinder" then
-		part.Shape = Enum.PartType.Cylinder
-	elseif shape == "Ball" then
-		part.Shape = Enum.PartType.Ball
-	end
+	-- Style "blocky" Roblox : toutes les pièces restent des blocs (pas de sphère/cylindre), même
+	-- taille qu'avant pour que les attaches (yeux, pattes, ailes) restent alignées.
 	local color, material, reflectance = paint(ctx, role, raw)
 	part.Color = color
 	part.Material = if role == "Wing" then Enum.Material.Glass else material
@@ -150,12 +147,6 @@ local function addPart(ctx: Ctx, name: string, size: Vector3, localCf: CFrame, r
 	part.CastShadow = size.Magnitude > 0.6
 	part.CFrame = ctx.root.CFrame * localCf -- calculé AVANT le weld pour un offset correct
 	part.Parent = ctx.container
-
-	if shape == "Ellipsoid" then
-		local mesh = Instance.new("SpecialMesh")
-		mesh.MeshType = Enum.MeshType.Sphere
-		mesh.Parent = part
-	end
 
 	-- Weld avec offset explicite (C0) : indépendant de la position répliquée du root, qui peut
 	-- différer côté serveur/client pendant que le joueur bouge.
