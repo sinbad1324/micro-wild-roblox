@@ -136,18 +136,59 @@ local function isExposed(player: Player): boolean
 	return player:GetAttribute("InShelterOrColony") ~= true and not holds[player] and player:GetAttribute("IsGrabbed") ~= true
 end
 
-local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePart) -> boolean)?): (Player?, BasePart?)
-	local bestPlayer: Player? = nil
-	local bestRoot: BasePart? = nil
-	local bestDistance = range
+-- Cache des joueurs vivants (rafraîchi à 20 Hz par la boucle principale) : les IA appelées à
+-- chaque frame ne refont ni GetPlayers() (allocation) ni FindFirstChild par joueur.
+local cachedPlayers: { Player } = {}
+local cachedRoots: { BasePart } = {}
+local cachedCount = 0
+
+local function refreshPlayerCache()
+	local count = 0
 	for _, player in ipairs(Players:GetPlayers()) do
 		local root = getPlayerRoot(player)
-		if root and isExposed(player) then
+		if root then
+			count += 1
+			cachedPlayers[count] = player
+			cachedRoots[count] = root
+		end
+	end
+	for i = count + 1, cachedCount do
+		cachedPlayers[i] = nil :: any
+		cachedRoots[i] = nil :: any
+	end
+	cachedCount = count
+end
+
+-- Nombre d'autres insectes à moins de `radius` de `position` (proie isolée = 0).
+local function crowdCount(position: Vector3, radius: number, except: BasePart): number
+	local count = 0
+	for i = 1, cachedCount do
+		local root = cachedRoots[i]
+		if root ~= except and (root.Position - position).Magnitude <= radius then
+			count += 1
+		end
+	end
+	return count
+end
+
+-- `crowdPenalty` (optionnel) : studs ajoutés au score par voisin à moins de 30 studs, pour
+-- préférer une proie isolée à une proie plus proche mais entourée d'alliés.
+local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePart) -> boolean)?, crowdPenalty: number?): (Player?, BasePart?)
+	local bestPlayer: Player? = nil
+	local bestRoot: BasePart? = nil
+	local bestScore = math.huge
+	for i = 1, cachedCount do
+		local root = cachedRoots[i]
+		local player = cachedPlayers[i]
+		if root.Parent ~= nil then
 			local distance = (root.Position - origin).Magnitude
-			if distance <= bestDistance and (not filter or filter(player, root)) then
-				bestPlayer = player
-				bestRoot = root
-				bestDistance = distance
+			if distance <= range then
+				local score = if crowdPenalty then distance + crowdPenalty * crowdCount(root.Position, 30, root) else distance
+				if score <= bestScore and isExposed(player) and (not filter or filter(player, root)) then
+					bestPlayer = player
+					bestRoot = root
+					bestScore = score
+				end
 			end
 		end
 	end
@@ -158,6 +199,16 @@ end
 local excludeParams = RaycastParams.new()
 excludeParams.FilterType = Enum.RaycastFilterType.Exclude
 excludeParams.IgnoreWater = true
+
+-- Filtre { dossier Animals } réutilisé (reconstruit seulement si le dossier change).
+local folderFilter: { Instance } = {}
+local function getFolderFilter(): { Instance }
+	local folder = getFolder()
+	if folderFilter[1] ~= folder then
+		folderFilter = { folder }
+	end
+	return folderFilter
+end
 
 local function hasLineOfSight(from: Vector3, toRoot: BasePart, ignore: { Instance }): boolean
 	excludeParams.FilterDescendantsInstances = ignore
@@ -650,14 +701,15 @@ local function birdUpdate(bird: Animal, dt: number)
 		if bird.Cooldown <= 0 and now >= ((bird.Data.ScanAt :: number?) or 0) then
 			bird.Data.ScanAt = now + 0.2
 			-- Perché à ~200 studs de haut : 400 de portée = ~340 studs au sol autour du Chêne.
+			local waterLevel = workspace:GetAttribute("PondWaterLevel") :: number?
+			-- Préfère une proie isolée (+40 studs de score par voisin) : un essaim le ferait fuir.
 			local prey = findPrey(root.Position, 400, function(_player, playerRoot)
 				-- Il ne voit que ce qui BOUGE à découvert (pas sous l'eau, pas sous terre).
-				local waterLevel = workspace:GetAttribute("PondWaterLevel") :: number?
 				if waterLevel and playerRoot.Position.Y < waterLevel then
 					return false
 				end
-				return playerRoot.AssemblyLinearVelocity.Magnitude > 2 and hasLineOfSight(root.Position, playerRoot, { getFolder() })
-			end)
+				return playerRoot.AssemblyLinearVelocity.Magnitude > 2 and hasLineOfSight(root.Position, playerRoot, getFolderFilter())
+			end, 40)
 			if prey then
 				bird.Mode = "Dive"
 				bird.Prey = prey
@@ -666,7 +718,8 @@ local function birdUpdate(bird: Animal, dt: number)
 			end
 		end
 		if bird.Timer <= 0 then
-			if rng:NextNumber() < 0.25 then
+			-- Endormi (aucun joueur proche) : pas de cueillette, donc pas de raycast au sol.
+			if rng:NextNumber() < 0.25 and not bird.Data.Asleep then
 				-- Va chercher des brindilles au sol (fenêtre de vulnérabilité pour un essaim).
 				local angle = rng:NextNumber() * math.pi * 2
 				local distance = rng:NextNumber(CANOPY_RADIUS, CANOPY_RADIUS + 220)
@@ -1097,13 +1150,13 @@ local function fryUpdate(fry: Animal, dt: number)
 	if fry.Model:GetAttribute("GrabbedBy") ~= nil then
 		return -- tenu dans les pattes d'un prédateur
 	end
-	local y = waterLevel - rng:NextNumber(2.5, 5)
 	-- Fuit les insectes qui s'approchent, sinon nage en banc autour d'un point commun.
 	local threat: Vector3? = nil
-	for _, player in ipairs(Players:GetPlayers()) do
-		local root = getPlayerRoot(player)
-		if root and (root.Position - fry.Root.Position).Magnitude < 9 then
-			threat = root.Position
+	local fryPosition = fry.Root.Position
+	for i = 1, cachedCount do
+		local position = cachedRoots[i].Position
+		if (position - fryPosition).Magnitude < 9 then
+			threat = position
 			break
 		end
 	end
@@ -1121,6 +1174,7 @@ local function fryUpdate(fry: Animal, dt: number)
 	fry.Timer -= dt
 	if not fry.Goal or fry.Timer <= 0 then
 		local school = AnimalService.SchoolCenter or center
+		local y = waterLevel - rng:NextNumber(2.5, 5)
 		fry.Goal = Vector3.new(
 			math.clamp(school.X + rng:NextNumber(-6, 6), center.X - size.X / 2 + 2, center.X + size.X / 2 - 2),
 			y,
@@ -1202,6 +1256,26 @@ local function crabUpdate(crab: Animal, dt: number)
 	crab.Timer -= dt
 	local root = crab.Root
 
+	-- Blessé (20 % de sa vie en 6 s) : rentre se terrer au fond de son terrier.
+	local den = crab.Data.Den :: Vector3?
+	if den and crab.Mode ~= "Retreat" and crab.Mode ~= "Hide" and recentDamage(crab, 6) >= crab.Humanoid.MaxHealth * 0.2 then
+		crab.Mode = "Retreat"
+		crab.Timer = 20
+		crab.Data.PauseUntil = nil
+	end
+	if crab.Mode == "Retreat" and den then
+		local travel = den - root.Position
+		local flatTravel = Vector3.new(travel.X, 0, travel.Z)
+		local sideways = if flatTravel.Magnitude > 0.1 then Vector3.yAxis:Cross(flatTravel.Unit) else root.CFrame.LookVector
+		-- Fuite sans se retourner : il ne se défend qu'une fois à l'abri.
+		if moveToward(crab, den, 11, dt, sideways) or crab.Timer <= 0 then
+			crab.Mode = "Hide"
+			crab.Timer = rng:NextNumber(12, 20)
+			crab.Goal = nil
+		end
+		return
+	end
+
 	-- Fait face à l'intrus le plus proche : sa carapace frontale est impénétrable (GDD §6.4).
 	local threat, threatRoot = findPrey(root.Position, 26, nil)
 	if threat and threatRoot then
@@ -1217,9 +1291,17 @@ local function crabUpdate(crab: Animal, dt: number)
 			end
 		end
 		local inFront = flat.Magnitude > 0.1 and root.CFrame.LookVector:Dot(flat.Unit) > 0.55
-		if crab.Cooldown <= 0 and inFront and flat.Magnitude <= 14 and hasLineOfSight(root.Position, threatRoot, { getFolder() }) then
+		if crab.Cooldown <= 0 and inFront and flat.Magnitude <= 14 and hasLineOfSight(root.Position, threatRoot, getFolderFilter()) then
 			crab.Cooldown = 2.5
 			hitPlayer(threat, AnimalData.Crabe.AttackDamage, flat.Unit * 70 + Vector3.new(0, 35, 0), "Les pinces du crabe vous broient !")
+		end
+		return
+	end
+
+	if crab.Mode == "Hide" then
+		-- Terré : garde l'entrée (pinces face aux intrus ci-dessus) puis reprend sa patrouille.
+		if crab.Timer <= 0 then
+			crab.Mode = "Idle"
 		end
 		return
 	end
@@ -1285,14 +1367,17 @@ local function spawnCrab()
 		Vector3.new(center.X - size.X / 2 - 3, bank, center.Z + size.Z * 0.3),
 		Vector3.new(center.X - size.X * 0.3, bank, center.Z + size.Z / 2 + 3),
 	}
+	local denPoint: Vector3? = nil
 	if crabDen then
-		table.insert(patrol, (crabDen :: Vector3) - Vector3.new(0, 4 - legOffset, 0))
+		denPoint = (crabDen :: Vector3) - Vector3.new(0, 4 - legOffset, 0)
+		table.insert(patrol, denPoint :: Vector3)
 	end
 	local info = AnimalData.Crabe
 	local model = AnimalModels.BuildCrab(info.MaxHealth)
 	model:SetAttribute("FrontInvulnerable", true)
 	local crab = register("Crabe", model, CFrame.new(patrol[3]), true, 5, 420, 11, crabUpdate, spawnCrab)
 	crab.Data.Patrol = patrol
+	crab.Data.Den = denPoint
 	crab.Data.TurnRate = 2
 end
 
@@ -1303,7 +1388,9 @@ end
 local dreyCenter: Vector3? = nil
 local SQUIRREL_LEG_OFFSET = 9
 
-local function shakeTreeClimbers(landing: Vector3)
+-- Retourne le nombre d'insectes secoués de la branche.
+local function shakeTreeClimbers(landing: Vector3): number
+	local knocked = 0
 	local remote = Remotes.Get("CameraShake")
 	for _, player in ipairs(Players:GetPlayers()) do
 		local root = getPlayerRoot(player)
@@ -1314,6 +1401,7 @@ local function shakeTreeClimbers(landing: Vector3)
 				remote:FireClient(player, 1.4, 0.9)
 				-- Les insectes accrochés près de l'impact sont secoués et tombent.
 				if (root.Position - landing).Magnitude < 24 then
+					knocked += 1
 					knockback(player, (if flat.Magnitude > 0.1 then flat.Unit else Vector3.xAxis) * 35 + Vector3.new(0, 15, 0))
 					notify(player, "L'écureuil fait trembler la branche !", "warning")
 				end
@@ -1322,6 +1410,17 @@ local function shakeTreeClimbers(landing: Vector3)
 			end
 		end
 	end
+	return knocked
+end
+
+-- Un insecte se trouve-t-il à moins de 24 studs du point d'atterrissage ?
+local function playerNear(position: Vector3): boolean
+	for i = 1, cachedCount do
+		if (cachedRoots[i].Position - position).Magnitude < 24 then
+			return true
+		end
+	end
+	return false
 end
 
 local function startHop(squirrel: Animal, to: Vector3, duration: number, height: number)
@@ -1351,7 +1450,8 @@ local function squirrelUpdate(squirrel: Animal, dt: number)
 		settleUpright(squirrel, dt, nil) -- se redresse après la réception d'un bond
 		if squirrel.Timer <= 0 then
 			local onGround = squirrel.Root.Position.Y < GROUND_Y + 20
-			local roll = rng:NextNumber()
+			-- Endormi : ni fouille au sol ni noix (pas de raycast ni de miettes que personne ne voit).
+			local roll = if squirrel.Data.Asleep then 1 else rng:NextNumber()
 			if onGround then
 				-- Remonte dans l'arbre.
 				startHop(squirrel, tips[rng:NextInteger(1, #tips)] + Vector3.new(0, SQUIRREL_LEG_OFFSET, 0), 2.6, 30)
@@ -1376,11 +1476,18 @@ local function squirrelUpdate(squirrel: Animal, dt: number)
 				end
 				squirrel.Timer = rng:NextNumber(3, 6)
 			else
-				local candidates = { dreyCenter or tips[1] }
-				for _, tip in ipairs(tips) do
-					table.insert(candidates, tip)
+				local candidates = squirrel.Data.Candidates :: { Vector3 }
+				local target = candidates[rng:NextInteger(1, #candidates)] + Vector3.new(0, SQUIRREL_LEG_OFFSET, 0)
+				-- Vient de secouer des insectes : évite de rebondir encore sur une branche occupée.
+				if ((squirrel.Data.LastKnocked :: number?) or 0) > 0 then
+					for _ = 1, 4 do
+						if not playerNear(target) then
+							break
+						end
+						target = candidates[rng:NextInteger(1, #candidates)] + Vector3.new(0, SQUIRREL_LEG_OFFSET, 0)
+					end
 				end
-				startHop(squirrel, candidates[rng:NextInteger(1, #candidates)] + Vector3.new(0, SQUIRREL_LEG_OFFSET, 0), 1.6, 18)
+				startHop(squirrel, target, 1.6, 18)
 			end
 		end
 	elseif mode == "Hop" then
@@ -1399,7 +1506,7 @@ local function squirrelUpdate(squirrel: Animal, dt: number)
 		local pitch = math.clamp(math.atan2(rise, math.max(flat.Magnitude, 1)) * 0.6, -0.6, 0.6) * math.min(1, t * 6)
 		squirrel.Root.CFrame = CFrame.new(position) * fromRotation:Lerp(yaw, math.min(1, t * 4)) * CFrame.Angles(pitch, 0, 0)
 		if squirrel.Timer <= 0 then
-			shakeTreeClimbers(to)
+			squirrel.Data.LastKnocked = shakeTreeClimbers(to)
 			local cache = squirrel.Data.Cache :: Vector3?
 			if cache and (to - cache).Magnitude < SQUIRREL_LEG_OFFSET + 3 then
 				squirrel.Mode = "Dig"
@@ -1434,6 +1541,12 @@ local function spawnSquirrel()
 	local model = AnimalModels.BuildSquirrel(info.MaxHealth)
 	local squirrel = register("Ecureuil", model, CFrame.new(start), true, 6, 300, 9, squirrelUpdate, spawnSquirrel)
 	squirrel.Data.Tips = tips
+	-- Cibles de bond pré-calculées (pas de table allouée à chaque saut).
+	local candidates = { dreyCenter or tips[1] }
+	for _, tip in ipairs(tips) do
+		table.insert(candidates, tip)
+	end
+	squirrel.Data.Candidates = candidates
 end
 
 -- ============================================================
@@ -1509,39 +1622,55 @@ function AnimalService.Start()
 		end
 	end)
 
-	-- Les Roots ancrées ne sont pas interpolées par les clients : un animal proche d'un joueur est
-	-- mis à jour à chaque frame (mouvement fluide), les autres restent à 20 Hz.
+	-- Les Roots ancrées ne sont pas interpolées par les clients : un grand animal proche d'un joueur
+	-- est mis à jour à chaque frame (mouvement fluide), les alevins proches à 30 Hz, les animaux à
+	-- portée moyenne à 20 Hz ; sans joueur à moins de AWAKE_RANGE, l'animal "dort" à 1 Hz (aucune
+	-- proie possible donc aucun raycast de chasse, et ~20x moins de CFrame répliqués).
 	local NEAR_RANGE = 350
+	local AWAKE_RANGE = 400
+	local FRY_NEAR_TICK = 1 / 30
+	local SLEEP_TICK = 1
 	local accumulator = 0
+	refreshPlayerCache()
 	RunService.Heartbeat:Connect(function(deltaTime)
 		accumulator += deltaTime
-		local slowDt = accumulator
 		local isTick = accumulator >= TICK
 		if isTick then
 			accumulator = 0
+			refreshPlayerCache()
 		end
-		local players = if isTick then Players:GetPlayers() else nil
 		for i = #animals, 1, -1 do
 			local animal = animals[i]
 			if animal and animal.Mode ~= "Dead" and animal.Model.Parent then
-				local near = animal.Data.Near == true
-				local dt = if near then deltaTime elseif isTick then slowDt else 0
-				if players then
-					-- Proximité réévaluée à 20 Hz, après le choix du dt (pas de temps compté deux fois).
+				local data = animal.Data
+				if isTick then
+					-- Proximité réévaluée à 20 Hz (distance au joueur le plus proche).
 					local position = animal.Root.Position
-					local isNear = false
-					for _, player in ipairs(players) do
-						local playerRoot = getPlayerRoot(player)
-						if playerRoot and (playerRoot.Position - position).Magnitude <= NEAR_RANGE then
-							isNear = true
-							break
+					local nearest = math.huge
+					for p = 1, cachedCount do
+						local distance = (cachedRoots[p].Position - position).Magnitude
+						if distance < nearest then
+							nearest = distance
 						end
 					end
-					animal.Data.Near = isNear
+					data.Near = nearest <= NEAR_RANGE
+					data.Asleep = nearest > AWAKE_RANGE
 				end
-				if dt <= 0 then
+				-- Temps propre à chaque animal : changer de palier ne compte jamais deux fois le même dt.
+				-- Départ aléatoire : les réveils à 1 Hz ne tombent pas tous sur la même frame. Phase négative :
+				-- le décalage compte comme attente, jamais comme du temps écoulé (pas de saut au spawn).
+				local elapsed = ((data.Elapsed :: number?) or -rng:NextNumber() * SLEEP_TICK) + deltaTime
+				-- Un géant endormi reste visible de loin : 10 Hz au lieu de 1 Hz (ses raycasts dorment déjà).
+				local interval = if data.Asleep ~= false
+					then (if animal.Giant then TICK * 2 else SLEEP_TICK)
+					elseif data.Near then (if animal.Giant then 0 else FRY_NEAR_TICK)
+					else TICK
+				if elapsed < interval then
+					data.Elapsed = elapsed
 					continue
 				end
+				data.Elapsed = 0
+				local dt = elapsed
 				-- Une erreur dans une IA ne doit jamais figer toutes les autres.
 				local ok, err = pcall(animal.Update, animal, dt)
 				if not ok then

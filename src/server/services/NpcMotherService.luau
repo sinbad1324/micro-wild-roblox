@@ -43,6 +43,7 @@ local THINK_SECONDS = 0.1 -- décisions à 10 Hz près des joueurs
 local GROUND_RAY_SECONDS = 0.2 -- suivi du sol à 5 Hz
 local FAR_TICK_SECONDS = 1 -- IA endormie
 local PRESENCE_SECONDS = 1 -- réévaluation joueurs proches / animaux géants
+local NEAR_EXIT_FACTOR = 1.2 -- hystérésis : on ne s'endort qu'un peu au-delà de la portée d'éveil
 local FORAGE_RADIUS = 90
 local FORAGE_TIMEOUT = 45
 local FORAGE_COOLDOWN_WITH_BABIES = 15
@@ -121,6 +122,12 @@ local motherFolder: Folder? = nil
 -- Caches réévalués à PRESENCE_SECONDS (aucune allocation dans la boucle par frame).
 local playerRoots: { BasePart } = {}
 local giantRoots: { BasePart } = {}
+-- Tag "Animal" suivi par signaux (pas de GetTagged à chaque seconde).
+local animalModels: { [Model]: boolean } = {}
+-- Filtres de raycast reconstruits seulement quand personnages/dossiers changent.
+local rayFiltersDirty = true
+-- UserId -> NestId -> os.clock() de la dernière récompense pour avoir tué cette Maman.
+local lastKillReward: { [number]: { [number]: number } } = {}
 
 local landRayParams = RaycastParams.new()
 landRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -181,6 +188,11 @@ local function rebuildRayFilters()
 	local carcasses = workspace:FindFirstChild("Carcasses")
 	if carcasses then
 		table.insert(ignore, carcasses)
+	end
+	-- Corps des animaux et boules de nourriture : ne sont pas du sol (sinon la Maman monte dessus).
+	local animals = workspace:FindFirstChild("Animals")
+	if animals then
+		table.insert(ignore, animals)
 	end
 	for _, player in ipairs(Players:GetPlayers()) do
 		if player.Character then
@@ -359,7 +371,18 @@ onDeath = function(m: Mother, model: Model)
 	local killerId = model:GetAttribute("LastAttackerUserId") :: number?
 	local killer = if killerId then Players:GetPlayerByUserId(killerId) else nil
 	if killer then
-		ProgressionService.AddEvolutionPoints(killer, GameConstants.KILL_EVOLUTION_POINTS)
+		-- Anti-farm : une même Maman ne rapporte des PE à un même tueur qu'une fois par 3 réapparitions.
+		local now = os.clock()
+		local perNest = lastKillReward[killer.UserId]
+		if not perNest then
+			perNest = {}
+			lastKillReward[killer.UserId] = perNest
+		end
+		local last = perNest[m.NestId]
+		if not last or now - last >= GameConstants.NPC_MOTHER_RESPAWN_SECONDS * 3 then
+			perNest[m.NestId] = now
+			ProgressionService.AddEvolutionPoints(killer, GameConstants.KILL_EVOLUTION_POINTS)
+		end
 	end
 	m.Model = nil
 	m.Root = nil
@@ -510,27 +533,7 @@ local function think(m: Mother, now: number)
 	local nestPosition = m.Nest.Position - Vector3.new(0, 2, 0)
 	local baseSpeed = walkSpeed(m)
 
-	-- 1. Fuite : un animal géant approche (le nid sert d'abri).
-	local giantDistance = nearestGiantDistance(m.Position)
-	if m.Mode == "Flee" then
-		if giantDistance > FLEE_CLEAR_RANGE then
-			setMode(m, "Idle", now)
-			m.Timer = 0
-		else
-			m.Goal = nestPosition
-			m.Speed = baseSpeed * 1.2
-			return
-		end
-	elseif giantDistance <= FLEE_RANGE then
-		setMode(m, "Flee", now)
-		m.FoodNode = nil
-		m.Target = nil
-		m.Goal = nestPosition
-		m.Speed = baseSpeed * 1.2
-		return
-	end
-
-	-- 2. Défense de la famille.
+	-- 1. Défense de la famille (prioritaire sur la fuite : GDD §8.2).
 	if m.Mode ~= "Defend" then
 		local aggressor, leashFrom = findAggressor(m, now)
 		if aggressor then
@@ -544,6 +547,29 @@ local function think(m: Mother, now: number)
 			m.DefendFrom = leashFrom
 			m.FoodNode = nil
 		end
+	end
+
+	-- 2. Fuite : un animal géant approche. Le nid sert d'abri : y arriver met fin à la fuite
+	-- (sinon les Mamans de la mare, frôlées en continu par le poisson et le crabe, ne sortiraient jamais).
+	local giantDistance = nearestGiantDistance(m.Position)
+	-- Tout le disque du nid abrite : la petite ronde Idle ne relance pas la fuite.
+	local atNest = flatDistance(m.Position, nestPosition) <= GameConstants.NEST_RADIUS
+	if m.Mode == "Flee" then
+		if giantDistance > FLEE_CLEAR_RANGE or atNest then
+			setMode(m, "Idle", now)
+			m.Timer = now + 2
+		else
+			m.Goal = nestPosition
+			m.Speed = baseSpeed * 1.2
+			return
+		end
+	elseif m.Mode ~= "Defend" and giantDistance <= FLEE_RANGE and not atNest then
+		setMode(m, "Flee", now)
+		m.FoodNode = nil
+		m.Target = nil
+		m.Goal = nestPosition
+		m.Speed = baseSpeed * 1.2
+		return
 	end
 
 	-- 3. Comportement courant.
@@ -570,6 +596,11 @@ local function think(m: Mother, now: number)
 		if (targetRoot.Position - (m.Position + Vector3.new(0, m.HalfHeight, 0))).Magnitude <= reach and now >= m.NextBiteAt then
 			m.NextBiteAt = now + BITE_COOLDOWN
 			local species = InsectData[m.SpeciesId]
+			-- Morsure datée sur la Maman : les clients l'animent (pas de joueur attaquant à résoudre).
+			local model = m.Model
+			if model then
+				model:SetAttribute("BiteAt", now)
+			end
 			DamageService.ApplyDamage(character, (if species then species.Damage else 10) * BITE_DAMAGE_FACTOR)
 		end
 	elseif m.Mode == "Forage" then
@@ -607,7 +638,7 @@ local function think(m: Mother, now: number)
 			m.Timer = 0
 		end
 	else -- Idle
-		if now >= m.NextForageAt and needsFood(m) then
+		if now >= m.NextForageAt and giantDistance > FLEE_CLEAR_RANGE and needsFood(m) then
 			m.NextForageAt = now + (if #m.Nest.Children > 0 then FORAGE_COOLDOWN_WITH_BABIES else FORAGE_COOLDOWN_ALONE)
 			local node = findFoodNode(m)
 			if node then
@@ -680,37 +711,45 @@ local function refreshPresence()
 		end
 	end
 	table.clear(giantRoots)
-	for _, animal in ipairs(CollectionService:GetTagged("Animal")) do
+	for animal in pairs(animalModels) do
 		-- Seuls les alevins sont "Grabbable" : tout le reste est un animal géant.
-		if animal:IsA("Model") and animal:GetAttribute("Grabbable") ~= true and animal.PrimaryPart then
-			table.insert(giantRoots, animal.PrimaryPart)
+		local primary = animal.PrimaryPart
+		if primary and animal:GetAttribute("Grabbable") ~= true then
+			table.insert(giantRoots, primary)
 		end
 	end
 	local range = GameConstants.NPC_MOTHER_ACTIVE_RANGE
 	for _, m in ipairs(mothers) do
+		-- Une Maman éveillée reste éveillée jusqu'à range * NEAR_EXIT_FACTOR (pas de clignotement LOD).
+		local limit = if m.Near then range * NEAR_EXIT_FACTOR else range
 		local near = false
 		for _, root in ipairs(playerRoots) do
-			if (root.Position - m.Position).Magnitude <= range then
+			if (root.Position - m.Position).Magnitude <= limit then
 				near = true
 				break
 			end
 		end
 		m.Near = near
 	end
-	rebuildRayFilters()
+	if rayFiltersDirty then
+		rayFiltersDirty = false
+		rebuildRayFilters()
+	end
 end
 
 -- Pas de closure par frame : pcall(updateMother, m, dt, now).
 local function updateMother(m: Mother, dt: number, now: number)
 	if m.Near then
+		-- Modulo (et non remise à 0) : chaque Maman garde son décalage de phase, les raycasts et
+		-- décisions restent répartis sur des frames différentes.
 		m.ThinkAcc += dt
 		if m.ThinkAcc >= THINK_SECONDS then
-			m.ThinkAcc = 0
+			m.ThinkAcc %= THINK_SECONDS
 			think(m, now)
 		end
 		m.RayAcc += dt
 		if m.RayAcc >= GROUND_RAY_SECONDS then
-			m.RayAcc = 0
+			m.RayAcc %= GROUND_RAY_SECONDS
 			sampleGround(m, now)
 		end
 		step(m, dt)
@@ -718,8 +757,8 @@ local function updateMother(m: Mother, dt: number, now: number)
 	else
 		m.FarAcc += dt
 		if m.FarAcc >= FAR_TICK_SECONDS then
-			local elapsed = m.FarAcc
-			m.FarAcc = 0
+			local elapsed = math.min(m.FarAcc, FAR_TICK_SECONDS * 2)
+			m.FarAcc %= FAR_TICK_SECONDS
 			-- 1 raycast/s : même endormie, une Maman terrestre ne traverse pas la mare et suit le relief.
 			sampleGround(m, now)
 			think(m, now)
@@ -758,6 +797,38 @@ function NpcMotherService.GetMothers(): { { NestId: number, SpeciesId: string, D
 end
 
 function NpcMotherService.Start()
+	-- Caches tenus par signaux : animaux tagués, filtres de raycast.
+	for _, instance in ipairs(CollectionService:GetTagged("Animal")) do
+		if instance:IsA("Model") then
+			animalModels[instance] = true
+		end
+	end
+	CollectionService:GetInstanceAddedSignal("Animal"):Connect(function(instance)
+		if instance:IsA("Model") then
+			animalModels[instance] = true
+		end
+	end)
+	CollectionService:GetInstanceRemovedSignal("Animal"):Connect(function(instance)
+		animalModels[instance :: Model] = nil
+	end)
+	local function markDirty()
+		rayFiltersDirty = true
+	end
+	local function watchPlayer(player: Player)
+		player.CharacterAdded:Connect(markDirty)
+		markDirty()
+	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		watchPlayer(player)
+	end
+	Players.PlayerAdded:Connect(watchPlayer)
+	-- lastKillReward n'est pas vidé au départ : un rejoin ne doit pas remettre le compteur à zéro.
+	Players.PlayerRemoving:Connect(markDirty)
+	workspace.ChildAdded:Connect(function(child)
+		if child.Name == "Nests" or child.Name == "Carcasses" or child.Name == "NpcMothers" or child.Name == "Animals" then
+			markDirty()
+		end
+	end)
 	rebuildRayFilters()
 	local taken: { Vector3 } = { WorldLayout.SPAWN_POSITION }
 	for _, aiNest in ipairs(CollectionService:GetTagged("AINest")) do
@@ -810,9 +881,10 @@ function NpcMotherService.Start()
 				DryPosition = ground,
 				NextBiteAt = 0,
 				Near = false,
-				ThinkAcc = 0,
-				RayAcc = 0,
-				FarAcc = math.random(),
+				-- Phases étalées par index (nombre d'or) : les Mamans ne tiquent pas toutes sur la même frame.
+				ThinkAcc = ((index * 0.618) % 1) * THINK_SECONDS,
+				RayAcc = ((index * 0.382) % 1) * GROUND_RAY_SECONDS,
+				FarAcc = ((index * 0.618) % 1) * FAR_TICK_SECONDS,
 			}
 			table.insert(mothers, m)
 			spawnMotherBody(m)

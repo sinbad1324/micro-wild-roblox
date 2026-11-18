@@ -1,6 +1,7 @@
 --!strict
 -- InsectAnimationController.luau
--- Animation procédurale locale des insectes de TOUS les joueurs visibles (StarterPlayerScripts.controllers).
+-- Animation procédurale locale des insectes de TOUS les joueurs visibles et des Mamans PNJ (tag
+-- "NpcMother", NpcMotherService) (StarterPlayerScripts.controllers).
 -- Le serveur construit le conteneur "InsectVisual" (voir la CONVENTION D'ANIMATION en tête de
 -- InsectVisualService) ; ici chaque client écrit Weld.C0 = RestC0 * rotation, toujours à partir du
 -- repos (jamais d'accumulation). Rien n'est répliqué : c'est purement cosmétique.
@@ -12,6 +13,8 @@
 --
 -- Perf : aucun tableau alloué par frame, rien au-delà de FAR_DISTANCE, une frame sur deux au-delà
 -- de NEAR_DISTANCE, une seule rotation calculée par membre (toutes ses parts la partagent).
+-- Mamans PNJ : Root ancrée déplacée par CFrame (vitesse nulle), on déduit donc la vitesse du
+-- déplacement de la Root entre deux mises à jour, lissé ; elles marchent toujours (jamais en vol).
 
 local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
@@ -28,6 +31,11 @@ local CONTAINER_NAME = "InsectVisual"
 local LOCAL_REST_ATTRIBUTE = "AnimRestC0"
 local NEAR_DISTANCE_SQ = 40 * 40
 local FAR_DISTANCE_SQ = 100 * 100
+-- Mamans PNJ : plus grosses (MOTHER_SCALE) et peu nombreuses -> visibles de plus loin.
+local NPC_TAG = "NpcMother"
+local NPC_NEAR_DISTANCE_SQ = 60 * 60
+local NPC_FAR_DISTANCE_SQ = 150 * 150
+local MAX_SPEED = 150 -- au-delà : téléportation / réapparition, on ignore la mesure
 local BITE_DURATION = 0.3
 local ZONE_REFRESH_PERIOD = 2
 local TWO_PI = math.pi * 2
@@ -59,8 +67,12 @@ local FREEFALL = Enum.HumanoidStateType.Freefall
 local JUMPING = Enum.HumanoidStateType.Jumping
 
 type Record = {
-	player: Player,
+	player: Player?, -- nil pour une Maman PNJ
 	character: Model,
+	nearSq: number,
+	farSq: number,
+	lastPos: Vector3?, -- PNJ : vitesse mesurée sur la Root ancrée
+	speed: number,
 	root: BasePart?,
 	humanoid: Humanoid?,
 	container: Instance?,
@@ -69,6 +81,7 @@ type Record = {
 	attackConn: RBXScriptConnection?,
 	dirty: boolean,
 	whole: boolean, -- oeuf/cocon : tout le visuel se berce d'un bloc
+	wantWhole: boolean, -- stade du conteneur lié (fixe : un nouveau stade = un nouveau conteneur)
 	-- Cache en tableaux parallèles (une entrée par part animée).
 	count: number,
 	welds: { Weld },
@@ -95,7 +108,8 @@ type Record = {
 	wingIdle: number,
 }
 
-local records: { [Player]: Record } = {}
+-- Clé = Player pour un joueur, Model pour une Maman PNJ.
+local records: { [Instance]: Record } = {}
 local started = false
 
 local pondZones: { Instance } = {}
@@ -145,7 +159,8 @@ local function rebuild(rec: Record, whole: boolean)
 		return
 	end
 
-	local species = rec.player:GetAttribute("Species")
+	local player = rec.player
+	local species = if player then player:GetAttribute("Species") else rec.character:GetAttribute("SpeciesId")
 	local plan = InsectBodyPlans.Get(if type(species) == "string" then species else "")
 	local wings = plan.Wings
 	rec.scorpion = plan.Tail == "ScorpionTail"
@@ -253,7 +268,8 @@ local function rebuild(rec: Record, whole: boolean)
 end
 
 local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: number)
-	local dt = math.clamp(now - rec.last, 0, 0.1)
+	local elapsed = now - rec.last
+	local dt = math.clamp(elapsed, 0, 0.1)
 	rec.last = now
 	local t = now + rec.seed
 	local count = rec.count
@@ -270,12 +286,26 @@ local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: num
 		return
 	end
 
-	local speed = root.AssemblyLinearVelocity.Magnitude
 	local position = root.Position
+	local speed: number
+	if rec.player then
+		speed = root.AssemblyLinearVelocity.Magnitude
+	else
+		-- Root ancrée : vitesse = déplacement lissé (la réplication arrive par à-coups).
+		local lastPos = rec.lastPos
+		rec.lastPos = position
+		if lastPos and elapsed > 0 and elapsed < 0.5 then
+			local measured = (position - lastPos).Magnitude / elapsed
+			if measured < MAX_SPEED then
+				rec.speed += (measured - rec.speed) * math.min(1, dt * 5)
+			end
+		end
+		speed = rec.speed
+	end
 	local waterLevel = frameWaterLevel
 	local swimming = waterLevel ~= nil and position.Y < waterLevel and isInPondZone(position)
 	local airborne = false
-	if not swimming then
+	if not swimming and rec.player then
 		local state = humanoid:GetState()
 		-- UpVector : un grimpeur collé à un mur est aussi en "Freefall", mais penché ; en vol on reste droit.
 		airborne = (state == FREEFALL or state == JUMPING) and root.CFrame.UpVector.Y > 0.8
@@ -392,6 +422,8 @@ local function bindContainer(rec: Record, container: Instance?)
 	clearCache(rec) -- l'ancien conteneur est détruit : inutile de le remettre au repos
 	rec.container = container
 	rec.dirty = true
+	local stage = if container then container:GetAttribute("Stage") else nil
+	rec.wantWhole = stage == "Oeuf" or stage == "Cocon"
 	if container then
 		-- Les parts (et leurs Welds) arrivent par vagues à la réplication.
 		rec.containerConn = container.DescendantAdded:Connect(function()
@@ -400,12 +432,12 @@ local function bindContainer(rec: Record, container: Instance?)
 	end
 end
 
-local function untrack(player: Player)
-	local rec = records[player]
+local function untrack(key: Instance)
+	local rec = records[key]
 	if not rec then
 		return
 	end
-	records[player] = nil
+	records[key] = nil
 	if rec.charConn then
 		rec.charConn:Disconnect()
 	end
@@ -418,11 +450,15 @@ local function untrack(player: Player)
 	clearCache(rec)
 end
 
-local function track(player: Player, character: Model)
-	untrack(player)
+local function track(key: Instance, player: Player?, character: Model)
+	untrack(key)
 	local rec: Record = {
 		player = player,
 		character = character,
+		nearSq = if player then NEAR_DISTANCE_SQ else NPC_NEAR_DISTANCE_SQ,
+		farSq = if player then FAR_DISTANCE_SQ else NPC_FAR_DISTANCE_SQ,
+		lastPos = nil,
+		speed = 0,
 		root = nil,
 		humanoid = nil,
 		container = nil,
@@ -431,6 +467,7 @@ local function track(player: Player, character: Model)
 		attackConn = nil,
 		dirty = true,
 		whole = false,
+		wantWhole = false,
 		count = 0,
 		welds = {},
 		rests = {},
@@ -441,7 +478,7 @@ local function track(player: Player, character: Model)
 		biases = {},
 		seed = math.random() * 10,
 		last = os.clock(),
-		odd = false,
+		odd = math.random() < 0.5, -- étale les mises à mi-cadence sur les deux frames
 		gait = 0,
 		wingPhase = 0,
 		move = 0,
@@ -454,7 +491,7 @@ local function track(player: Player, character: Model)
 		wingRate = 65,
 		wingIdle = 0,
 	}
-	records[player] = rec
+	records[key] = rec
 	-- Changement de stade : le serveur détruit le conteneur et en crée un nouveau.
 	rec.charConn = character.ChildAdded:Connect(function(child)
 		if child.Name == CONTAINER_NAME then
@@ -464,7 +501,16 @@ local function track(player: Player, character: Model)
 	-- Morsure des AUTRES joueurs : DamageService date chaque coup sur la victime (attributs répliqués).
 	-- shortcut: seuls les coups qui touchent un joueur sont visibles ; un attribut posé par
 	-- CombatService sur l'attaquant couvrirait aussi les morsures dans le vide ou sur un animal.
-	rec.attackConn = character:GetAttributeChangedSignal("LastAttackAt"):Connect(function()
+	-- Une Maman PNJ date sa propre morsure (attribut "BiteAt") : une seule connexion pour les deux.
+	rec.attackConn = character.AttributeChanged:Connect(function(name: string)
+		if name == "BiteAt" then
+			if player == nil then
+				rec.biteAt = os.clock()
+			end
+			return
+		elseif name ~= "LastAttackAt" then
+			return
+		end
 		local attackerId = character:GetAttribute("LastAttackerUserId")
 		if type(attackerId) ~= "number" then
 			return
@@ -495,7 +541,7 @@ local function onHeartbeat()
 		pondZones = CollectionService:GetTagged("PondZone")
 	end
 
-	for player, rec in records do
+	for _, rec in records do
 		local character = rec.character
 		local root = rec.root
 		if not root or root.Parent ~= character then
@@ -520,16 +566,16 @@ local function onHeartbeat()
 
 		local offset = root.Position - cameraPosition
 		local distanceSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
-		if distanceSq > FAR_DISTANCE_SQ then
+		if distanceSq > rec.farSq then
+			rec.lastPos = nil -- pas de pic de vitesse au retour dans le champ
 			continue
 		end
 		rec.odd = not rec.odd
-		if distanceSq > NEAR_DISTANCE_SQ and rec.odd then
+		if distanceSq > rec.nearSq and rec.odd then
 			continue
 		end
 
-		local stage = container:GetAttribute("Stage")
-		local whole = stage == "Oeuf" or stage == "Cocon"
+		local whole = rec.wantWhole
 		if rec.dirty or whole ~= rec.whole or character:GetScale() ~= rec.scale then
 			rebuild(rec, whole)
 		end
@@ -541,7 +587,7 @@ end
 
 local function onPlayerAdded(player: Player)
 	player.CharacterAdded:Connect(function(character)
-		track(player, character)
+		track(player, player, character)
 	end)
 	player.CharacterRemoving:Connect(function(character)
 		local rec = records[player]
@@ -551,7 +597,13 @@ local function onPlayerAdded(player: Player)
 	end)
 	local character = player.Character
 	if character then
-		track(player, character)
+		track(player, player, character)
+	end
+end
+
+local function onNpcAdded(instance: Instance)
+	if instance:IsA("Model") then
+		track(instance, nil, instance)
 	end
 end
 
@@ -565,6 +617,12 @@ function InsectAnimationController.Start()
 	Players.PlayerRemoving:Connect(untrack)
 	for _, player in ipairs(Players:GetPlayers()) do
 		onPlayerAdded(player)
+	end
+
+	CollectionService:GetInstanceAddedSignal(NPC_TAG):Connect(onNpcAdded)
+	CollectionService:GetInstanceRemovedSignal(NPC_TAG):Connect(untrack)
+	for _, instance in ipairs(CollectionService:GetTagged(NPC_TAG)) do
+		onNpcAdded(instance)
 	end
 
 	RunService.Heartbeat:Connect(onHeartbeat)
