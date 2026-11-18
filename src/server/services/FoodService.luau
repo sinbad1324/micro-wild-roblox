@@ -715,4 +715,19 @@ end
 
 FoodService.ClearCarried = clearCarried
 
+-- Repas d'un PNJ (Maman PNJ) sur un noeud "FoodNode" : consomme un usage (rétrécit/repousse comme
+-- pour un joueur) et retourne la valeur nutritive, ou nil si le noeud est vide / hors régime.
+function FoodService.ConsumeNode(node: BasePart, diet: FoodData.DietType): number?
+	if not node.Parent or node:GetAttribute("Depleted") == true then
+		return nil
+	end
+	local foodType = node:GetAttribute("FoodType") :: string?
+	local info = foodType and FoodData.Get(foodType)
+	if not foodType or not info or not FoodData.CanEat(diet, foodType) then
+		return nil
+	end
+	consumeUse(node)
+	return info.NutritionValue
+end
+
 return FoodService

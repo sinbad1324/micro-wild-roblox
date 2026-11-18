@@ -327,6 +327,35 @@ function GrowthAndNestService.CreateNest(motherPlayer: Player): boolean
 	return true
 end
 
+-- Nid d'une Maman PNJ (NpcMotherService) : id = GameConstants.NPC_NEST_ID_BASE - index,
+-- FamilyId "NpcNest_<index>". JoinNest / LeaveNest / GetNest / nourrissage marchent comme pour un joueur.
+function GrowthAndNestService.RegisterNpcNest(index: number, speciesId: string, groundPosition: Vector3, displayName: string): (number, ServerTypes.NestData)
+	local id = GameConstants.NPC_NEST_ID_BASE - index
+	local plan = InsectBodyPlans.Get(speciesId)
+	local style = nestStyleFor(speciesId)
+	local model, core = buildNestModel(style, groundPosition, plan.LarvaColor:Lerp(Color3.new(1, 1, 1), 0.6))
+	model.Name = "NidPNJ_" .. tostring(index)
+	core:SetAttribute("OwnerUserId", id)
+	core:SetAttribute("IsNpcNest", true)
+	attachNestLabel(core, "")
+	local nest: ServerTypes.NestData = {
+		OwnerUserId = id,
+		FamilyId = "NpcNest_" .. tostring(index),
+		SpeciesId = speciesId,
+		Position = groundPosition + Vector3.new(0, 2, 0),
+		StoredFood = 100,
+		Children = {},
+		Model = model,
+		Style = NEST_STYLE_NAMES[style] or "Nid",
+		IsNpc = true,
+		DisplayName = displayName,
+		MotherAlive = true,
+	}
+	GrowthAndNestService.ActiveNests[id] = nest
+	GrowthAndNestService.RefreshNestDisplay(id)
+	return id, nest
+end
+
 function GrowthAndNestService.RemoveNest(ownerUserId: number)
 	local nest = GrowthAndNestService.ActiveNests[ownerUserId]
 	GrowthAndNestService.ActiveNests[ownerUserId] = nil
@@ -395,14 +424,18 @@ function GrowthAndNestService.RefreshNestDisplay(ownerUserId: number)
 	if not nest or not nest.Model or not nest.Model.PrimaryPart then
 		return
 	end
-	local owner = Players:GetPlayerByUserId(ownerUserId)
+	local owner = if nest.IsNpc then nil else Players:GetPlayerByUserId(ownerUserId)
 	local species = InsectData[nest.SpeciesId]
+	local ownerName = if nest.IsNpc
+		then (nest.DisplayName or "PNJ") .. (if nest.MotherAlive == false then " — sans mère" else "")
+		elseif owner then owner.Name
+		else "?"
 	setNestLabel(
 		nest.Model.PrimaryPart,
 		string.format(
 			"%s de %s (%s)\n%d bébé(s) • Réserve : %d",
 			nest.Style or "Nid",
-			if owner then owner.Name else "?",
+			ownerName,
 			if species then species.Name else nest.SpeciesId,
 			#nest.Children,
 			math.floor(nest.StoredFood)
@@ -413,6 +446,19 @@ end
 function GrowthAndNestService.GetNestSummaries(): { ServerTypes.NestSummary }
 	local summaries: { ServerTypes.NestSummary } = {}
 	for ownerUserId, nest in pairs(GrowthAndNestService.ActiveNests) do
+		-- Nid PNJ : pas de joueur propriétaire, il persiste même quand sa Maman est morte.
+		if nest.IsNpc then
+			table.insert(summaries, {
+				OwnerUserId = ownerUserId,
+				-- Suffixe dans le nom : le menu de spawn l'affiche sans changement client.
+				OwnerName = (nest.DisplayName or "PNJ") .. (if nest.MotherAlive == false then " — sans mère" else ""),
+				SpeciesId = nest.SpeciesId,
+				ChildCount = #nest.Children,
+				IsNpc = true,
+				MotherAlive = nest.MotherAlive ~= false,
+			})
+			continue
+		end
 		local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
 		if ownerPlayer then
 			table.insert(summaries, {

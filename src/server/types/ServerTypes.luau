@@ -13,6 +13,9 @@ export type NestData = {
 	Children: { Player },
 	Model: Model?, -- modèle 3D du nid (fourmilière, ruche, toile...)
 	Style: string?, -- nom affiché du type de nid
+	IsNpc: boolean?, -- nid d'une Maman PNJ (OwnerUserId = GameConstants.NPC_NEST_ID_BASE - n)
+	DisplayName: string?, -- nom de la Maman PNJ (ex: "Reine Fourmi Rousse (PNJ)")
+	MotherAlive: boolean?, -- false : Maman PNJ morte, le nid attend sa réapparition
 }
 
 export type NestSummary = {
@@ -20,6 +23,8 @@ export type NestSummary = {
 	OwnerName: string,
 	SpeciesId: string,
 	ChildCount: number,
+	IsNpc: boolean?,
+	MotherAlive: boolean?, -- nid PNJ : false si sa Maman est morte
 }
 
 export type PlayerSurvivalProfile = {

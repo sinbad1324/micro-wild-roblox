@@ -79,6 +79,7 @@ micro-wild-roblox/
     │   │   ├── SeasonService.luau / SeasonVisualService.luau  # Cycle + effets des saisons
     │   │   ├── SurvivalService.luau          # Faim, Soif, Température, Oxygène, jour/nuit
     │   │   ├── GrowthAndNestService.luau     # Croissance, nids 3D, nids IA, laisse des larves
+    │   │   ├── NpcMotherService.luau         # ~10 Mamans PNJ (nids rejoignables au spawn, butinage, défense, fuite)
     │   │   ├── FoodService.luau              # Manger / boire / transporter / nourrir le nid
     │   │   ├── CombatService.luau            # Morsure, pouvoirs, agrippement + QTE
     │   │   ├── StatusEffectService.luau      # Poison, glu, étourdissement, aveuglement...

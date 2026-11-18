@@ -168,6 +168,13 @@ local function findTargets(attacker: Player, attackerRoot: BasePart, range: numb
 			consider(animal, animal.PrimaryPart, (animal:GetAttribute("HitRadius") :: number?) or 4, nil)
 		end
 	end
+	-- Mamans PNJ (NpcMotherService) : ses propres enfants ne la mordent pas.
+	local attackerFamily = attacker:GetAttribute("FamilyId")
+	for _, mother in ipairs(CollectionService:GetTagged("NpcMother")) do
+		if mother:IsA("Model") and mother.PrimaryPart and (includeFamily or attackerFamily == nil or mother:GetAttribute("FamilyId") ~= attackerFamily) then
+			consider(mother, mother.PrimaryPart, (mother:GetAttribute("HitRadius") :: number?) or 2, nil)
+		end
+	end
 
 	table.sort(results, function(a, b)
 		return a.Distance < b.Distance
@@ -556,7 +563,8 @@ local function executeStatusBite(player: Player, root: BasePart, definition: Abi
 		applyStatusFromDefinition(player, target, definition)
 		if abilityId == "SuccionDeSangXP" then
 			-- Boire le sang d'un géant rapporte gros (GDD : boost d'XP).
-			local bonus = if target.Player then 15 else 60
+			-- Une Maman PNJ n'est pas un géant : pas de farm de PE sur elle.
+			local bonus = if target.Player or CollectionService:HasTag(target.Model, "NpcMother") then 15 else 60
 			player:SetAttribute("Hunger", math.min(100, ((player:GetAttribute("Hunger") :: number?) or 0) + 15))
 			CombatService.EvolutionPointsHook(player, bonus)
 		end

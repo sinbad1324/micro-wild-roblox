@@ -62,6 +62,13 @@ local GameConstants = {
 		Ephemere = true,
 	} :: { [string]: boolean },
 
+	-- Mamans PNJ (NpcMotherService, GDD §2 "Maman joueuse ou IA"). Leurs nids sont indexés dans
+	-- ActiveNests par NPC_NEST_ID_BASE - n : très négatif pour ne jamais croiser les UserId
+	-- négatifs des joueurs de test Studio (-1, -2...).
+	NPC_NEST_ID_BASE = -1000000,
+	NPC_MOTHER_RESPAWN_SECONDS = 180,
+	NPC_MOTHER_ACTIVE_RANGE = 250, -- au-delà : IA endormie à 1 Hz, sans raycast
+
 	FOOD_RESPAWN_SECONDS = 75,
 	BITE_RANGE = 7,
 	BITE_COOLDOWN = 0.8,
