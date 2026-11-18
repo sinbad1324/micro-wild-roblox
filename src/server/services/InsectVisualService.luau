@@ -1438,6 +1438,16 @@ local function hookLateAvatarPieces(character: Model, rootPart: BasePart)
 	end)
 end
 
+-- Cache l'avatar Roblox dès l'apparition, sans attendre la construction du corps d'insecte (si
+-- celle-ci échoue ou tarde, on ne doit jamais voir le personnage Roblox).
+function InsectVisualService.HideDefaultAvatar(character: Model)
+	local root = character:WaitForChild("HumanoidRootPart", 5)
+	if root and root:IsA("BasePart") then
+		hideDefaultAvatar(character, root)
+		hookLateAvatarPieces(character, root)
+	end
+end
+
 -- Décalage vertical (espace local du root) du point le plus bas du personnage = le sol.
 local function computeGroundOffsetY(character: Model, root: BasePart): number
 	-- R15 : le Humanoid maintient le root à HipHeight + demi-hauteur au-dessus du sol, quelle que

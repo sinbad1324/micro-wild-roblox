@@ -39,6 +39,10 @@ end
 -- Les remotes doivent exister AVANT que le moindre client ne se connecte ou n'appelle Remotes.Get.
 Remotes.EnsureServerRemotes()
 
+-- Les joueurs sont des insectes : pas de vêtements ni d'accessoires Roblox chargés sur le corps
+-- (le corps de base restant est caché par InsectVisualService.HideDefaultAvatar).
+game:GetService("StarterPlayer").LoadCharacterAppearance = false
+
 -- 1. Boucle de jeu critique.
 start("MovementService", MovementService.Start)
 start("StatusEffectService", StatusEffectService.Start)

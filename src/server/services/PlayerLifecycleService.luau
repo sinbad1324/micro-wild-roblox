@@ -92,6 +92,8 @@ local function onCharacterAdded(player: Player, character: Model)
 	humanoid.Died:Connect(function()
 		onCharacterDied(player, character)
 	end)
+	-- Avatar Roblox caché tout de suite (le corps d'insecte arrive 0.2 s plus tard).
+	InsectVisualService.HideDefaultAvatar(character)
 
 	task.wait(0.2)
 	if character.Parent == nil then
