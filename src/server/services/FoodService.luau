@@ -35,6 +35,15 @@ local CARCASS_BITE = 20
 local NEST_TICK_SECONDS = 2
 local NEST_FEED_COST = 10
 local AI_NEST_TICK_SECONDS = 8
+-- Repas "canalisé" : on maintient la touche un court instant, le noeud rétrécit à chaque bouchée.
+local EAT_HOLD_SECONDS = 0.5
+local MIN_BITE_SCALE = 0.4 -- taille d'un noeud presque vide (fraction de BaseSize)
+local VANISH_STEPS = 4
+local VANISH_STEP_SECONDS = 0.06
+local REGROW_STEPS = 5
+local REGROW_STEP_SECONDS = 0.08
+local NIBBLE_FX_SECONDS = 0.25
+local WATER_FX_COLOR = Color3.fromRGB(150, 200, 240)
 
 local FOOD_DISPLAY_NAMES: { [string]: string } = {
 	Feuille = "Feuille",
@@ -56,6 +65,9 @@ local FOOD_DISPLAY_NAMES: { [string]: string } = {
 }
 
 local lastAction: { [Player]: number } = {}
+-- Un émetteur de miettes par joueur, déplacé et allumé brièvement (même principe que DigService).
+local nibbleFxParts: { [Player]: Part } = {}
+local nibbleFxStopAt: { [Player]: number } = {}
 
 local function notify(player: Player, message: string, kind: string)
 	Remotes.Get("NotifyClient"):FireClient(player, message, kind)
@@ -112,39 +124,133 @@ local function hydrate(player: Player, value: number)
 	player:SetAttribute("Thirst", math.min(100, thirst + value))
 end
 
--- Consomme un usage d'une source ; la cache puis la fait réapparaître (ou la détruit).
+-- Miettes (ou gouttelettes) qui jaillissent du noeud à chaque bouchée : retour visuel du repas.
+local function playNibbleFx(player: Player, position: Vector3, color: Color3)
+	local part = nibbleFxParts[player]
+	if not part or not part.Parent then
+		part = Instance.new("Part")
+		part.Name = "NibbleFx"
+		part.Size = Vector3.one
+		part.Transparency = 1
+		part.Anchored = true
+		part.CanCollide = false
+		part.CanQuery = false
+		part.CanTouch = false
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Name = "Crumbs"
+		emitter.Enabled = false
+		emitter.Size = NumberSequence.new(0.35, 0.05)
+		emitter.Lifetime = NumberRange.new(0.3, 0.6)
+		emitter.Rate = 40
+		emitter.Speed = NumberRange.new(4, 8)
+		emitter.SpreadAngle = Vector2.new(70, 70)
+		emitter.Acceleration = Vector3.new(0, -30, 0)
+		emitter.EmissionDirection = Enum.NormalId.Top
+		emitter.Parent = part
+		part.Parent = workspace
+		nibbleFxParts[player] = part
+	end
+	local emitter = part:FindFirstChild("Crumbs")
+	if not emitter or not emitter:IsA("ParticleEmitter") then
+		return
+	end
+	part.CFrame = CFrame.new(position)
+	emitter.Color = ColorSequence.new(color)
+	emitter.Enabled = true
+	local stopAt = os.clock() + NIBBLE_FX_SECONDS
+	nibbleFxStopAt[player] = stopAt
+	task.delay(NIBBLE_FX_SECONDS, function()
+		-- Une bouchée plus récente a prolongé l'effet : c'est elle qui l'éteindra.
+		if nibbleFxStopAt[player] == stopAt then
+			emitter.Enabled = false
+		end
+	end)
+end
+
+-- Hauteur monde d'une part (rotation comprise) : sert à garder sa base posée en la redimensionnant.
+local function worldHeight(cf: CFrame, size: Vector3): number
+	return math.abs(cf.RightVector.Y) * size.X + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z
+end
+
+-- Taille d'origine du noeud (posée au setup ; repli sur la taille actuelle pour un noeud inconnu).
+local function getBaseSize(part: BasePart): Vector3
+	local base = part:GetAttribute("BaseSize") :: Vector3?
+	if base then
+		return base
+	end
+	part:SetAttribute("BaseSize", part.Size)
+	return part.Size
+end
+
+-- Redimensionne à une fraction de BaseSize sans faire flotter un fruit posé au sol.
+local function setNodeScale(part: BasePart, fraction: number)
+	local cf = part.CFrame
+	local newSize = getBaseSize(part) * fraction
+	local drop = (worldHeight(cf, part.Size) - worldHeight(cf, newSize)) / 2
+	part.Size = newSize
+	part.CFrame = cf - Vector3.new(0, drop, 0)
+end
+
+local function setPromptsEnabled(part: BasePart, enabled: boolean)
+	for _, child in ipairs(part:GetChildren()) do
+		if child:IsA("ProximityPrompt") then
+			child.Enabled = enabled
+		end
+	end
+end
+
+-- Consomme un usage d'une source : elle rétrécit à chaque bouchée, puis disparaît en se ratatinant
+-- et repousse doucement (ou est détruite si NoRespawn).
 local function consumeUse(part: BasePart)
 	local uses = (part:GetAttribute("Uses") :: number?) or 1
 	uses -= 1
+	local maxUses = math.max((part:GetAttribute("MaxUses") :: number?) or 1, 1)
 	if uses > 0 then
 		part:SetAttribute("Uses", uses)
+		setNodeScale(part, MIN_BITE_SCALE + (1 - MIN_BITE_SCALE) * math.min(uses / maxUses, 1))
 		return
 	end
-	if part:GetAttribute("NoRespawn") == true then
-		part:Destroy()
-		return
-	end
-	local maxUses = (part:GetAttribute("MaxUses") :: number?) or 1
-	local originalTransparency = part.Transparency
+	-- Plus de bouchée possible tout de suite ; l'animation de disparition suit.
 	part:SetAttribute("Depleted", true)
-	part.Transparency = 1
-	for _, child in ipairs(part:GetChildren()) do
-		if child:IsA("ProximityPrompt") then
-			child.Enabled = false
+	setPromptsEnabled(part, false)
+	local originalTransparency = part.Transparency
+	task.spawn(function()
+		local startScale = part.Size.Magnitude / math.max(getBaseSize(part).Magnitude, 0.01)
+		for step = 1, VANISH_STEPS do
+			if not part.Parent then
+				return
+			end
+			setNodeScale(part, startScale * (1 - step / (VANISH_STEPS + 1)))
+			part.Transparency = originalTransparency + (1 - originalTransparency) * step / VANISH_STEPS
+			task.wait(VANISH_STEP_SECONDS)
 		end
-	end
-	task.delay(GameConstants.FOOD_RESPAWN_SECONDS, function()
+		if not part.Parent then
+			return
+		end
+		if part:GetAttribute("NoRespawn") == true then
+			part:Destroy()
+			return
+		end
+		task.wait(GameConstants.FOOD_RESPAWN_SECONDS)
+		if not part.Parent then
+			return
+		end
+		-- Repousse : de petit et transparent à la taille d'origine, puis de nouveau mangeable.
+		for step = 1, REGROW_STEPS do
+			if not part.Parent then
+				return
+			end
+			local alpha = step / REGROW_STEPS
+			setNodeScale(part, 0.2 + 0.8 * alpha)
+			part.Transparency = 1 + (originalTransparency - 1) * alpha
+			task.wait(REGROW_STEP_SECONDS)
+		end
 		if not part.Parent then
 			return
 		end
 		part:SetAttribute("Uses", maxUses)
 		part:SetAttribute("Depleted", nil)
-		part.Transparency = originalTransparency
-		for _, child in ipairs(part:GetChildren()) do
-			if child:IsA("ProximityPrompt") then
-				child.Enabled = true
-			end
-		end
+		setPromptsEnabled(part, true)
 	end)
 end
 
@@ -155,7 +261,7 @@ local function makePrompt(parent: BasePart, name: string, actionText: string, ob
 	prompt.ObjectText = objectText
 	prompt.KeyboardKeyCode = key
 	prompt.GamepadKeyCode = gamepadKey
-	prompt.HoldDuration = 0.25
+	prompt.HoldDuration = EAT_HOLD_SECONDS
 	prompt.MaxActivationDistance = PROMPT_DISTANCE
 	prompt.RequiresLineOfSight = false -- sous l'eau, dans l'herbe, dans une carcasse...
 	prompt.Parent = parent
@@ -253,6 +359,7 @@ local function onEatNode(player: Player, node: BasePart)
 		return
 	end
 	feed(player, info.NutritionValue)
+	playNibbleFx(player, node.Position, node.Color)
 	consumeUse(node)
 end
 
@@ -270,6 +377,7 @@ local function onCarryNode(player: Player, node: BasePart)
 		return
 	end
 	if startCarrying(player, foodType, info.NutritionValue, node.Color) then
+		playNibbleFx(player, node.Position, node.Color)
 		consumeUse(node)
 	end
 end
@@ -283,6 +391,7 @@ local function setupFoodNode(instance: Instance)
 	if node:GetAttribute("MaxUses") == nil then
 		node:SetAttribute("MaxUses", (node:GetAttribute("Uses") :: number?) or 1)
 	end
+	getBaseSize(node)
 	local displayName = FOOD_DISPLAY_NAMES[foodType] or foodType
 	makePrompt(node, "EatPrompt", "Manger", displayName, EAT_KEY, Enum.KeyCode.ButtonL1).Triggered:Connect(function(player)
 		onEatNode(player, node)
@@ -311,6 +420,7 @@ local function onDrink(player: Player, source: BasePart)
 		return
 	end
 	hydrate(player, DRINK_VALUE)
+	playNibbleFx(player, source.Position, WATER_FX_COLOR)
 	if source:GetAttribute("Uses") ~= nil or source:GetAttribute("NoRespawn") == true then
 		consumeUse(source)
 	end
@@ -322,6 +432,12 @@ local function setupDrinkSource(instance: Instance)
 	end
 	local source = instance :: BasePart
 	local objectText = (source:GetAttribute("DisplayName") :: string?) or "Eau"
+	-- Flaques et rosée rétrécissent elles aussi gorgée après gorgée (MaxUses = usages de départ).
+	local initialUses = source:GetAttribute("Uses") :: number?
+	if source:GetAttribute("MaxUses") == nil and initialUses then
+		source:SetAttribute("MaxUses", initialUses)
+	end
+	getBaseSize(source)
 	makePrompt(source, "DrinkPrompt", "Boire", objectText, EAT_KEY, Enum.KeyCode.ButtonL1).Triggered:Connect(function(player)
 		onDrink(player, source)
 	end)
@@ -342,12 +458,16 @@ local function createPondEdgeSources()
 			continue
 		end
 		local half = zone.Size * 0.5
-		local edgeOffsets = {
-			Vector3.new(half.X - 1, 0, 0), Vector3.new(-half.X + 1, 0, 0),
-			Vector3.new(0, 0, half.Z - 1), Vector3.new(0, 0, -half.Z + 1),
-			Vector3.new(half.X * 0.5, 0, half.Z - 1), Vector3.new(-half.X * 0.5, 0, half.Z - 1),
-			Vector3.new(half.X * 0.5, 0, -half.Z + 1), Vector3.new(-half.X * 0.5, 0, -half.Z + 1),
-		}
+		-- Un point tous les 16 studs sur tout le périmètre : toujours un "Boire" à portée de berge.
+		local edgeOffsets: { Vector3 } = {}
+		for x = -half.X + 1, half.X - 1, 16 do
+			table.insert(edgeOffsets, Vector3.new(x, 0, half.Z - 1))
+			table.insert(edgeOffsets, Vector3.new(x, 0, -half.Z + 1))
+		end
+		for z = -half.Z + 1, half.Z - 1, 16 do
+			table.insert(edgeOffsets, Vector3.new(half.X - 1, 0, z))
+			table.insert(edgeOffsets, Vector3.new(-half.X + 1, 0, z))
+		end
 		for _, offset in ipairs(edgeOffsets) do
 			local worldPosition = zone.CFrame:PointToWorldSpace(offset)
 			local anchor = Instance.new("Part")
@@ -418,6 +538,7 @@ local function onEatCarcass(player: Player, carcass: Model, anchor: BasePart, ca
 			notify(player, "Cette viande pourrie vous rend malade !", "warning")
 		end
 	end
+	playNibbleFx(player, anchor.Position, Color3.fromRGB(150, 40, 40))
 	meatLeft -= value
 	carcass:SetAttribute("MeatLeft", meatLeft)
 	if meatLeft <= 0 then
@@ -564,6 +685,12 @@ function FoodService.Start()
 
 	Players.PlayerRemoving:Connect(function(player)
 		lastAction[player] = nil
+		nibbleFxStopAt[player] = nil
+		local fxPart = nibbleFxParts[player]
+		nibbleFxParts[player] = nil
+		if fxPart then
+			fxPart:Destroy()
+		end
 	end)
 
 	task.spawn(function()

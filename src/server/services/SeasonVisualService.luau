@@ -7,14 +7,18 @@
 --   Automne   : feuilles mortes au sol, chute de fruits géants, vent qui pousse les volants
 --   Hiver     : neige, herbe blanche, arbre dégarni, mare gelée (glace solide en surface)
 -- Tout ce qui est saisonnier vit dans workspace.SeasonalEffects et est détruit au changement.
+-- Rendu lourd délégué au client (WorldFxController) :
+--   workspace attribut "Precipitation" = "Rain" | "Snow" | "None" (émetteur qui suit la caméra)
+--   tag "FxFalling" + attributs FxFallHeight/FxFallDuration/FxFallStart (+ FxSplash) : la part est
+--   posée à sa position FINALE par le serveur, le client anime la chute localement.
 
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
-local TweenService = game:GetService("TweenService")
 
+local InsectData = require(ReplicatedStorage.shared.InsectData)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
@@ -30,6 +34,10 @@ local SKY_HEIGHT = WorldLayout.TRUNK_HEIGHT + 80
 -- La carte est 9x plus vaste qu'à l'origine (500 -> 1500 de côté) : on sème 4x plus d'effets
 -- (pas 9x : le nombre de parts doit rester raisonnable sur mobile).
 local SCATTER_SCALE = 4
+-- Transition de saison : interpolation par pas grossiers (0.5 s) au lieu de tweens serveur à
+-- 60 Hz sur tout le feuillage du Chêne.
+local TRANSITION_SECONDS = 16
+local TRANSITION_STEP = 0.5
 
 type SeasonLook = {
 	Grass: Color3,
@@ -107,10 +115,32 @@ local groundParams = RaycastParams.new()
 groundParams.FilterType = Enum.RaycastFilterType.Exclude
 groundParams.IgnoreWater = false
 
--- Surface la plus haute sous un point (herbe géante, rocher, sol...), en ignorant les effets.
+-- Terrain seul : les fruits traversent le feuillage du Chêne et tombent au sol.
+local terrainParams = RaycastParams.new()
+terrainParams.FilterType = Enum.RaycastFilterType.Include
+terrainParams.FilterDescendantsInstances = { workspace.Terrain }
+
+-- Surface la plus haute sous un point (herbe géante, rocher, sol...), en ignorant les effets,
+-- les animaux et les personnages (sinon une goutte reste posée sur la tête d'un joueur).
 local function surfaceBelow(x: number, z: number): RaycastResult?
-	groundParams.FilterDescendantsInstances = { getFolder(), workspace:FindFirstChild("Animals") or getFolder() }
+	local filter: { Instance } = { getFolder() }
+	local animals = workspace:FindFirstChild("Animals")
+	if animals then
+		table.insert(filter, animals)
+	end
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player.Character then
+			table.insert(filter, player.Character)
+		end
+	end
+	groundParams.FilterDescendantsInstances = filter
 	return workspace:Raycast(Vector3.new(x, GROUND_Y + SKY_HEIGHT, z), Vector3.new(0, -(SKY_HEIGHT + 60), 0), groundParams)
+end
+
+-- Oeufs et cocons sont immobiles et considérés à l'abri : jamais touchés par les impacts.
+local function isImpactImmune(player: Player): boolean
+	local stage = player:GetAttribute("Stage")
+	return stage == "Oeuf" or stage == "Cocon" or player:GetAttribute("InShelterOrColony") == true
 end
 
 local function randomMapPoint(): (number, number)
@@ -145,64 +175,68 @@ local function getOrCreate(className: string, name: string, parent: Instance): I
 	return instance
 end
 
-local function applyLook(look: SeasonLook)
+local function applyLook(look: SeasonLook, token: number)
 	local terrain = workspace.Terrain
-	terrain:SetMaterialColor(Enum.Material.Grass, look.Grass)
-	terrain:SetMaterialColor(Enum.Material.Ground, look.Grass:Lerp(Color3.fromRGB(110, 85, 60), 0.6))
+	local groundTarget = look.Grass:Lerp(Color3.fromRGB(110, 85, 60), 0.6)
+	local grassFrom = terrain:GetMaterialColor(Enum.Material.Grass)
+	local groundFrom = terrain:GetMaterialColor(Enum.Material.Ground)
 
+	local leaves: { BasePart } = {}
+	local fromColors: { Color3 } = {}
+	local toColors: { Color3 } = {}
+	local fromTransparency: { number } = {}
 	local generated = workspace:FindFirstChild("GeneratedWorld")
 	local tree = generated and generated:FindFirstChild("GrandChene")
 	if tree then
 		for _, part in ipairs(tree:GetChildren()) do
 			if part:IsA("BasePart") and string.sub(part.Name, 1, 9) == "Feuillage" then
 				local variation = (string.byte(part.Name, -1) or 0) % 5 * 6
-				TweenService:Create(part, TweenInfo.new(4), {
-					Color = look.Leaves:Lerp(Color3.new(1, 1, 1), variation / 255),
-					Transparency = look.LeafTransparency,
-				}):Play()
+				table.insert(leaves, part)
+				table.insert(fromColors, part.Color)
+				table.insert(toColors, look.Leaves:Lerp(Color3.new(1, 1, 1), variation / 255))
+				table.insert(fromTransparency, part.Transparency)
 			end
 		end
 	end
 
+	-- Même boucle à 2 Hz que le feuillage (pas de tween serveur à 60 Hz répliqué à chaque image).
 	local correction = getOrCreate("ColorCorrectionEffect", "SeasonTint", Lighting) :: ColorCorrectionEffect
-	TweenService:Create(correction, TweenInfo.new(4), { TintColor = look.Tint, Saturation = look.Saturation }):Play()
 	local atmosphere = getOrCreate("Atmosphere", "SeasonAtmosphere", Lighting) :: Atmosphere
 	atmosphere.Density = 0.3
-	TweenService:Create(atmosphere, TweenInfo.new(4), { Color = look.AtmosphereColor, Haze = look.Haze }):Play()
+	local tintFrom, saturationFrom = correction.TintColor, correction.Saturation
+	local atmosphereFrom, hazeFrom = atmosphere.Color, atmosphere.Haze
+
+	task.spawn(function()
+		local steps = math.floor(TRANSITION_SECONDS / TRANSITION_STEP)
+		for step = 1, steps do
+			task.wait(TRANSITION_STEP)
+			if seasonToken ~= token then
+				return -- la saison suivante repart des couleurs actuelles
+			end
+			local alpha = step / steps
+			terrain:SetMaterialColor(Enum.Material.Grass, grassFrom:Lerp(look.Grass, alpha))
+			terrain:SetMaterialColor(Enum.Material.Ground, groundFrom:Lerp(groundTarget, alpha))
+			correction.TintColor = tintFrom:Lerp(look.Tint, alpha)
+			correction.Saturation = saturationFrom + (look.Saturation - saturationFrom) * alpha
+			atmosphere.Color = atmosphereFrom:Lerp(look.AtmosphereColor, alpha)
+			atmosphere.Haze = hazeFrom + (look.Haze - hazeFrom) * alpha
+			for i, leaf in ipairs(leaves) do
+				if leaf.Parent then
+					leaf.Color = fromColors[i]:Lerp(toColors[i], alpha)
+					leaf.Transparency = fromTransparency[i] + (look.LeafTransparency - fromTransparency[i]) * alpha
+				end
+			end
+		end
+	end)
 end
 
--- ============================================================
--- Précipitations (neige / pluie) : un grand émetteur au-dessus de la carte
--- ============================================================
-
-local function createSkyEmitter(kind: "Rain" | "Snow")
-	local sky = anchoredPart("Ciel_" .. kind, Vector3.new(MAP_HALF * 2, 1, MAP_HALF * 2), CFrame.new(0, GROUND_Y + 180, 0), Color3.new(1, 1, 1), Enum.Material.SmoothPlastic, 1)
-	local emitter = Instance.new("ParticleEmitter")
-	emitter.EmissionDirection = Enum.NormalId.Bottom
-	emitter.Shape = Enum.ParticleEmitterShape.Box
-	emitter.ShapeStyle = Enum.ParticleEmitterShapeStyle.Volume
-	emitter.LightInfluence = 1
-	if kind == "Snow" then
-		-- shortcut: un émetteur global dilue 9x la neige/pluie sur la grande carte ; le débit est
-		-- seulement triplé (budget particules mobile). À remplacer par un émetteur client qui suit la caméra.
-		emitter.Rate = 1200
-		emitter.Lifetime = NumberRange.new(12, 16)
-		emitter.Speed = NumberRange.new(10, 16)
-		emitter.SpreadAngle = Vector2.new(20, 20)
-		emitter.Size = NumberSequence.new(0.6)
-		emitter.Color = ColorSequence.new(Color3.new(1, 1, 1))
-		emitter.RotSpeed = NumberRange.new(-60, 60)
-	else
-		emitter.Rate = 1800
-		emitter.Lifetime = NumberRange.new(3, 4)
-		emitter.Speed = NumberRange.new(55, 65)
-		emitter.Size = NumberSequence.new(0.15)
-		emitter.Color = ColorSequence.new(Color3.fromRGB(180, 200, 230))
-		emitter.Transparency = NumberSequence.new(0.4)
-		emitter.Orientation = Enum.ParticleOrientation.FacingCameraWorldUp
-		emitter.Squash = NumberSequence.new(-3)
-	end
-	emitter.Parent = sky
+-- Chute rendue côté client : la part est déjà à sa position finale, le client la fait tomber
+-- de FxFallHeight studs en FxFallDuration secondes. Attributs posés AVANT le tag.
+local function markFalling(part: BasePart, height: number, duration: number)
+	part:SetAttribute("FxFallHeight", height)
+	part:SetAttribute("FxFallDuration", duration)
+	part:SetAttribute("FxFallStart", workspace:GetServerTimeNow())
+	CollectionService:AddTag(part, "FxFalling")
 end
 
 -- ============================================================
@@ -236,7 +270,10 @@ local function spawnDew(count: number)
 	for i = 1, count do
 		if #plants > 0 and i % 2 == 0 then
 			local plant = plants[rng:NextInteger(1, #plants)]
-			spawnDrinkDrop(plant.Position + Vector3.new(0, plant.Size.Y / 2, 0), false)
+			-- Demi-hauteur MONDE : les cylindres redressés portent leur hauteur sur le X local.
+			local cf, size = plant.CFrame, plant.Size
+			local halfY = (math.abs(cf.RightVector.Y) * size.X + math.abs(cf.UpVector.Y) * size.Y + math.abs(cf.LookVector.Y) * size.Z) / 2
+			spawnDrinkDrop(plant.Position + Vector3.new(0, halfY, 0), false)
 		else
 			local x, z = randomMapPoint()
 			local hit = surfaceBelow(x, z)
@@ -301,30 +338,33 @@ local function dropWaterBomb()
 	local landing = root.Position + Vector3.new(rng:NextNumber(-12, 12), 0, rng:NextNumber(-12, 12))
 	local hit = surfaceBelow(landing.X, landing.Z)
 	local ground = if hit then hit.Position else landing
-	local drop = anchoredPart("BombeDEau", Vector3.one * 4, CFrame.new(ground + Vector3.new(0, 90, 0)), Color3.fromRGB(160, 200, 245), Enum.Material.Glass, 0.3)
+	local drop = anchoredPart("BombeDEau", Vector3.one * 4, CFrame.new(ground + Vector3.new(0, 2, 0)), Color3.fromRGB(160, 200, 245), Enum.Material.Glass, 0.3)
 	drop.Shape = Enum.PartType.Ball
-	local fall = TweenService:Create(drop, TweenInfo.new(1.3, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = CFrame.new(ground + Vector3.new(0, 2, 0)) })
-	fall.Completed:Connect(function()
+	drop:SetAttribute("FxSplash", true) -- éclaboussure locale à l'impact (WorldFxController)
+	local fallSeconds = 1.3
+	markFalling(drop, 88, fallSeconds)
+	task.delay(fallSeconds, function()
+		if not drop.Parent then
+			return -- saison changée pendant la chute
+		end
 		drop:Destroy()
-		local splash = anchoredPart("Eclaboussure", Vector3.new(0.4, 8, 8), CFrame.new(ground + Vector3.new(0, 0.3, 0)) * CFrame.Angles(0, 0, math.rad(90)), Color3.fromRGB(170, 210, 250), Enum.Material.Glass, 0.4)
-		splash.Shape = Enum.PartType.Cylinder
-		TweenService:Create(splash, TweenInfo.new(0.6), { Size = Vector3.new(0.2, 16, 16), Transparency = 1 }):Play()
-		task.delay(0.7, function()
-			splash:Destroy()
-		end)
-		for _, other in ipairs(Players:GetPlayers()) do
-			local otherRoot = other.Character and other.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-			if otherRoot and (otherRoot.Position - ground).Magnitude <= 7 and other.Character then
-				DamageService.ApplyDamage(other.Character, 6, { IgnoreArmor = true })
-				local away = otherRoot.Position - ground
-				local flat = Vector3.new(away.X, 0, away.Z)
-				Remotes.Get("AbilityCast"):FireClient(other, "Knockback", "Knockback", 0, 0, (if flat.Magnitude > 0.1 then flat.Unit else Vector3.xAxis) * 35 + Vector3.new(0, 25, 0))
-				other:SetAttribute("Thirst", math.min(100, ((other:GetAttribute("Thirst") :: number?) or 0) + 15))
-				Remotes.Get("NotifyClient"):FireClient(other, "Une goutte de pluie géante vous percute !", "warning")
+		local ok, err = pcall(function()
+			for _, other in ipairs(Players:GetPlayers()) do
+				local otherRoot = other.Character and other.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+				if otherRoot and (otherRoot.Position - ground).Magnitude <= 7 and other.Character and not isImpactImmune(other) then
+					DamageService.ApplyDamage(other.Character, 6, { IgnoreArmor = true })
+					local away = otherRoot.Position - ground
+					local flat = Vector3.new(away.X, 0, away.Z)
+					Remotes.Get("AbilityCast"):FireClient(other, "Knockback", "Knockback", 0, 0, (if flat.Magnitude > 0.1 then flat.Unit else Vector3.xAxis) * 35 + Vector3.new(0, 25, 0))
+					other:SetAttribute("Thirst", math.min(100, ((other:GetAttribute("Thirst") :: number?) or 0) + 15))
+					Remotes.Get("NotifyClient"):FireClient(other, "Une goutte de pluie géante vous percute !", "warning")
+				end
 			end
+		end)
+		if not ok then
+			warn("[SeasonVisualService] " .. tostring(err))
 		end
 	end)
-	fall:Play()
 end
 
 -- ============================================================
@@ -359,30 +399,35 @@ local function dropFruit()
 	-- Du pied du tronc jusque sous le bord de la canopée.
 	local radius = rng:NextNumber(WorldLayout.TRUNK_RADIUS + 10, WorldLayout.CANOPY_RADIUS)
 	local x, z = TREE_POSITION.X + math.cos(angle) * radius, TREE_POSITION.Z + math.sin(angle) * radius
-	local hit = surfaceBelow(x, z)
+	local hit = workspace:Raycast(Vector3.new(x, GROUND_Y + SKY_HEIGHT, z), Vector3.new(0, -(SKY_HEIGHT + 60), 0), terrainParams)
 	local ground = if hit then hit.Position else Vector3.new(x, GROUND_Y, z)
-	local start = Vector3.new(x, GROUND_Y + WorldLayout.TRUNK_HEIGHT, z)
-	local part = anchoredPart("FoodNode_" .. fruit.Food, Vector3.one * fruit.Size, CFrame.new(start), fruit.Color, Enum.Material.SmoothPlastic)
+	local finalCFrame = CFrame.new(ground + Vector3.new(0, fruit.Size / 2, 0))
+	local part = anchoredPart("FoodNode_" .. fruit.Food, Vector3.one * fruit.Size, finalCFrame, fruit.Color, Enum.Material.SmoothPlastic)
 	part.Shape = Enum.PartType.Ball
-	local fall = TweenService:Create(part, TweenInfo.new(2, Enum.EasingStyle.Quad, Enum.EasingDirection.In), { CFrame = CFrame.new(ground + Vector3.new(0, fruit.Size / 2, 0)) })
-	fall.Completed:Connect(function()
+	local fallSeconds = 2
+	markFalling(part, math.max(GROUND_Y + WorldLayout.TRUNK_HEIGHT - finalCFrame.Position.Y, 0), fallSeconds)
+	task.delay(fallSeconds, function()
 		if not part.Parent then
 			return
 		end
-		-- Un fruit géant nourrit des dizaines d'insectes (GDD §4 Automne).
-		part:SetAttribute("FoodType", fruit.Food)
-		part:SetAttribute("Uses", 8)
-		part:SetAttribute("NoRespawn", true)
-		CollectionService:AddTag(part, "FoodNode")
-		for _, player in ipairs(Players:GetPlayers()) do
-			local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
-			if root and player.Character and (root.Position - ground).Magnitude <= fruit.Size then
-				DamageService.ApplyDamage(player.Character, 15, { IgnoreArmor = true })
-				Remotes.Get("NotifyClient"):FireClient(player, "Un(e) " .. fruit.Name .. " vous tombe dessus !", "warning")
+		local ok, err = pcall(function()
+			-- Un fruit géant nourrit des dizaines d'insectes (GDD §4 Automne).
+			part:SetAttribute("FoodType", fruit.Food)
+			part:SetAttribute("Uses", 8)
+			part:SetAttribute("NoRespawn", true)
+			CollectionService:AddTag(part, "FoodNode")
+			for _, player in ipairs(Players:GetPlayers()) do
+				local root = player.Character and player.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
+				if root and player.Character and (root.Position - ground).Magnitude <= fruit.Size and not isImpactImmune(player) then
+					DamageService.ApplyDamage(player.Character, 15, { IgnoreArmor = true })
+					Remotes.Get("NotifyClient"):FireClient(player, "Un(e) " .. fruit.Name .. " vous tombe dessus !", "warning")
+				end
 			end
+		end)
+		if not ok then
+			warn("[SeasonVisualService] " .. tostring(err))
 		end
 	end)
-	fall:Play()
 end
 
 -- ============================================================
@@ -390,14 +435,48 @@ end
 -- ============================================================
 
 local function freezePond()
-	local waterLevel = workspace:GetAttribute("PondWaterLevel") :: number?
-	if not waterLevel then
+	local waterLevelAttr = workspace:GetAttribute("PondWaterLevel") :: number?
+	if not waterLevelAttr then
 		return
 	end
+	local waterLevel: number = waterLevelAttr
+	local function iceSlab(minX: number, maxX: number, minZ: number, maxZ: number)
+		if maxX - minX < 0.5 then
+			return
+		end
+		local ice = anchoredPart("Glace", Vector3.new(maxX - minX, 1, maxZ - minZ), CFrame.new((minX + maxX) / 2, waterLevel + 0.4, (minZ + maxZ) / 2), Color3.fromRGB(200, 230, 250), Enum.Material.Ice, 0.25, true)
+		ice.Reflectance = 0.2
+	end
+	-- Trou dans la glace au-dessus de la rampe immergée (WorldGenerationService, X = mare + 30,
+	-- 16 de large) : un nageur ou une larve devenue adulte peut toujours ressortir.
+	local holeMinX = WorldLayout.POND_CENTER.X + 30 - 9
+	local holeMaxX = WorldLayout.POND_CENTER.X + 30 + 9
 	for _, zone in ipairs(CollectionService:GetTagged("PondZone")) do
 		if zone:IsA("BasePart") then
-			local ice = anchoredPart("Glace", Vector3.new(zone.Size.X + 2, 1, zone.Size.Z + 2), CFrame.new(zone.Position.X, waterLevel + 0.4, zone.Position.Z), Color3.fromRGB(200, 230, 250), Enum.Material.Ice, 0.25, true)
-			ice.Reflectance = 0.2
+			local minX, maxX = zone.Position.X - zone.Size.X / 2 - 1, zone.Position.X + zone.Size.X / 2 + 1
+			local minZ, maxZ = zone.Position.Z - zone.Size.Z / 2 - 1, zone.Position.Z + zone.Size.Z / 2 + 1
+			if zone.Name == "PondZone_Mare" then
+				iceSlab(minX, math.min(holeMinX, maxX), minZ, maxZ)
+				iceSlab(math.max(holeMaxX, minX), maxX, minZ, maxZ)
+			else
+				iceSlab(minX, maxX, minZ, maxZ)
+			end
+		end
+	end
+
+	-- Personne ne reste scellé sous la glace : les nageurs sont remontés sur la glace, sauf les
+	-- petits aquatiques (ils respirent sous l'eau et leur nurserie est au fond).
+	for _, player in ipairs(Players:GetPlayers()) do
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
+		if character and root and root.Position.Y < waterLevel and isPondPosition(root.Position, 0) then
+			local speciesId = (player:GetAttribute("Species") :: string?) or GameConstants.DEFAULT_SPECIES
+			local species = InsectData[speciesId]
+			local aquaticYoung = player:GetAttribute("Stage") ~= "Adulte"
+				and (GameConstants.AQUATIC_LARVA_SPECIES[speciesId] == true or (species ~= nil and species.Category == "Aquatique"))
+			if not aquaticYoung then
+				character:PivotTo(CFrame.new(root.Position.X, waterLevel + 1 + root.Size.Y, root.Position.Z))
+			end
 		end
 	end
 end
@@ -434,10 +513,10 @@ local function onSeasonChanged()
 	workspace:SetAttribute("FlightSeasonBonus", if season == "Ete" then 1.15 else 1)
 
 	local look = LOOKS[season] or LOOKS.Printemps
-	applyLook(look)
+	applyLook(look, token)
+	workspace:SetAttribute("Precipitation", if season == "Printemps" then "Rain" elseif season == "Hiver" then "Snow" else "None")
 
 	if season == "Printemps" then
-		createSkyEmitter("Rain")
 		spawnDew(45 * SCATTER_SCALE)
 		spawnPuddles(18 * SCATTER_SCALE)
 		spawnSeasonalFlowers(10 * SCATTER_SCALE)
@@ -448,7 +527,16 @@ local function onSeasonChanged()
 		startLoop(token, function()
 			return 90
 		end, function()
-			spawnDew(12 * SCATTER_SCALE)
+			-- Plafond : la rosée non bue ne s'accumule pas sur toute la saison (budget mobile).
+			local drops = 0
+			for _, child in ipairs(getFolder():GetChildren()) do
+				if child.Name == "GoutteDeRosee" then
+					drops += 1
+				end
+			end
+			if drops < 45 * SCATTER_SCALE then
+				spawnDew(12 * SCATTER_SCALE)
+			end
 		end)
 	elseif season == "Ete" then
 		-- Assèchement : rien à boire hors de la mare (zone PvP intense, GDD §4).
@@ -464,10 +552,19 @@ local function onSeasonChanged()
 			return 25
 		end, function()
 			local angle = rng:NextNumber() * math.pi * 2
-			workspace:SetAttribute("WindVector", Vector3.new(math.cos(angle), 0, math.sin(angle)) * rng:NextNumber(10, 22))
+			local target = Vector3.new(math.cos(angle), 0, math.sin(angle)) * rng:NextNumber(10, 22)
+			local current = workspace:GetAttribute("WindVector")
+			local from = if typeof(current) == "Vector3" then current else Vector3.zero
+			-- Rafale progressive en 10 pas de 0.5 s : pas de secousse latérale pour les volants.
+			for k = 1, 10 do
+				task.wait(0.5)
+				if seasonToken ~= token then
+					return
+				end
+				workspace:SetAttribute("WindVector", from:Lerp(target, k / 10))
+			end
 		end)
 	elseif season == "Hiver" then
-		createSkyEmitter("Snow")
 		freezePond()
 		-- Un peu de neige fondue à boire près des abris.
 		spawnPuddles(6 * SCATTER_SCALE)

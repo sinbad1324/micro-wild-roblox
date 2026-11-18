@@ -1,8 +1,12 @@
 --!strict
 -- AnimalService.luau
 -- IA des 5 animaux géants (GDD §6) + alevins, leurs nids/terriers (GDD §7.A) et leurs carcasses
--- (Festin de Kaiju, GDD §7.B). Chaque animal est une petite machine à états mise à jour à 20 Hz ;
--- il est déplacé par PivotTo de sa Root ancrée (pas de physique serveur à synchroniser).
+-- (Festin de Kaiju, GDD §7.B). Chaque animal est une petite machine à états mise à jour à chaque
+-- frame près d'un joueur (20 Hz sinon) ;
+-- il est déplacé en posant le CFrame de sa Root ancrée (les autres parts y sont soudées : même
+-- effet que PivotTo, sans parcourir le modèle ; pas de physique serveur à synchroniser).
+-- Mouvement fluide : élan (accélération/freinage), virages à vitesse angulaire bornée, roulis de
+-- l'oiseau, ondulation des poissons, tangage des bonds de l'écureuil.
 --
 --   Oiseau   : perché dans le Chêne, fond en piqué sur un insecte qui BOUGE à découvert ;
 --              fuit s'il se fait piquer (essaim), ramasse des brindilles, nid géant chauffé.
@@ -150,21 +154,24 @@ local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePa
 	return bestPlayer, bestRoot
 end
 
+-- Paramètres de raycast partagés (aucune allocation par tir) : seul le filtre change.
+local excludeParams = RaycastParams.new()
+excludeParams.FilterType = Enum.RaycastFilterType.Exclude
+excludeParams.IgnoreWater = true
+
 local function hasLineOfSight(from: Vector3, toRoot: BasePart, ignore: { Instance }): boolean
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
-	params.FilterDescendantsInstances = ignore
-	params.IgnoreWater = true
-	local result = workspace:Raycast(from, toRoot.Position - from, params)
+	excludeParams.FilterDescendantsInstances = ignore
+	local result = workspace:Raycast(from, toRoot.Position - from, excludeParams)
 	return result == nil or result.Instance:IsDescendantOf(toRoot.Parent :: Instance)
 end
 
-local function hitPlayer(player: Player, amount: number, push: Vector3?, message: string?)
+-- `quiet` : dégâts continus (déglutition) -> pas de flash/secousse diffusés à tout le serveur.
+local function hitPlayer(player: Player, amount: number, push: Vector3?, message: string?, quiet: boolean?)
 	local character = player.Character
 	if not character then
 		return
 	end
-	DamageService.ApplyDamage(character, amount, {})
+	DamageService.ApplyDamage(character, amount, { Quiet = quiet })
 	if push then
 		knockback(player, push)
 	end
@@ -177,23 +184,94 @@ local function speedFactor(animal: Animal): number
 	return StatusEffectService.GetSpeedFactor(animal.Model)
 end
 
+local ACCEL_RATE = 1.4 -- part de la vitesse max gagnée par seconde (~0,7 s pour l'atteindre)
+local MOVE_RESUME_WINDOW = 0.3 -- au-delà, élan et cap mémorisés sont périmés (pause, saut, perchoir)
+
 -- Déplace l'animal vers `goal` ; `facing` (optionnel) impose une direction de regard.
+-- Élan : accélère, puis freine à l'approche (sauf `chase` : poursuite sans freinage).
+-- Cap : tourne au plus de Data.TurnRate rad/s (slerp) et ralentit tant qu'il n'est pas aligné.
+-- Data.BankGain : roulis dans les virages (oiseau). Data.Sway/SwayFreq/SwayPhase : ondulation de nage.
 -- Retourne vrai une fois arrivé.
-local function moveToward(animal: Animal, goal: Vector3, speed: number, dt: number, facing: Vector3?, up: Vector3?): boolean
-	local position = animal.Root.Position
+local function moveToward(animal: Animal, goal: Vector3, speed: number, dt: number, facing: Vector3?, up: Vector3?, chase: boolean?): boolean
+	local data = animal.Data
+	local root = animal.Root
+	local position = root.Position
 	local delta = goal - position
 	local distance = delta.Magnitude
-	local step = math.min(speed * speedFactor(animal) * dt, distance)
-	local newPosition = if distance > 0.01 then position + delta.Unit * step else position
-	local look = facing or (if distance > 0.01 then delta.Unit else animal.Root.CFrame.LookVector)
+	local now = os.clock()
+	local continuing = now - ((data.LastMoveAt :: number?) or 0) <= MOVE_RESUME_WINDOW
+	data.LastMoveAt = now
+	local heading: CFrame = if continuing and data.Heading then data.Heading :: CFrame else root.CFrame.Rotation
+	local currentSpeed: number = if continuing then (data.Speed :: number?) or 0 else 0
+	if not continuing then
+		data.Bank = 0
+	end
+
+	-- Cap visé puis rotation bornée vers lui.
+	local look = facing or (if distance > 0.01 then delta.Unit else heading.LookVector)
 	if math.abs(look.Y) > 0.97 and not up then
 		look = Vector3.new(look.X, 0, look.Z)
 		if look.Magnitude < 0.01 then
-			look = animal.Root.CFrame.LookVector
+			look = heading.LookVector
 		end
 	end
-	animal.Model:PivotTo(CFrame.lookAt(newPosition, newPosition + look.Unit, up or Vector3.yAxis))
+	local desired = CFrame.lookAt(Vector3.zero, look.Unit, up or Vector3.yAxis)
+	local _, angle = (heading:Inverse() * desired):ToAxisAngle()
+	local maxTurn = ((data.TurnRate :: number?) or 3) * dt
+	local newHeading = if angle > maxTurn then heading:Lerp(desired, maxTurn / angle) else desired
+
+	-- Vitesse : rampe d'accélération, courbe de freinage, ralenti pendant les demi-tours.
+	-- Le plancher (10 % de la vitesse) garantit l'arrivée.
+	local maxSpeed = speed * speedFactor(animal) * math.max(0.25, math.cos(angle))
+	local accel = speed * ACCEL_RATE
+	local targetSpeed = if chase then maxSpeed else math.min(maxSpeed, math.sqrt(2 * accel * distance) + speed * 0.1)
+	local newSpeed = if targetSpeed > currentSpeed
+		then math.min(targetSpeed, currentSpeed + accel * dt)
+		else math.max(targetSpeed, currentSpeed - accel * 2 * dt)
+	data.Speed = newSpeed
+	data.Heading = newHeading
+	local step = math.min(newSpeed * dt, distance)
+	local newPosition = if distance > 0.01 then position + delta.Unit * step else position
+
+	local cf = CFrame.new(newPosition) * newHeading
+	local bankGain = data.BankGain :: number?
+	if bankGain then
+		-- Roulis proportionnel à la vitesse de lacet : l'aile intérieure plonge.
+		local before, after = heading.LookVector, newHeading.LookVector
+		local yawDelta = (math.atan2(-after.X, -after.Z) - math.atan2(-before.X, -before.Z) + math.pi) % (2 * math.pi) - math.pi
+		local bank = (data.Bank :: number?) or 0
+		bank += (math.clamp(yawDelta / dt * bankGain, -0.7, 0.7) - bank) * math.min(1, dt * 5)
+		data.Bank = bank
+		cf *= CFrame.Angles(0, 0, bank)
+	end
+	local sway = data.Sway :: number?
+	if sway then
+		-- Ondulation de nage, plus ample en pleine vitesse.
+		local amplitude = sway * math.min(1, newSpeed / math.max(speed, 0.1) + 0.3)
+		cf *= CFrame.Angles(0, math.sin(now * ((data.SwayFreq :: number?) or 3) + ((data.SwayPhase :: number?) or 0)) * amplitude, 0)
+	end
+	root.CFrame = cf
 	return distance <= math.max(step, 0.5)
+end
+
+-- À l'arrêt : ramène doucement l'animal à plat sur son cap (sans roulis ni tangage résiduels),
+-- `extra` ajoutant une posture (picorer, creuser).
+local function settleUpright(animal: Animal, dt: number, extra: CFrame?)
+	local root = animal.Root
+	local look = root.CFrame.LookVector
+	local flat = Vector3.new(look.X, 0, look.Z)
+	if flat.Magnitude < 0.1 then
+		local right = root.CFrame.RightVector
+		flat = Vector3.yAxis:Cross(Vector3.new(right.X, 0, right.Z))
+		if flat.Magnitude < 0.1 then
+			return
+		end
+	end
+	local target = CFrame.lookAt(root.Position, root.Position + flat.Unit)
+	if extra then
+		target *= extra
+	end
+	root.CFrame = root.CFrame:Lerp(target, math.min(1, dt * 5))
 end
 
 -- Parabole entre deux points (bonds de l'écureuil, saut du poisson). t dans [0,1].
@@ -216,8 +294,6 @@ local function recentDamage(animal: Animal, window: number): number
 end
 
 local function groundBelow(position: Vector3, ignore: { Instance }?): Vector3
-	local params = RaycastParams.new()
-	params.FilterType = Enum.RaycastFilterType.Exclude
 	local filter: { Instance } = ignore or { getFolder() }
 	-- Le feuillage et les branches du Chêne ne sont pas "le sol".
 	local generated = workspace:FindFirstChild("GeneratedWorld")
@@ -225,9 +301,8 @@ local function groundBelow(position: Vector3, ignore: { Instance }?): Vector3
 	if tree and not ignore then
 		table.insert(filter, tree)
 	end
-	params.FilterDescendantsInstances = filter
-	params.IgnoreWater = true
-	local result = workspace:Raycast(position, Vector3.new(0, -(SKY_HEIGHT + 60), 0), params)
+	excludeParams.FilterDescendantsInstances = filter
+	local result = workspace:Raycast(position, Vector3.new(0, -(SKY_HEIGHT + 60), 0), excludeParams)
 	return if result then result.Position else Vector3.new(position.X, GROUND_Y, position.Z)
 end
 
@@ -418,7 +493,9 @@ local function layCarcass(template: Model, animalRoot: BasePart, ground: Vector3
 	for _, part in ipairs(template:GetChildren()) do
 		if part:IsA("BasePart") then
 			part.CFrame = layCF * inverseRoot * part.CFrame
-			part.CanCollide = true -- le squelette doit pouvoir servir d'abri solide
+			-- Seules les grosses pièces en vrai bloc sont solides : une ellipsoïde (SpecialMesh) collisionne
+			-- comme sa boîte entière (coins invisibles), et plumes/yeux/griffes n'ont pas à bloquer.
+			part.CanCollide = part:FindFirstChildOfClass("SpecialMesh") == nil and part.Size.Magnitude >= 6
 		end
 	end
 	template.WorldPivot = CFrame.new(ground)
@@ -446,15 +523,16 @@ local function onAnimalDied(animal: Animal)
 	local position = animal.Root.Position
 	local killer = animal.Model:GetAttribute("LastAttackerUserId") :: number?
 	ProgressionService.RecordKill(killer, animal.DisplayName, animal.Giant)
+	-- Seul le Terrain compte comme "sol" : une carcasse ne reste pas coincée dans l'arbre
+	-- ni ne flotte entre deux eaux (alevin : l'eau est ignorée, on touche le fond).
+	local hit = workspace:Raycast(position + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), terrainOnlyParams)
+	local feastPosition = if hit then hit.Position else Vector3.new(position.X, GROUND_Y, position.Z)
 	if animal.Giant then
-		-- Seul le Terrain compte comme "sol" : une carcasse ne reste pas coincée dans l'arbre.
-		local hit = workspace:Raycast(position + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), terrainOnlyParams)
-		local feastPosition = if hit then hit.Position else Vector3.new(position.X, GROUND_Y, position.Z)
 		local template = buildCarcassTemplate(animal.Model)
 		layCarcass(template, animal.Root, feastPosition)
 		CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, true, animal.CarcassScale, template)
 	else
-		CarcassService.SpawnCarcassFor(position, animal.DisplayName, false, animal.CarcassScale, nil)
+		CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, false, animal.CarcassScale, nil)
 	end
 	animal.Model:Destroy()
 	local index = table.find(animals, animal)
@@ -547,8 +625,12 @@ local function birdUpdate(bird: Animal, dt: number)
 		bird.Mode = "Flee"
 		bird.Timer = 30
 		bird.Goal = home + Vector3.new(rng:NextNumber(-400, 400), 120, rng:NextNumber(-400, 400))
+		-- Seuls les joueurs autour du Chêne sont concernés (pas toute la carte).
 		for _, player in ipairs(Players:GetPlayers()) do
-			notify(player, "L'oiseau s'enfuit, chassé par l'essaim !", "info")
+			local playerRoot = getPlayerRoot(player)
+			if playerRoot and (playerRoot.Position - TREE_POSITION).Magnitude <= CANOPY_RADIUS + 200 then
+				notify(player, "L'oiseau s'enfuit, chassé par l'essaim !", "info")
+			end
 		end
 	end
 
@@ -560,8 +642,13 @@ local function birdUpdate(bird: Animal, dt: number)
 			local flatLook = Vector3.new(root.CFrame.LookVector.X, 0, root.CFrame.LookVector.Z)
 			bird.Data.PerchRotation = CFrame.lookAt(Vector3.zero, if flatLook.Magnitude > 0.1 then flatLook.Unit else Vector3.zAxis)
 		end
-		bird.Model:PivotTo(CFrame.new(root.Position) * (bird.Data.PerchRotation :: CFrame) * CFrame.Angles(0, math.sin(os.clock() * 1.3) * 0.5, 0))
-		if bird.Cooldown <= 0 then
+		-- Lissé : il se redresse en douceur après l'atterrissage (roulis/tangage du vol).
+		local perchTarget = CFrame.new(root.Position) * (bird.Data.PerchRotation :: CFrame) * CFrame.Angles(0, math.sin(os.clock() * 1.3) * 0.5, 0)
+		root.CFrame = root.CFrame:Lerp(perchTarget, math.min(1, dt * 4))
+		-- Balayage (raycasts de 400 studs) limité à ~5 Hz : l'IA tourne à chaque frame près des joueurs.
+		local now = os.clock()
+		if bird.Cooldown <= 0 and now >= ((bird.Data.ScanAt :: number?) or 0) then
+			bird.Data.ScanAt = now + 0.2
 			-- Perché à ~200 studs de haut : 400 de portée = ~340 studs au sol autour du Chêne.
 			local prey = findPrey(root.Position, 400, function(_player, playerRoot)
 				-- Il ne voit que ce qui BOUGE à découvert (pas sous l'eau, pas sous terre).
@@ -604,6 +691,8 @@ local function birdUpdate(bird: Animal, dt: number)
 			bird.Timer = 3
 		end
 	elseif bird.Mode == "Pecking" then
+		-- Picore : la tête plonge vers le sol par à-coups.
+		settleUpright(bird, dt, CFrame.Angles(-0.3 - 0.3 * math.max(0, math.sin(os.clock() * 7)), 0, 0))
 		if bird.Timer <= 0 then
 			bird.Mode = "Return"
 			bird.Goal = home
@@ -617,7 +706,8 @@ local function birdUpdate(bird: Animal, dt: number)
 			bird.Cooldown = 4
 			return
 		end
-		moveToward(bird, preyRoot.Position + Vector3.new(0, 4, 0), 85, dt)
+		-- Piqué : départ progressif (rampe d'élan), sans freinage avant l'impact.
+		moveToward(bird, preyRoot.Position + Vector3.new(0, 4, 0), 85, dt, nil, nil, true)
 		if (bird.Root.Position - preyRoot.Position).Magnitude <= 9 then
 			local push = flatDirection(bird.Root.Position, preyRoot.Position, bird.Root.CFrame.LookVector)
 			hitPlayer(prey, (AnimalData.Oiseau.AttackDamage) * 0.5, push * 60 + Vector3.new(0, 50, 0), "L'oiseau fond sur vous !")
@@ -626,7 +716,7 @@ local function birdUpdate(bird: Animal, dt: number)
 			bird.Cooldown = 9
 		end
 	elseif bird.Mode == "Flee" then
-		moveToward(bird, bird.Goal or home, 60, dt)
+		moveToward(bird, bird.Goal or home, 60, dt, nil, nil, true)
 		if bird.Timer <= 0 then
 			bird.Mode = "Return"
 			bird.Goal = home
@@ -643,6 +733,8 @@ local function spawnBird()
 	local bird = register("Oiseau", model, CFrame.new(home), true, 6, 480, 9, birdUpdate, spawnBird)
 	bird.Data.Home = home
 	bird.Data.Perches = tips
+	bird.Data.TurnRate = 2.8
+	bird.Data.BankGain = 0.4
 end
 
 -- ============================================================
@@ -736,7 +828,10 @@ local function climbStep(chameleon: Animal, goalAngle: number, goalHeight: numbe
 	local tangent = Vector3.new(-math.sin(newAngle), 0, math.cos(newAngle)) * (if deltaAngle >= 0 then 1 else -1)
 	local travel = tangent * math.abs(arc) + Vector3.new(0, deltaHeight, 0)
 	local facing = if travel.Magnitude > 0.05 then travel.Unit else Vector3.yAxis
-	chameleon.Model:PivotTo(CFrame.lookAt(position, position + facing, outward))
+	-- Rotation lissée : pas de demi-tour instantané quand il change de cible sur le tronc.
+	-- (Root.CFrame suffit : la langue, seule part ancrée en plus, n'existe pas pendant l'escalade.)
+	local targetRotation = CFrame.lookAt(position, position + facing, outward).Rotation
+	chameleon.Root.CFrame = CFrame.new(position) * chameleon.Root.CFrame.Rotation:Lerp(targetRotation, math.min(1, dt * 6))
 	return arrived
 end
 
@@ -752,7 +847,9 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 	local mode = chameleon.Mode
 	if mode == "Idle" or mode == "Watch" or mode == "Climb" then
 		-- Langue-grappin : proie exposée à portée moyenne, en ligne de vue.
-		if chameleon.Cooldown <= 0 then
+		local now = os.clock()
+		if chameleon.Cooldown <= 0 and now >= ((chameleon.Data.ScanAt :: number?) or 0) then
+			chameleon.Data.ScanAt = now + 0.2 -- balayage ~5 Hz
 			local mouth = chameleonMouth(chameleon)
 			local prey, preyRoot = findPrey(mouth, 40, function(_player, playerRoot)
 				return hasLineOfSight(mouth, playerRoot, { chameleon.Model })
@@ -826,11 +923,12 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 		local t = 1 - math.clamp(chameleon.Timer / 0.7, 0, 1)
 		local start = chameleon.Data.TongueStart :: Vector3
 		local position = start:Lerp(chameleonMouth(chameleon), t)
-		preyRoot.CFrame = CFrame.new(position)
+		preyRoot.CFrame = CFrame.new(position) * preyRoot.CFrame.Rotation -- garde l'orientation de la proie
 		updateTongue(chameleon, position)
 		if chameleon.Timer <= 0 then
 			chameleon.Mode = "Swallow"
 			chameleon.Timer = 3
+			chameleon.Data.SwallowDamage = 0
 		end
 	elseif mode == "Swallow" then
 		local prey = chameleon.Prey
@@ -845,9 +943,16 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 			chameleon.Cooldown = 12
 			return
 		end
-		preyRoot.CFrame = CFrame.new(chameleonMouth(chameleon))
-		updateTongue(chameleon, chameleonMouth(chameleon))
-		hitPlayer(prey, AnimalData.Cameleon.AttackDamage / 3 * dt, nil, nil)
+		local mouth = chameleonMouth(chameleon)
+		preyRoot.CFrame = CFrame.new(mouth) * preyRoot.CFrame.Rotation
+		updateTongue(chameleon, mouth)
+		-- Dégâts cumulés et appliqués à ~4 Hz, en mode discret (comme la prise de CombatService).
+		local pending = ((chameleon.Data.SwallowDamage :: number?) or 0) + AnimalData.Cameleon.AttackDamage / 3 * dt
+		if pending >= AnimalData.Cameleon.AttackDamage / 12 then
+			hitPlayer(prey, pending, nil, nil, true)
+			pending = 0
+		end
+		chameleon.Data.SwallowDamage = pending
 		-- Un allié qui mord le caméléon (>= 40 dégâts depuis la prise) libère la proie.
 		if hold.HealthAtStart - chameleon.Humanoid.Health >= 40 then
 			releaseHold(prey, "Un allié vous a libéré de la langue !")
@@ -931,8 +1036,13 @@ local function goldfishUpdate(fish: Animal, dt: number)
 				notify(prey, "Le poisson rouge vous aspire !", "warning")
 				fish.Cooldown = 5
 				task.delay(0.5, function()
+					if fish.Mode == "Dead" or not fish.Model.Parent then
+						return
+					end
+					-- Bouche recalculée : le poisson a nagé pendant l'aspiration.
+					local mouthNow = (fish.Root.CFrame * CFrame.new(0, 0, -8.5)).Position
 					local root = getPlayerRoot(prey)
-					if root and fish.Mode ~= "Dead" and (root.Position - mouth).Magnitude <= 10 then
+					if root and (root.Position - mouthNow).Magnitude <= 10 then
 						hitPlayer(prey, AnimalData.PoissonRouge.AttackDamage * 0.4, nil, nil)
 					end
 				end)
@@ -944,7 +1054,10 @@ local function goldfishUpdate(fish: Animal, dt: number)
 			fish.Mode = "Jump"
 			fish.Timer = 1.5
 			fish.Data.JumpFrom = fish.Root.Position
-			local forward = fish.Root.CFrame.LookVector
+			fish.Data.JumpFromRotation = fish.Root.CFrame.Rotation
+			-- Cap de nage (sans l'ondulation) plutôt que l'orientation affichée.
+			local swimHeading = fish.Data.Heading :: CFrame?
+			local forward = if swimHeading then swimHeading.LookVector else fish.Root.CFrame.LookVector
 			local target = fish.Root.Position + Vector3.new(forward.X, 0, forward.Z).Unit * 14
 			fish.Data.JumpTo = Vector3.new(
 				math.clamp(target.X, center.X - size.X / 2 + 9, center.X + size.X / 2 - 9),
@@ -959,7 +1072,10 @@ local function goldfishUpdate(fish: Animal, dt: number)
 		local position = arcPosition(from, to, 16, t)
 		local nextPosition = arcPosition(from, to, 16, math.min(1, t + 0.05))
 		local look = nextPosition - position
-		fish.Model:PivotTo(CFrame.lookAt(position, position + (if look.Magnitude > 0.01 then look.Unit else fish.Root.CFrame.LookVector)))
+		local arcRotation = CFrame.lookAt(Vector3.zero, if look.Magnitude > 0.01 then look.Unit else fish.Root.CFrame.LookVector)
+		-- Bascule progressive de la nage vers la trajectoire du saut (pas de cabrage instantané).
+		local startRotation = (fish.Data.JumpFromRotation :: CFrame?) or arcRotation
+		fish.Root.CFrame = CFrame.new(position) * startRotation:Lerp(arcRotation, math.min(1, t * 5))
 		if fish.Timer <= 0 then
 			fish.Mode = "Swim"
 			-- Retombée : grosse vague qui assomme les insectes en surface.
@@ -992,8 +1108,8 @@ local function fryUpdate(fry: Animal, dt: number)
 		end
 	end
 	if threat then
-		local away = fry.Root.Position - threat
-		local goal = fry.Root.Position + Vector3.new(away.X, 0, away.Z).Unit * 6
+		-- flatDirection : jamais NaN quand l'insecte est pile au-dessus de l'alevin.
+		local goal = fry.Root.Position + flatDirection(threat, fry.Root.Position, fry.Root.CFrame.LookVector) * 6
 		goal = Vector3.new(
 			math.clamp(goal.X, center.X - size.X / 2 + 2, center.X + size.X / 2 - 2),
 			fry.Root.Position.Y,
@@ -1022,7 +1138,10 @@ local function spawnGoldfish()
 	end
 	local info = AnimalData.PoissonRouge
 	local model = AnimalModels.BuildGoldfish(info.MaxHealth, GOLDFISH_SCALE, "Poisson Rouge")
-	register("PoissonRouge", model, CFrame.new(randomPointInPond(center, size, waterLevel - GOLDFISH_CRUISE_DEPTH, 10)), true, 4, 360, 7, goldfishUpdate, spawnGoldfish)
+	local fish = register("PoissonRouge", model, CFrame.new(randomPointInPond(center, size, waterLevel - GOLDFISH_CRUISE_DEPTH, 10)), true, 4, 360, 7, goldfishUpdate, spawnGoldfish)
+	fish.Data.TurnRate = 1.5
+	fish.Data.Sway = 0.1
+	fish.Data.SwayFreq = 2.2
 end
 
 local function spawnFry()
@@ -1032,7 +1151,11 @@ local function spawnFry()
 	end
 	local model = AnimalModels.BuildGoldfish(40, FRY_SCALE, "Alevin")
 	model:SetAttribute("Grabbable", true)
-	register("Alevin", model, CFrame.new(randomPointInPond(center, size, waterLevel - 3, 4)), false, 0.6, 60, 1.5, fryUpdate, spawnFry)
+	local fry = register("Alevin", model, CFrame.new(randomPointInPond(center, size, waterLevel - 3, 4)), false, 0.6, 60, 1.5, fryUpdate, spawnFry)
+	fry.Data.TurnRate = 6
+	fry.Data.Sway = 0.25
+	fry.Data.SwayFreq = 8
+	fry.Data.SwayPhase = rng:NextNumber() * math.pi * 2 -- le banc n'ondule pas à l'unisson
 end
 
 -- Cuvettes de frai creusées dans la vase, garnies d'oeufs que les insectes peuvent voler.
@@ -1042,7 +1165,8 @@ local function createSpawningPits()
 		return
 	end
 	local bottom = waterLevel - POND_DEPTH
-	for _, offset in ipairs({ Vector3.new(-40, 0, -24), Vector3.new(36, 0, 26) }) do
+	-- Décalages proportionnels à la mare (suivent WorldLayout si elle est redimensionnée).
+	for _, offset in ipairs({ Vector3.new(-size.X * 0.3, 0, -size.Z * 0.2), Vector3.new(size.X * 0.27, 0, size.Z * 0.22) }) do
 		local pit = Vector3.new(center.X + offset.X, bottom, center.Z + offset.Z)
 		workspace.Terrain:FillBall(pit, 4, Enum.Material.Water)
 		for i = 1, 3 do
@@ -1086,7 +1210,11 @@ local function crabUpdate(crab: Animal, dt: number)
 		if flat.Magnitude > 0.1 then
 			local current = root.CFrame.LookVector
 			local turned = current:Lerp(flat.Unit, math.clamp(dt * 2.2, 0, 1))
-			crab.Model:PivotTo(CFrame.lookAt(root.Position, root.Position + Vector3.new(turned.X, 0, turned.Z).Unit))
+			local flatTurned = Vector3.new(turned.X, 0, turned.Z)
+			if flatTurned.Magnitude > 0.01 then
+				root.CFrame = CFrame.lookAt(root.Position, root.Position + flatTurned.Unit)
+				crab.Data.Heading = nil -- la patrouille repartira de cette orientation
+			end
 		end
 		local inFront = flat.Magnitude > 0.1 and root.CFrame.LookVector:Dot(flat.Unit) > 0.55
 		if crab.Cooldown <= 0 and inFront and flat.Magnitude <= 14 and hasLineOfSight(root.Position, threatRoot, { getFolder() }) then
@@ -1149,12 +1277,13 @@ local function spawnCrab()
 	local bottom = waterLevel - POND_DEPTH + legOffset
 	local bank = waterLevel + legOffset
 	local patrol: { Vector3 } = {
-		Vector3.new(center.X - 36, bottom, center.Z - 24),
-		Vector3.new(center.X + 36, bottom, center.Z + 18),
+		-- Décalages proportionnels à la mare : la patrouille couvre tout le fond.
+		Vector3.new(center.X - size.X * 0.35, bottom, center.Z - size.Z * 0.3),
+		Vector3.new(center.X + size.X * 0.35, bottom, center.Z + size.Z * 0.25),
 		Vector3.new(center.X, bottom, center.Z),
-		Vector3.new(center.X + size.X / 2 + 3, bank, center.Z - 30),
-		Vector3.new(center.X - size.X / 2 - 3, bank, center.Z + 30),
-		Vector3.new(center.X - 40, bank, center.Z + size.Z / 2 + 3),
+		Vector3.new(center.X + size.X / 2 + 3, bank, center.Z - size.Z * 0.3),
+		Vector3.new(center.X - size.X / 2 - 3, bank, center.Z + size.Z * 0.3),
+		Vector3.new(center.X - size.X * 0.3, bank, center.Z + size.Z / 2 + 3),
 	}
 	if crabDen then
 		table.insert(patrol, (crabDen :: Vector3) - Vector3.new(0, 4 - legOffset, 0))
@@ -1164,6 +1293,7 @@ local function spawnCrab()
 	model:SetAttribute("FrontInvulnerable", true)
 	local crab = register("Crabe", model, CFrame.new(patrol[3]), true, 5, 420, 11, crabUpdate, spawnCrab)
 	crab.Data.Patrol = patrol
+	crab.Data.TurnRate = 2
 end
 
 -- ============================================================
@@ -1197,6 +1327,7 @@ end
 local function startHop(squirrel: Animal, to: Vector3, duration: number, height: number)
 	squirrel.Mode = "Hop"
 	squirrel.Data.HopFrom = squirrel.Root.Position
+	squirrel.Data.HopFromRotation = squirrel.Root.CFrame.Rotation
 	squirrel.Data.HopTo = to
 	squirrel.Data.HopDuration = duration
 	squirrel.Data.HopHeight = height
@@ -1206,14 +1337,18 @@ end
 local function squirrelUpdate(squirrel: Animal, dt: number)
 	squirrel.Timer -= dt
 	-- Régénération : on ne tue pas un écureuil, on le fait juste fuir un moment.
-	if os.clock() - squirrel.LastDamagedAt > 8 and squirrel.Humanoid.Health < squirrel.Humanoid.MaxHealth then
-		squirrel.Humanoid.Health = math.min(squirrel.Humanoid.MaxHealth, squirrel.Humanoid.Health + 25 * dt)
+	-- Par paliers d'une seconde : chaque écriture de Health se réplique et déclenche HealthChanged.
+	local now = os.clock()
+	if now - squirrel.LastDamagedAt > 8 and squirrel.Humanoid.Health < squirrel.Humanoid.MaxHealth and now >= ((squirrel.Data.RegenAt :: number?) or 0) then
+		squirrel.Data.RegenAt = now + 1
+		squirrel.Humanoid.Health = math.min(squirrel.Humanoid.MaxHealth, squirrel.Humanoid.Health + 25)
 	end
 	local tips = squirrel.Data.Tips :: { Vector3 }
 	local mode = squirrel.Mode
 
 	if mode == "Idle" or mode == "Perch" then
 		squirrel.Mode = "Perch"
+		settleUpright(squirrel, dt, nil) -- se redresse après la réception d'un bond
 		if squirrel.Timer <= 0 then
 			local onGround = squirrel.Root.Position.Y < GROUND_Y + 20
 			local roll = rng:NextNumber()
@@ -1253,10 +1388,16 @@ local function squirrelUpdate(squirrel: Animal, dt: number)
 		local t = 1 - math.clamp(squirrel.Timer / duration, 0, 1)
 		local from = squirrel.Data.HopFrom :: Vector3
 		local to = squirrel.Data.HopTo :: Vector3
-		local position = arcPosition(from, to, squirrel.Data.HopHeight :: number, t)
+		local hopHeight = squirrel.Data.HopHeight :: number
+		local position = arcPosition(from, to, hopHeight, t)
 		local flat = Vector3.new(to.X - from.X, 0, to.Z - from.Z)
-		local look = if flat.Magnitude > 0.1 then flat.Unit else squirrel.Root.CFrame.LookVector
-		squirrel.Model:PivotTo(CFrame.lookAt(position, position + look))
+		local fromRotation = squirrel.Data.HopFromRotation :: CFrame
+		local yaw = if flat.Magnitude > 0.1 then CFrame.lookAt(Vector3.zero, flat.Unit) else fromRotation
+		-- Pivote vers la cible pendant l'élan, puis tangage le long de l'arc : nez en l'air au
+		-- décollage, nez vers le bas à la réception (amorcé en douceur).
+		local rise = math.cos(math.pi * t) * math.pi * hopHeight
+		local pitch = math.clamp(math.atan2(rise, math.max(flat.Magnitude, 1)) * 0.6, -0.6, 0.6) * math.min(1, t * 6)
+		squirrel.Root.CFrame = CFrame.new(position) * fromRotation:Lerp(yaw, math.min(1, t * 4)) * CFrame.Angles(pitch, 0, 0)
 		if squirrel.Timer <= 0 then
 			shakeTreeClimbers(to)
 			local cache = squirrel.Data.Cache :: Vector3?
@@ -1269,6 +1410,8 @@ local function squirrelUpdate(squirrel: Animal, dt: number)
 			end
 		end
 	elseif mode == "Dig" then
+		-- Museau dans la terre, à petits coups.
+		settleUpright(squirrel, dt, CFrame.Angles(-0.3 - 0.12 * math.sin(os.clock() * 12), 0, 0))
 		if squirrel.Timer <= 0 then
 			-- Garde-manger souterrain à piller (fourmis, scarabées, termites).
 			local cache = squirrel.Data.Cache :: Vector3
@@ -1366,17 +1509,39 @@ function AnimalService.Start()
 		end
 	end)
 
+	-- Les Roots ancrées ne sont pas interpolées par les clients : un animal proche d'un joueur est
+	-- mis à jour à chaque frame (mouvement fluide), les autres restent à 20 Hz.
+	local NEAR_RANGE = 350
 	local accumulator = 0
 	RunService.Heartbeat:Connect(function(deltaTime)
 		accumulator += deltaTime
-		if accumulator < TICK then
-			return
+		local slowDt = accumulator
+		local isTick = accumulator >= TICK
+		if isTick then
+			accumulator = 0
 		end
-		local dt = accumulator
-		accumulator = 0
+		local players = if isTick then Players:GetPlayers() else nil
 		for i = #animals, 1, -1 do
 			local animal = animals[i]
 			if animal and animal.Mode ~= "Dead" and animal.Model.Parent then
+				local near = animal.Data.Near == true
+				local dt = if near then deltaTime elseif isTick then slowDt else 0
+				if players then
+					-- Proximité réévaluée à 20 Hz, après le choix du dt (pas de temps compté deux fois).
+					local position = animal.Root.Position
+					local isNear = false
+					for _, player in ipairs(players) do
+						local playerRoot = getPlayerRoot(player)
+						if playerRoot and (playerRoot.Position - position).Magnitude <= NEAR_RANGE then
+							isNear = true
+							break
+						end
+					end
+					animal.Data.Near = isNear
+				end
+				if dt <= 0 then
+					continue
+				end
 				-- Une erreur dans une IA ne doit jamais figer toutes les autres.
 				local ok, err = pcall(animal.Update, animal, dt)
 				if not ok then

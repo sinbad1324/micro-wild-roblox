@@ -67,8 +67,9 @@ local GameConstants = {
 	BITE_COOLDOWN = 0.8,
 	KILL_EVOLUTION_POINTS = 40,
 
-	-- Galerie de tous les modèles 3D, à l'ouest de la carte (ShowcaseService). Mettre false en production.
-	SHOWCASE_IN_GAME = true,
+	-- Galerie de tous les modèles 3D, à l'ouest de la carte (ShowcaseService) : Studio seulement
+	-- (des milliers de parts et ~140 Humanoids de trop pour les serveurs live / mobiles).
+	SHOWCASE_IN_GAME = game:GetService("RunService"):IsStudio(),
 }
 
 return GameConstants

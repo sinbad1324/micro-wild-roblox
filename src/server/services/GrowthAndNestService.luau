@@ -516,6 +516,10 @@ local function enforceLarvaLeash(player: Player, now: number)
 		releaseLeash(player)
 		return
 	end
+	-- Saisie par un prédateur : CombatService/AnimalService pilotent le CFrame, la laisse attend.
+	if player:GetAttribute("IsGrabbed") == true then
+		return
+	end
 
 	local radius = GameConstants.LARVA_LEASH_RADIUS
 	local distance = (root.Position - home).Magnitude

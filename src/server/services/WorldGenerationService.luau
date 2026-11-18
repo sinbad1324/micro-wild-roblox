@@ -12,7 +12,9 @@
 
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local ServerScriptService = game:GetService("ServerScriptService")
 
+local GameConstants = require(ServerScriptService.constant.GameConstants)
 local FoodData = require(ReplicatedStorage.shared.FoodData)
 local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 
@@ -313,7 +315,7 @@ end
 -- ============================================================
 
 -- Sol : grande plaine herbeuse, remplie par dalles pour ne jamais demander un bloc géant d'un coup.
-local function generateGround()
+local function generateGround(root: Folder)
 	local tiles = 3
 	local tileSize = MAP_SIZE / tiles
 	for ix = 0, tiles - 1 do
@@ -322,6 +324,27 @@ local function generateGround()
 			local minZ = -MAP_HALF + iz * tileSize
 			fillBox(minX, minX + tileSize, GROUND_BOTTOM_Y, GROUND_TOP_Y, minZ, minZ + tileSize, Enum.Material.Grass)
 		end
+	end
+
+	-- Murs invisibles au bord : personne ne tombe dans le vide (à pied ou en vol).
+	local wallOptions: PartOptions = { CanCollide = true, CanQuery = false, CanTouch = false, Transparency = 1 }
+	local wallLength, wallHeight, wallY = MAP_SIZE + 20, 400, GROUND_TOP_Y + 150
+	local function wall(name: string, size: Vector3, position: Vector3)
+		newPart(root, name, size, CFrame.new(position), Enum.Material.SmoothPlastic, Color3.new(1, 1, 1), wallOptions)
+	end
+	wall("BordNord", Vector3.new(wallLength, wallHeight, 4), Vector3.new(0, wallY, -MAP_HALF - 2))
+	wall("BordSud", Vector3.new(wallLength, wallHeight, 4), Vector3.new(0, wallY, MAP_HALF + 2))
+	wall("BordEst", Vector3.new(4, wallHeight, wallLength), Vector3.new(MAP_HALF + 2, wallY, 0))
+	local westX = -MAP_HALF - 2
+	if GameConstants.SHOWCASE_IN_GAME then
+		-- Passage vers la galerie 3D (plateforme de ShowcaseService : Z de ORIGIN-20 à ORIGIN+242).
+		local gapMinZ = WorldLayout.SHOWCASE_ORIGIN.Z - 20
+		local gapMaxZ = WorldLayout.SHOWCASE_ORIGIN.Z + 242
+		local wallMinZ, wallMaxZ = -MAP_HALF - 10, MAP_HALF + 10
+		wall("BordOuestA", Vector3.new(4, wallHeight, gapMinZ - wallMinZ), Vector3.new(westX, wallY, (wallMinZ + gapMinZ) / 2))
+		wall("BordOuestB", Vector3.new(4, wallHeight, wallMaxZ - gapMaxZ), Vector3.new(westX, wallY, (gapMaxZ + wallMaxZ) / 2))
+	else
+		wall("BordOuest", Vector3.new(4, wallHeight, wallLength), Vector3.new(westX, wallY, 0))
 	end
 end
 
@@ -1375,7 +1398,7 @@ function WorldGenerationService.Start()
 
 	-- Ordre important : le sol, la mare (PondWaterLevel/PondZone) et tous les abris (Shelter)
 	-- doivent exister avant le tout premier tick de SurvivalService. AUCUN yield dans ce bloc.
-	generateGround()
+	generateGround(root)
 	generateRelief()
 	generateRockyCorner(root)
 	generatePond(root)

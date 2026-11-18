@@ -54,7 +54,7 @@ end
 -- Transition de stade : l'échelle est interpolée par paliers (pas de tween par frame côté serveur),
 -- l'ancien corps grossit/rétrécit puis le nouveau corps est construit à la fin.
 local STAGE_TWEEN_SECONDS = 0.9
-local STAGE_TWEEN_STEPS = 8
+local STAGE_TWEEN_STEPS = 4
 local STAGE_TOKEN_ATTRIBUTE = "StageToken" -- sur le personnage : invalide une transition remplacée
 
 -- Échelle du personnage pour un stade. Une larve grossit avec sa croissance : les espèces à mues

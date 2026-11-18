@@ -20,10 +20,11 @@ local DigService = {}
 
 -- Le client envoie une demande toutes les ~0.5 s (AbilityController) ; chaque demande est sculptée
 -- en plusieurs petites passes pour que la galerie s'ouvre en continu au lieu d'apparaître d'un coup.
-local DIG_COOLDOWN = 0.2
+local DIG_COOLDOWN = 0.4 -- juste sous la cadence client (0.5 s) pour tolérer la gigue réseau
 local DIG_RADIUS = 3.2
-local CARVE_PASS_RATIOS = { 0.75, 0.9, 1 } -- rayon de chaque passe (fraction du rayon final)
-local CARVE_PASS_SECONDS = 0.15
+-- 4 petites passes réparties sur l'intervalle client (0.5 s) : aucune pause visible entre deux demandes.
+local CARVE_PASS_RATIOS = { 0.7, 0.8, 0.9, 1 } -- rayon de chaque passe (fraction du rayon final)
+local CARVE_PASS_SECONDS = 0.125
 local SPOIL_BALL_EVERY = 3 -- une boulette physique toutes les N demandes (le reste : particules)
 local DIG_FX_SECONDS = 0.5
 local MAX_REACH = 9

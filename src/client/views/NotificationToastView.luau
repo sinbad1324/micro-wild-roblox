@@ -35,6 +35,7 @@ local KIND_ICONS: { [string]: string } = {
 -- la hauteur automatique de l'emplacement ne bouge donc pas pendant l'animation).
 local CARD_OFFSCREEN = UDim2.fromOffset(48, 0)
 local CARD_SHOWN = UDim2.fromOffset(0, 0)
+local SLOT_COLLAPSED = UDim2.fromScale(1, 0)
 local FEEDBACK_REST = UDim2.new(0.5, 0, 1, -140)
 local FEEDBACK_START = UDim2.new(0.5, 0, 1, -128)
 
@@ -77,7 +78,7 @@ function NotificationToastView.Mount()
 	toastsFolder.AutomaticSize = Enum.AutomaticSize.Y
 	toastsFolder.BackgroundTransparency = 1
 	toastsFolder.Parent = screenGui
-	UiTheme.BindScale(toastsFolder, TOAST_WIDTH + 40, 420, 0.6, 1.15)
+	local toastScale = UiTheme.BindScale(toastsFolder, TOAST_WIDTH + 40, 420, 0.6, 1.15)
 
 	local toastList = Instance.new("UIListLayout")
 	toastList.SortOrder = Enum.SortOrder.LayoutOrder
@@ -107,7 +108,18 @@ function NotificationToastView.Mount()
 		UiTheme.Tween(toast.Label, 0.25, { TextTransparency = 1 })
 		local fadeOut = UiTheme.Tween(toast.Card, 0.25, { BackgroundTransparency = 1, Position = CARD_OFFSCREEN }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		fadeOut.Completed:Once(function()
-			removeToast(toast)
+			-- Repli de l'emplacement : les toasts suivants remontent en douceur au lieu de sauter.
+			-- AbsoluteSize inclut le UIScale de la pile, on le retire pour retrouver la taille "design".
+			local slot = toast.Slot
+			if not slot.Parent then
+				return -- déjà évincé
+			end
+			slot.AutomaticSize = Enum.AutomaticSize.None
+			slot.ClipsDescendants = true
+			slot.Size = UDim2.new(1, 0, 0, slot.AbsoluteSize.Y / math.max(toastScale.Scale, 0.01))
+			UiTheme.Tween(slot, 0.18, { Size = SLOT_COLLAPSED }).Completed:Once(function()
+				removeToast(toast)
+			end)
 		end)
 	end
 
@@ -127,11 +139,27 @@ function NotificationToastView.Mount()
 		if newest and not newest.Closing and newest.Message == message and newest.Kind == kind then
 			newest.Count += 1
 			newest.Label.Text = string.format("%s  ×%d", message, newest.Count)
+			-- Petit éclat du contour pour signaler la répétition.
+			newest.Stroke.Transparency = 0
+			UiTheme.Tween(newest.Stroke, 0.4, { Transparency = 0.35 })
 			armLifetime(newest)
 			return
 		end
 
-		if #toasts >= MAX_TOASTS then
+		-- Pile pleine : le plus ancien toast encore affiché sort en glissant (pas de disparition sèche).
+		local live = 0
+		local oldestLive: Toast? = nil
+		for _, existing in ipairs(toasts) do
+			if not existing.Closing then
+				live += 1
+				oldestLive = oldestLive or existing
+			end
+		end
+		if live >= MAX_TOASTS and oldestLive then
+			closeToast(oldestLive)
+		end
+		-- Garde-fou anti-spam : jamais plus de MAX_TOASTS + 2 cartes, même en cours de sortie.
+		while #toasts >= MAX_TOASTS + 2 do
 			removeToast(toasts[1])
 		end
 

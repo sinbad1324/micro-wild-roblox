@@ -9,6 +9,10 @@ local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
 
 local DESCEND_ACTION = "MW_Descend"
+local ASCEND_ACTION = "MW_Ascend"
+
+-- Bouton "Haut" (vol / nage), lu par IsJumpHeld ; lié/délié avec "Bas" par SetVerticalControls.
+local ascendHeld = false
 
 local CharacterState = {
 	IsClimbingWall = false,
@@ -62,10 +66,36 @@ function CharacterState.GetMoveVector(humanoid: Humanoid): Vector3
 	return move
 end
 
+-- Au-delà de cette inclinaison de caméra (sinus), avancer fait aussi monter/plonger (vol, nage).
+local CAMERA_PITCH_DEADZONE = 0.5
+
+-- Déplacement en espace monde : direction horizontale (longueur 0..1) + composante verticale
+-- (-1..1) tirée de l'inclinaison de la caméra, nulle dans la zone morte (caméra de suivi normale).
+function CharacterState.GetWorldMove(humanoid: Humanoid): (Vector3, number)
+	local move = CharacterState.GetMoveVector(humanoid)
+	local magnitude = math.min(1, move.Magnitude)
+	local camera = workspace.CurrentCamera
+	if magnitude < 0.01 or not camera then
+		return Vector3.zero, 0
+	end
+	local world = camera.CFrame:VectorToWorldSpace(move)
+	local vertical = world.Y
+	if math.abs(vertical) < CAMERA_PITCH_DEADZONE then
+		vertical = 0
+	else
+		vertical = math.sign(vertical) * (math.abs(vertical) - CAMERA_PITCH_DEADZONE) / (1 - CAMERA_PITCH_DEADZONE)
+	end
+	local flat = Vector3.new(world.X, 0, world.Z)
+	if flat.Magnitude < 0.01 then
+		return Vector3.zero, vertical
+	end
+	return flat.Unit * magnitude, vertical
+end
+
 -- Saut maintenu, toutes plateformes : le ControlModule recopie le bouton saut (tactile compris)
 -- dans Humanoid.Jump à chaque frame.
 function CharacterState.IsJumpHeld(humanoid: Humanoid): boolean
-	if humanoid.Jump then
+	if humanoid.Jump or ascendHeld then
 		return true
 	end
 	if UserInputService:GetFocusedTextBox() then
@@ -75,8 +105,8 @@ function CharacterState.IsJumpHeld(humanoid: Humanoid): boolean
 		or UserInputService:IsGamepadButtonDown(Enum.UserInputType.Gamepad1, Enum.KeyCode.ButtonA)
 end
 
--- Bouton "Descendre" (vol / nage) : lié seulement tant qu'un contrôleur en a besoin, pour ne pas
--- encombrer l'écran tactile au sol. Monter = bouton de saut habituel.
+-- Boutons "Haut" / "Bas" (vol / nage) : liés seulement tant qu'un contrôleur en a besoin, pour ne
+-- pas encombrer l'écran tactile au sol. Le bouton de saut habituel monte aussi.
 local descendHeld = false
 local descendOwners: { [string]: boolean } = {}
 local descendBound = false
@@ -84,6 +114,19 @@ local descendBound = false
 local function onDescend(_actionName: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
 	descendHeld = inputState == Enum.UserInputState.Begin
 	return Enum.ContextActionResult.Pass
+end
+
+local function onAscend(_actionName: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	ascendHeld = inputState == Enum.UserInputState.Begin
+	return Enum.ContextActionResult.Pass
+end
+
+local function unbindVerticalControls()
+	descendBound = false
+	descendHeld = false
+	ascendHeld = false
+	ContextActionService:UnbindAction(DESCEND_ACTION)
+	ContextActionService:UnbindAction(ASCEND_ACTION)
 end
 
 function CharacterState.SetVerticalControls(owner: string, enabled: boolean)
@@ -102,10 +145,11 @@ function CharacterState.SetVerticalControls(owner: string, enabled: boolean)
 		)
 		ContextActionService:SetTitle(DESCEND_ACTION, "Bas")
 		ContextActionService:SetPosition(DESCEND_ACTION, UDim2.new(1, -350, 1, -110))
+		ContextActionService:BindAction(ASCEND_ACTION, onAscend, true, Enum.KeyCode.ButtonR3, Enum.KeyCode.DPadUp)
+		ContextActionService:SetTitle(ASCEND_ACTION, "Haut")
+		ContextActionService:SetPosition(ASCEND_ACTION, UDim2.new(1, -350, 1, -170))
 	elseif not needed and descendBound then
-		descendBound = false
-		descendHeld = false
-		ContextActionService:UnbindAction(DESCEND_ACTION)
+		unbindVerticalControls()
 	end
 end
 
@@ -117,9 +161,7 @@ end
 script.Destroying:Connect(function()
 	table.clear(descendOwners)
 	if descendBound then
-		descendBound = false
-		descendHeld = false
-		ContextActionService:UnbindAction(DESCEND_ACTION)
+		unbindVerticalControls()
 	end
 end)
 

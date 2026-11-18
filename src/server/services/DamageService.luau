@@ -88,7 +88,12 @@ function DamageService.ApplyDamage(victimCharacter: Model, rawAmount: number, so
 	else
 		-- Cible = un des 5 animaux géants (ou tout autre NPC) : vérifie l'invulnérabilité
 		-- frontale posée par son IA (ex: Crabe.CarapaceInvulnerableDeFace).
-		if victimCharacter:GetAttribute("FrontInvulnerable") == true and resolvedSource.FromBehind ~= true then
+		-- Le poison/saignement déjà posé (par un coup de dos réussi) passe la carapace.
+		if
+			victimCharacter:GetAttribute("FrontInvulnerable") == true
+			and resolvedSource.FromBehind ~= true
+			and resolvedSource.IsDamageOverTime ~= true
+		then
 			return false
 		end
 	end
@@ -117,8 +122,20 @@ function DamageService.ApplyDamage(victimCharacter: Model, rawAmount: number, so
 		if not fxRemote then
 			fxRemote = Remotes.Get("CombatFx")
 		end
-		local quiet = resolvedSource.IsDamageOverTime == true or resolvedSource.Quiet == true
-		;(fxRemote :: RemoteEvent):FireAllClients("Hit", victimCharacter, amount, resolvedSource.AttackerUserId or 0, quiet)
+		local remote = fxRemote :: RemoteEvent
+		local attackerUserId = resolvedSource.AttackerUserId or 0
+		if resolvedSource.IsDamageOverTime == true or resolvedSource.Quiet == true then
+			-- Ticks discrets (DoT 2 Hz, grab 4 Hz) : seulement la victime et l'attaquant, pas tout le serveur.
+			if victimPlayer then
+				remote:FireClient(victimPlayer, "Hit", victimCharacter, amount, attackerUserId, true)
+			end
+			local attacker = if resolvedSource.AttackerUserId then Players:GetPlayerByUserId(resolvedSource.AttackerUserId) else nil
+			if attacker and attacker ~= victimPlayer then
+				remote:FireClient(attacker, "Hit", victimCharacter, amount, attackerUserId, true)
+			end
+		else
+			remote:FireAllClients("Hit", victimCharacter, amount, attackerUserId, false)
+		end
 	end
 	return true
 end

@@ -22,7 +22,44 @@ local PUTREFACTION_SECONDS = 300 -- cumulés: 180+300 = 8 min
 local ADVANCED_SECONDS = 240 -- cumulés: 8min+240 = 12 min
 local SKELETON_LIFETIME_SECONDS = 360 -- reste comme abri ~6 min de plus avant de s'effriter
 
+-- Changement de couleur adouci : quelques paliers espacés (pas de tween serveur image par image).
+local COLOR_EASE_STEPS = 6
+local COLOR_EASE_STEP_SECONDS = 1.5
+
 local carcassesFolder: Folder? = nil
+
+-- Fait glisser chaque BasePart du modèle vers `target` (fraction `amount`) en paliers lissés ;
+-- `material` éventuel appliqué à mi-parcours (os qui blanchissent).
+local function easeColors(model: Model, target: Color3, amount: number, material: Enum.Material?)
+	local parts: { BasePart } = {}
+	local starts: { Color3 } = {}
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") then
+			table.insert(parts, descendant)
+			table.insert(starts, descendant.Color)
+		end
+	end
+	task.spawn(function()
+		for step = 1, COLOR_EASE_STEPS do
+			if not model.Parent then
+				return
+			end
+			local t = step / COLOR_EASE_STEPS
+			local eased = amount * t * t * (3 - 2 * t) -- smoothstep
+			for i, part in ipairs(parts) do
+				if part.Parent then
+					part.Color = starts[i]:Lerp(target, eased)
+					if material and step == COLOR_EASE_STEPS // 2 then
+						part.Material = material
+					end
+				end
+			end
+			if step < COLOR_EASE_STEPS then
+				task.wait(COLOR_EASE_STEP_SECONDS)
+			end
+		end
+	end)
+end
 
 local function getCarcassesFolder(): Folder
 	if carcassesFolder and carcassesFolder.Parent then
@@ -148,11 +185,7 @@ function CarcassService.SpawnCarcassFor(
 		if ((model:GetAttribute("MeatLeft") :: number?) or 0) > 0 then
 			model:SetAttribute("CarcassFoodType", "CarcassePutride")
 		end
-		for _, descendant in ipairs(model:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				descendant.Color = descendant.Color:Lerp(Color3.fromRGB(95, 110, 60), 0.45)
-			end
-		end
+		easeColors(model, Color3.fromRGB(95, 110, 60), 0.45, nil)
 		if model.PrimaryPart then
 			addOdorCloud(model.PrimaryPart)
 		end
@@ -164,11 +197,7 @@ function CarcassService.SpawnCarcassFor(
 		end
 		model:SetAttribute("Stage", "Pourrissement")
 		model:SetAttribute("CarcassFoodType", nil)
-		for _, descendant in ipairs(model:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				descendant.Color = descendant.Color:Lerp(Color3.fromRGB(45, 40, 30), 0.5)
-			end
-		end
+		easeColors(model, Color3.fromRGB(45, 40, 30), 0.5, nil)
 		spawnMushroomsAround(position, if isGiantAnimal then 8 else 2, if isGiantAnimal then 14 else 3)
 	end)
 
@@ -179,12 +208,7 @@ function CarcassService.SpawnCarcassFor(
 		model:SetAttribute("Stage", "Squelette")
 		model:SetAttribute("CarcassFoodType", nil)
 		CollectionService:AddTag(model, "Shelter")
-		for _, descendant in ipairs(model:GetDescendants()) do
-			if descendant:IsA("BasePart") then
-				descendant.Color = Color3.fromRGB(225, 220, 205)
-				descendant.Material = Enum.Material.Limestone
-			end
-		end
+		easeColors(model, Color3.fromRGB(225, 220, 205), 1, Enum.Material.Limestone)
 	end)
 
 	task.delay(FRESH_SECONDS + PUTREFACTION_SECONDS + ADVANCED_SECONDS + SKELETON_LIFETIME_SECONDS, function()

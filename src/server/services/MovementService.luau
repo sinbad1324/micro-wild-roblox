@@ -7,6 +7,7 @@
 -- la Veuve Noire effacée par le prochain tick de SurvivalService).
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 
 export type ModifierKind = "Multiplier" | "Override"
 
@@ -21,6 +22,13 @@ local MovementService = {}
 local baseWalkSpeed: { [Player]: number } = {}
 local baseJumpPower: { [Player]: number } = {}
 local speedModifiers: { [Player]: { [string]: Modifier } } = {}
+
+-- Lissage de WalkSpeed : les changements de vitesse glissent vers la cible au lieu de sauter
+-- (fin d'hypothermie, ruée qui retombe...). Le serveur reste seul maître de la valeur.
+local EASE_RATE = 10 -- 1/s : ~0,5 s pour rejoindre la cible
+local targetWalkSpeed: { [Player]: number } = {}
+local easedHumanoid: { [Player]: Humanoid } = {}
+local easing: { [Player]: boolean } = {}
 
 local function getHumanoid(player: Player): Humanoid?
 	local character = player.Character
@@ -100,19 +108,59 @@ function MovementService.Recompute(player: Player)
 		end
 	end
 
-	humanoid.WalkSpeed = if overrideValue ~= nil then overrideValue else math.max(0, speed)
+	local target = if overrideValue ~= nil then overrideValue else math.max(0, speed)
+	targetWalkSpeed[player] = target
+	-- Immobilisations (toile, oeuf, cocon) et nouveau corps : instantané. Le reste glisse.
+	if overrideValue ~= nil or target <= 0 or easedHumanoid[player] ~= humanoid then
+		easedHumanoid[player] = humanoid
+		easing[player] = nil
+		humanoid.WalkSpeed = target
+	elseif math.abs(humanoid.WalkSpeed - target) > 0.05 then
+		easing[player] = true
+	end
 end
 
 function MovementService.CleanupPlayer(player: Player)
 	baseWalkSpeed[player] = nil
 	baseJumpPower[player] = nil
 	speedModifiers[player] = nil
+	targetWalkSpeed[player] = nil
+	easedHumanoid[player] = nil
+	easing[player] = nil
 end
 
 -- Balaye les modificateurs expirés même si rien d'autre n'appelle Recompute entre-temps
 -- (ex: un effet avec une durée qui se termine pendant que le joueur est immobile).
 function MovementService.Start()
 	Players.PlayerRemoving:Connect(MovementService.CleanupPlayer)
+
+	-- Ne tourne que pour les joueurs en transition (quelques frames par changement de vitesse).
+	-- 10 Hz au lieu de 60 : chaque écriture de WalkSpeed est répliquée, des paliers de 0,1 s sont invisibles.
+	local easeAccum = 0
+	RunService.Heartbeat:Connect(function(frameDt: number)
+		easeAccum += frameDt
+		if easeAccum < 0.1 then
+			return
+		end
+		local dt = easeAccum
+		easeAccum = 0
+		local alpha = 1 - math.exp(-EASE_RATE * dt)
+		for player in pairs(easing) do
+			local humanoid = easedHumanoid[player]
+			local target = targetWalkSpeed[player]
+			if not humanoid or not target or not humanoid.Parent then
+				easing[player] = nil
+				continue
+			end
+			local current = humanoid.WalkSpeed
+			if math.abs(target - current) <= 0.05 then
+				humanoid.WalkSpeed = target
+				easing[player] = nil
+			else
+				humanoid.WalkSpeed = current + (target - current) * alpha
+			end
+		end
+	end)
 
 	task.spawn(function()
 		while true do

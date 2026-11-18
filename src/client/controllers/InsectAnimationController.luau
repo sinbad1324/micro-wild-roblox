@@ -26,8 +26,8 @@ local InsectAnimationController = {}
 local CONTAINER_NAME = "InsectVisual"
 -- Repos des parts NON étiquetées (oeuf/cocon), mémorisé côté client pour ne jamais relire un C0 déjà animé.
 local LOCAL_REST_ATTRIBUTE = "AnimRestC0"
-local NEAR_DISTANCE_SQ = 60 * 60
-local FAR_DISTANCE_SQ = 150 * 150
+local NEAR_DISTANCE_SQ = 40 * 40
+local FAR_DISTANCE_SQ = 100 * 100
 local BITE_DURATION = 0.3
 local ZONE_REFRESH_PERIOD = 2
 local TWO_PI = math.pi * 2
@@ -167,6 +167,10 @@ local function rebuild(rec: Record, whole: boolean)
 		if not child:IsA("BasePart") then
 			continue
 		end
+		-- Ancrages au sol (feuille, fils de soie, crémaster) : gardent leur C0 serveur.
+		if whole and (child.Name == "EggPad" or child.Name == "SilkThread" or child.Name == "Cremaster") then
+			continue
+		end
 		local weld = child:FindFirstChild("Weld")
 		if not weld or not weld:IsA("Weld") then
 			continue
@@ -285,7 +289,8 @@ local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: num
 
 	local gaitRate = if swimming then 4 + speed * 0.5 else math.min(6 + speed * 0.8, 22)
 	rec.gait = (rec.gait + dt * gaitRate) % TWO_PI
-	rec.wingPhase = (rec.wingPhase + dt * rec.wingRate) % TWO_PI
+	-- Pas de phase plafonné : évite le repliement (battement stroboscopique) à bas FPS.
+	rec.wingPhase = (rec.wingPhase + math.min(dt * rec.wingRate, 1.2)) % TWO_PI
 	local gait, wingPhase = rec.gait, rec.wingPhase
 
 	-- Morsure : les mâchoires s'ouvrent (> 0) puis claquent au-delà du repos (< 0) et reviennent.
@@ -523,7 +528,7 @@ local function onHeartbeat()
 			continue
 		end
 
-		local stage = player:GetAttribute("Stage")
+		local stage = container:GetAttribute("Stage")
 		local whole = stage == "Oeuf" or stage == "Cocon"
 		if rec.dirty or whole ~= rec.whole or character:GetScale() ~= rec.scale then
 			rebuild(rec, whole)

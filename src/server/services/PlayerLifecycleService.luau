@@ -9,6 +9,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local Remotes = require(ReplicatedStorage.shared.Remotes)
+local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 local PlayerDataRepository = require(ServerScriptService.data.PlayerDataRepository)
 local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
@@ -50,11 +52,13 @@ local function onCharacterDied(player: Player, character: Model)
 	MovementService.CleanupPlayer(player)
 	if wasMother then
 		GrowthAndNestService.RemoveNest(player.UserId)
+		Remotes.Get("NestListChanged"):FireAllClients(GrowthAndNestService.GetNestSummaries())
 	else
 		GrowthAndNestService.LeaveNest(player)
 	end
 
-	local position = Vector3.new(0, GameConstants.GROUND_TOP_Y + 2, 0)
+	-- Repli hors du tronc du Chêne (centre de la carte) : la dalle de spawn.
+	local position = WorldLayout.SPAWN_POSITION + Vector3.new(0, 2, 0)
 	if character.PrimaryPart then
 		position = character.PrimaryPart.Position
 	end

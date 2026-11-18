@@ -138,6 +138,10 @@ local function onLeaveNest(player: Player)
 	if not throttle(player) then
 		return
 	end
+	-- Seul un membre de nid autorisé à partir peut quitter (sinon : flood de diffusions / téléport).
+	if player:GetAttribute("OwnerNestUserId") == nil or player:GetAttribute("CanLeaveNest") ~= true then
+		return
+	end
 	GrowthAndNestService.LeaveNest(player)
 	broadcastNestList()
 end

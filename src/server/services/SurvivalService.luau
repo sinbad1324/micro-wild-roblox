@@ -14,6 +14,7 @@ local Players = game:GetService("Players")
 local Lighting = game:GetService("Lighting")
 local CollectionService = game:GetService("CollectionService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
@@ -29,9 +30,10 @@ local SurvivalService = {}
 local DAY_NIGHT_CYCLE_SECONDS = 600 -- un cycle complet de 24h toutes les 10 minutes réelles
 -- Le serveur démarre à 8h du matin : un nouveau joueur ne naît pas en pleine nuit froide.
 local DAY_START_OFFSET_SECONDS = DAY_NIGHT_CYCLE_SECONDS * 8 / 24
--- Le soleil avance par petits pas (~15 Hz, une seule propriété répliquée) au lieu d'un saut de
--- 5 minutes de jeu toutes les 2 s.
-local DAY_NIGHT_STEP_SECONDS = 1 / 15
+-- Horloge déterministe basée sur GetServerTimeNow : le client (WorldFxController) recalcule la même
+-- heure à chaque image pour un soleil parfaitement fluide ; le serveur ne l'écrit qu'à ~2 Hz
+-- (gameplay jour/nuit + clients sans contrôleur), ce qui limite la réplication.
+local DAY_NIGHT_WRITE_SECONDS = 0.5
 local HYPOTHERMIA_MODIFIER_KEY = "Hypothermia"
 
 -- Tick fin (1 s max) : les jauges descendent en douceur au lieu de marches toutes les 2 s.
@@ -44,8 +46,9 @@ local OVERHEAT_THIRST_PER_SECOND = 0.25
 local STARVE_DAMAGE_PER_SECOND = 1
 local DEHYDRATION_DAMAGE_PER_SECOND = 1.25
 -- Le corps se refroidit/réchauffe lentement dehors (≈20-35 s d'exploration en hiver avant
--- l'hypothermie) et vite à l'abri : on peut sortir, mais il faut revenir.
-local TEMP_RATE_OUTSIDE = 0.02
+-- l'hypothermie pour un minimum de 15-18°C, plus pour les espèces rustiques) et vite à l'abri :
+-- on peut sortir, mais il faut revenir.
+local TEMP_RATE_OUTSIDE = 0.008
 local TEMP_RATE_SHELTER = 0.1
 -- Dégâts de froid progressifs : plein tarif à 10°C sous le minimum de l'espèce.
 local HYPOTHERMIA_DAMAGE_PER_SECOND = 0.75
@@ -53,6 +56,11 @@ local OXYGEN_DRAIN_PER_SECOND = 2
 local OXYGEN_REGEN_PER_SECOND = 7.5
 local DROWN_DAMAGE_PER_SECOND = 1.5
 local SWIM_DRINK_PER_SECOND = 3
+
+-- Listes taguées relues UNE fois par tick (pas une allocation par joueur et par fonction).
+local warmSpots: { Instance } = {}
+local pondZones: { Instance } = {}
+local shelters: { Instance } = {}
 
 local function hasOxygenPassive(speciesId: string): boolean
 	local species = InsectData[speciesId]
@@ -87,7 +95,7 @@ end
 -- WarmBonus/WarmRadius, et la "Chaleur de ruche" d'une abeille de la même famille à proximité.
 local function getWarmthBonus(player: Player, rootPart: BasePart): number
 	local bonus = 0
-	for _, spot in ipairs(CollectionService:GetTagged("WarmSpot")) do
+	for _, spot in ipairs(warmSpots) do
 		if spot:IsA("BasePart") then
 			local radius = (spot:GetAttribute("WarmRadius") :: number?) or 20
 			if (spot.Position - rootPart.Position).Magnitude <= radius then
@@ -111,7 +119,7 @@ local function getWarmthBonus(player: Player, rootPart: BasePart): number
 end
 
 local function isInPondZoneXZ(position: Vector3): boolean
-	for _, zonePart in ipairs(CollectionService:GetTagged("PondZone")) do
+	for _, zonePart in ipairs(pondZones) do
 		if zonePart:IsA("BasePart") then
 			local relative = zonePart.CFrame:PointToObjectSpace(position)
 			local halfSize = zonePart.Size * 0.5
@@ -156,7 +164,7 @@ local function isPlayerSheltered(player: Player, rootPart: BasePart): boolean
 		return true
 	end
 
-	for _, shelterInstance in ipairs(CollectionService:GetTagged("Shelter")) do
+	for _, shelterInstance in ipairs(shelters) do
 		local position: Vector3? = nil
 		if shelterInstance:IsA("BasePart") then
 			position = shelterInstance.Position
@@ -173,7 +181,7 @@ end
 
 
 local function advanceDayNightCycle()
-	local now = (os.clock() + DAY_START_OFFSET_SECONDS) % DAY_NIGHT_CYCLE_SECONDS
+	local now = (workspace:GetServerTimeNow() + DAY_START_OFFSET_SECONDS) % DAY_NIGHT_CYCLE_SECONDS
 	Lighting.ClockTime = (now / DAY_NIGHT_CYCLE_SECONDS) * 24
 end
 
@@ -267,10 +275,16 @@ local function survivalTick(player: Player, seasonInfo: SeasonConfig.SeasonInfo,
 end
 
 function SurvivalService.Start()
+	-- Le serveur démarre à 8h : l'origine du cycle est recalée sur l'heure serveur actuelle.
+	DAY_START_OFFSET_SECONDS -= workspace:GetServerTimeNow() % DAY_NIGHT_CYCLE_SECONDS
+	workspace:SetAttribute("DayCycleSeconds", DAY_NIGHT_CYCLE_SECONDS)
+	workspace:SetAttribute("DayStartOffset", DAY_START_OFFSET_SECONDS)
 	advanceDayNightCycle()
-	task.spawn(function()
-		while true do
-			task.wait(DAY_NIGHT_STEP_SECONDS)
+	local sinceWrite = 0
+	RunService.Heartbeat:Connect(function(dt: number)
+		sinceWrite += dt
+		if sinceWrite >= DAY_NIGHT_WRITE_SECONDS then
+			sinceWrite = 0
 			advanceDayNightCycle()
 		end
 	end)
@@ -284,6 +298,9 @@ function SurvivalService.Start()
 			local isNight = Lighting.ClockTime < 6 or Lighting.ClockTime > 19
 			local ambientTemp = if isNight then seasonInfo.NightAmbientTemp else seasonInfo.DayAmbientTemp
 			workspace:SetAttribute("PondFrozenNow", seasonInfo.PondFrozen)
+			warmSpots = CollectionService:GetTagged("WarmSpot")
+			pondZones = CollectionService:GetTagged("PondZone")
+			shelters = CollectionService:GetTagged("Shelter")
 
 			for _, player in ipairs(Players:GetPlayers()) do
 				local ok, err = pcall(survivalTick, player, seasonInfo, ambientTemp)

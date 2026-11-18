@@ -11,6 +11,10 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
+local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
+
+-- Portée des marqueurs de famille : une demi-carte, pour qu'une larve retrouve sa Mère et sa colonie.
+local FAMILY_MARKER_DISTANCE = WorldLayout.MAP_SIZE * 0.5
 
 local MarkerController = {}
 
@@ -71,7 +75,7 @@ local function refreshFamilyMarkers()
 				if marker then
 					marker:Destroy()
 				end
-				marker = makeBillboard("FamilyMarker", text, Color3.fromRGB(255, 225, 120), root, 4, false, 250)
+				marker = makeBillboard("FamilyMarker", text, Color3.fromRGB(255, 225, 120), root, 4, false, FAMILY_MARKER_DISTANCE)
 				familyMarkers[other] = marker
 			end
 			local label = (marker :: BillboardGui):FindFirstChild("Text") :: TextLabel?

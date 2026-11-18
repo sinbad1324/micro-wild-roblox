@@ -53,6 +53,9 @@ local GRAB_ESCAPE_PRESSES_STRONG = 20
 local MAX_ESCAPE_PRESSES_PER_SECOND = 14
 local PROJECTILE_SPEED = 90
 local GRAB_FOLLOW_RATE = 18 -- 1/s : la proie rejoint les mandibules en douceur (pas de téléportation)
+local GRAB_FACE_GRABBER = CFrame.Angles(0, math.pi, 0)
+local LUNGE_WINDUP = 0.25 -- délai entre le télégraphe de charge et le coup
+local LEAP_AIRTIME = 0.6 -- durée du bond côté client (anneau d'atterrissage)
 local MAX_WEBS_PER_PLAYER = 2
 
 local cooldowns: { [Player]: { [string]: number } } = {}
@@ -265,6 +268,7 @@ local function releaseGrab(state: GrabState, reason: string?)
 	grabsByGrabber[state.Grabber] = nil
 	grabsByVictim[state.VictimModel] = nil
 	MovementService.RemoveModifier(state.Grabber, "Grabbing")
+	state.Grabber:SetAttribute("IsGrabbing", nil)
 
 	local victimRoot = state.VictimModel.PrimaryPart or state.VictimModel:FindFirstChild("HumanoidRootPart") :: BasePart?
 	state.VictimModel:SetAttribute("GrabbedBy", nil)
@@ -349,13 +353,14 @@ local function startGrab(grabber: Player, grabberRoot: BasePart, definition: Abi
 	grabsByVictim[target.Model] = state
 	target.Model:SetAttribute("GrabbedBy", grabber.UserId)
 	MovementService.AddModifier(grabber, "Grabbing", "Override", 0, GRAB_DURATION)
+	-- Lu par FlightController : un prédateur volant fait du surplace pendant la prise.
+	grabber:SetAttribute("IsGrabbing", true)
 
 	if target.Player then
 		local victim = target.Player
 		victim:SetAttribute("IsGrabbed", true)
 		MovementService.AddModifier(victim, "Grabbed", "Override", 0, GRAB_DURATION)
-		-- La proie est tenue devant les mandibules du prédateur.
-		-- grabFollow l'amène ensuite en douceur devant les mandibules.
+		-- Ancrée : grabFollow l'amène ensuite en douceur devant les mandibules du prédateur.
 		target.Root.Anchored = true
 		Remotes.Get("GrabStateChanged"):FireClient(victim, true, grabber.Name, state.EscapeNeeded)
 		escapePressTimes[victim] = {}
@@ -389,6 +394,7 @@ local function onGrabEscape(player: Player)
 
 	state.EscapePresses += 1
 	if state.EscapePresses >= state.EscapeNeeded then
+		state.ThrowOnRelease = false -- une évasion réussie n'est pas une projection
 		releaseGrab(state, "Libéré !")
 		notify(state.Grabber, "Votre proie s'est échappée !", "warning")
 	end
@@ -428,7 +434,8 @@ local function grabFollow(deltaTime: number)
 	for grabber, state in pairs(grabsByGrabber) do
 		local character = grabber.Character
 		local grabberRoot = character and character:FindFirstChild("HumanoidRootPart") :: BasePart?
-		local hold = CFrame.new(0, 0, -2.5 * (if character then character:GetScale() else 1))
+		-- Devant les mandibules, tournée vers le prédateur (CFrame = valeur, aucune allocation de table).
+		local hold = CFrame.new(0, 0, -2.5 * (if character then character:GetScale() else 1)) * GRAB_FACE_GRABBER
 		if character and grabberRoot then
 			if state.VictimPlayer then
 				local victimRoot = state.VictimModel:FindFirstChild("HumanoidRootPart") :: BasePart?
@@ -491,8 +498,8 @@ end
 local function executeLunge(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition, scale: number, slot: string)
 	local range = definition.Range * math.max(scale, 0.6)
 	Remotes.Get("AbilityCast"):FireClient(player, slot, "Lunge", definition.Cooldown, range, root.CFrame.LookVector)
-	fx("Tele", player.Character, "Lunge", root.CFrame.LookVector * range, nil) -- traînée d'avertissement
-	task.delay(0.25, function()
+	fx("Tele", player.Character, "Lunge", root.CFrame.LookVector * range, LUNGE_WINDUP) -- traînée d'avertissement
+	task.delay(LUNGE_WINDUP, function()
 		local _, currentRoot = getAliveRoot(player)
 		if not currentRoot then
 			return
@@ -514,7 +521,7 @@ local function executeLeap(player: Player, root: BasePart, definition: AbilityCa
 	local target = targets[1]
 	local landing = if target then target.Root.Position else root.Position + root.CFrame.LookVector * range
 	Remotes.Get("AbilityCast"):FireClient(player, slot, "Leap", definition.Cooldown, range, landing)
-	fx("Tele", player.Character, "Leap", landing, nil) -- anneau d'atterrissage visible par la proie
+	fx("Tele", player.Character, "Leap", landing, LEAP_AIRTIME) -- anneau d'atterrissage visible par la proie
 	if not target or definition.Power <= 0 then
 		return
 	end
@@ -702,17 +709,26 @@ local function executeUtility(player: Player, root: BasePart, definition: Abilit
 			feedback(player, false, "Aucune cible à marquer.")
 			return false
 		end
+		-- Jeton (comme CamouflageToken) : un re-marquage prolonge la marque au lieu d'être effacé par l'ancien délai.
+		local token = ((target.Model:GetAttribute("MarkToken") :: number?) or 0) + 1
+		target.Model:SetAttribute("MarkToken", token)
 		target.Model:SetAttribute("Marked", true)
-		local highlight = Instance.new("Highlight")
-		highlight.Name = "PheromoneMark"
-		highlight.FillColor = Color3.fromRGB(255, 120, 30)
-		highlight.FillTransparency = 0.6
-		highlight.OutlineColor = Color3.fromRGB(255, 60, 0)
-		highlight.Parent = target.Model
+		local highlight = target.Model:FindFirstChild("PheromoneMark") :: Highlight?
+		if not highlight then
+			local newHighlight = Instance.new("Highlight")
+			newHighlight.Name = "PheromoneMark"
+			newHighlight.FillColor = Color3.fromRGB(255, 120, 30)
+			newHighlight.FillTransparency = 0.6
+			newHighlight.OutlineColor = Color3.fromRGB(255, 60, 0)
+			newHighlight.Parent = target.Model
+			highlight = newHighlight
+		end
 		task.delay(definition.Duration, function()
-			if target.Model.Parent then
+			if target.Model.Parent and target.Model:GetAttribute("MarkToken") == token then
 				target.Model:SetAttribute("Marked", nil)
-				highlight:Destroy()
+				if highlight then
+					highlight:Destroy()
+				end
 			end
 		end)
 		for _, member in ipairs(familyInRange(player, root.Position, 200)) do
@@ -728,6 +744,7 @@ local function executeUtility(player: Player, root: BasePart, definition: Abilit
 	elseif abilityId == "AutotomieFuite" then
 		local state = player.Character and grabsByVictim[player.Character]
 		if state then
+			state.ThrowOnRelease = false
 			releaseGrab(state, "Vous sacrifiez une patte pour fuir !")
 		elseif not CombatService.ReleaseAnimalHoldHook(player) then
 			feedback(player, false, "Personne ne vous tient.")
@@ -758,18 +775,21 @@ local function useAbility(player: Player, slot: string)
 	if not character or not root then
 		return
 	end
+	-- Anti-spam : chaque refus pose ce court cooldown avant de renvoyer un toast.
+	if isOnCooldown(player, "NoAbility_" .. slot) then
+		return
+	end
 	if StatusEffectService.Has(character, "Stun") then
+		startCooldown(player, "NoAbility_" .. slot, 0.5)
 		feedback(player, false, "Étourdi !")
 		return
 	end
 	if player:GetAttribute("Stage") ~= "Adulte" then
+		startCooldown(player, "NoAbility_" .. slot, 0.5)
 		feedback(player, false, "Les pouvoirs se débloquent à l'âge adulte.")
 		return
 	end
 
-	if isOnCooldown(player, "NoAbility_" .. slot) then
-		return
-	end
 	local species = getSpecies(player)
 	local abilityId: string? = nil
 	local definition: AbilityCatalog.AbilityDefinition? = nil

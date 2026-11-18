@@ -106,6 +106,20 @@ local function applyVelocity(velocity: Vector3)
 		velocity = velocity.Unit * MAX_MOTION_SPEED
 	end
 	root.AssemblyLinearVelocity = velocity
+	-- Fenêtre d'impulsion : Flight/Swim/WallClimb coupent leur LinearVelocity tant qu'elle dure,
+	-- sinon la contrainte réécrite chaque frame annule le recul/la charge (horloge locale, même client).
+	local character = player.Character
+	if character then
+		character:SetAttribute("ImpulseUntil", os.clock() + 0.25)
+		local humanoid = character:FindFirstChildOfClass("Humanoid")
+		if humanoid and velocity.Y > 0 then
+			-- Au sol seulement (pas en vol/nage/escalade) : le Humanoid freinerait l'impulsion en quelques frames.
+			local state = humanoid:GetState()
+			if state == Enum.HumanoidStateType.Running or state == Enum.HumanoidStateType.RunningNoPhysics or state == Enum.HumanoidStateType.Landed then
+				humanoid:ChangeState(Enum.HumanoidStateType.Freefall)
+			end
+		end
+	end
 end
 
 local function applyLunge(direction: Vector3, range: number)

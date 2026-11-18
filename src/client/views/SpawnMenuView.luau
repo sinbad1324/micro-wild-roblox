@@ -47,6 +47,7 @@ local PAGES_TOP = 86
 
 local ROOT_SHOWN = UDim2.fromScale(0.5, 0.5)
 local ROOT_HIDDEN = UDim2.new(0.5, 0, 0.5, 28)
+local ROOT_OFFSCREEN = UDim2.fromScale(0.5, 1.6) -- fermeture : le panneau sort par le bas
 
 -- Liste ordonnée (catégorie puis nom) pour un affichage stable : pairs() sur InsectData ne
 -- garantit aucun ordre.
@@ -117,6 +118,19 @@ local function abilitySummary(info: InsectData.InsectInfo): string
 		text ..= "Passifs : " .. table.concat(passives, ", ")
 	end
 	return text
+end
+
+-- "Clic Morsure · E Jet Acide Formique" : pouvoirs actifs en une ligne pour la carte.
+local function activeAbilityLine(info: InsectData.InsectInfo): string
+	local parts = {}
+	for _, id in ipairs(info.Abilities) do
+		local definition = AbilityCatalog[id]
+		local slotLabel = if definition then SLOT_LABELS[definition.Slot] else nil
+		if slotLabel then
+			table.insert(parts, slotLabel .. " " .. prettify(id))
+		end
+	end
+	return if #parts > 0 then table.concat(parts, " · ") else "Aucun pouvoir actif"
 end
 
 -- Bouton "pilule" (onglets, filtres).
@@ -296,7 +310,7 @@ function SpawnMenuView.Mount()
 	local gridLayout = Instance.new("UIGridLayout")
 	gridLayout.SortOrder = Enum.SortOrder.LayoutOrder
 	gridLayout.CellPadding = UDim2.fromOffset(8, 8)
-	gridLayout.CellSize = UDim2.new(0.5, -6, 0, 74) -- 2 colonnes ; -6 : marge d'arrondi pour ne jamais retomber à 1
+	gridLayout.CellSize = UDim2.new(0.5, -6, 0, 88) -- 2 colonnes ; -6 : marge d'arrondi pour ne jamais retomber à 1
 	gridLayout.Parent = grid
 
 	local emptyLabel = UiTheme.Label(speciesPage, Enum.Font.Gotham, 13, Colors.Muted)
@@ -418,6 +432,13 @@ function SpawnMenuView.Mount()
 		traitLabel.Size = UDim2.new(1, -20, 0, 14)
 		traitLabel.TextTruncate = Enum.TextTruncate.AtEnd
 		traitLabel.Text = traitSummary(info)
+
+		local abilityLabel = UiTheme.Label(button, Enum.Font.Gotham, 11, Colors.Text)
+		abilityLabel.Position = UDim2.fromOffset(10, 66)
+		abilityLabel.Size = UDim2.new(1, -20, 0, 14)
+		abilityLabel.TextTruncate = Enum.TextTruncate.AtEnd
+		abilityLabel.TextTransparency = 0.25
+		abilityLabel.Text = activeAbilityLine(info)
 
 		cards[info.Id] = { Button = button, Stroke = stroke, Info = info, SearchName = string.lower(info.Name) }
 
@@ -588,10 +609,24 @@ function SpawnMenuView.Mount()
 		nestTabButton.Text = string.format("Naître dans un nid (%d)", count)
 	end
 
-	Remotes.Get("NestListChanged").OnClientEvent:Connect(function(summaries: unknown)
-		if typeof(summaries) == "table" then
-			renderNestList(summaries :: { NestSummary })
+	-- Liste reçue même menu caché, mais rendue seulement quand le menu est visible (pas de
+	-- reconstruction des lignes pendant toute la vie adulte).
+	local shown = false
+	local latestSummaries: { NestSummary }? = nil
+	task.spawn(function()
+		local ok, remote = pcall(Remotes.Get, "NestListChanged")
+		if not ok then
+			warn("[SpawnMenuView] NestListChanged introuvable : " .. tostring(remote))
+			return
 		end
+		(remote :: RemoteEvent).OnClientEvent:Connect(function(summaries: unknown)
+			if typeof(summaries) == "table" then
+				latestSummaries = summaries :: { NestSummary }
+				if shown then
+					renderNestList(summaries :: { NestSummary })
+				end
+			end
+		end)
 	end)
 
 	-- ---------- Onglets ----------
@@ -646,7 +681,7 @@ function SpawnMenuView.Mount()
 
 	-- --- Visibilité : uniquement tant que Oeuf à 0% de croissance (attributs pas encore
 	-- répliqués au premier Mount -> traité comme caché, les signaux ci-dessous l'afficheront). ---
-	local shown = false
+	local visibilityToken = 0 -- invalide une fermeture en cours si le menu se rouvre entre-temps
 	local function refreshVisibility()
 		local stage = player:GetAttribute("Stage")
 		local growth = player:GetAttribute("Growth")
@@ -656,16 +691,28 @@ function SpawnMenuView.Mount()
 		end
 		shown = show
 		ClientState.IsInMenu = show
-		screenGui.Enabled = show
+		visibilityToken += 1
+		local token = visibilityToken
 		if show then
 			-- Entrée : le voile s'assombrit, le panneau remonte en place.
+			screenGui.Enabled = true
 			showTab(true)
+			if latestSummaries then
+				renderNestList(latestSummaries)
+			end
 			backdrop.BackgroundTransparency = 1
 			root.Position = ROOT_HIDDEN
 			UiTheme.Tween(backdrop, 0.3, { BackgroundTransparency = 0.45 })
 			UiTheme.Tween(root, 0.35, { Position = ROOT_SHOWN }, Enum.EasingStyle.Back)
 		else
+			-- Sortie : le panneau glisse vers le bas et le voile s'éclaircit, puis on désactive.
 			searchBox:ReleaseFocus()
+			UiTheme.Tween(backdrop, 0.3, { BackgroundTransparency = 1 })
+			UiTheme.Tween(root, 0.3, { Position = ROOT_OFFSCREEN }, Enum.EasingStyle.Quad, Enum.EasingDirection.In).Completed:Connect(function()
+				if token == visibilityToken then
+					screenGui.Enabled = false
+				end
+			end)
 		end
 	end
 

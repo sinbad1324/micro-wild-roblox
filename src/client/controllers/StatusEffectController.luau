@@ -19,6 +19,14 @@ local StatusEffectController = {}
 local player = Players.LocalPlayer
 local started = false
 
+-- Clés et couleurs précalculées : aucune concaténation ni Color3 alloué par frame.
+local STATUS_BLIND = "Status_Blind"
+local STATUS_INVERT = "Status_InvertControls"
+local STATUS_MIND_CONTROL = "Status_MindControl"
+local FROST_TINT = Color3.fromRGB(200, 225, 255)
+local NEUTRAL_TINT = Color3.new(1, 1, 1)
+local AMBIENT_REFRESH = 0.25 -- s : soif/froid changent lentement, inutile de les lire à chaque frame
+
 local shakeUntil = 0
 local shakeIntensity = 0
 local shakeDuration = 1
@@ -45,9 +53,9 @@ local function getHumanoid(): Humanoid?
 	return character and character:FindFirstChildOfClass("Humanoid")
 end
 
-local function hasStatus(name: string): boolean
+local function hasStatus(key: string): boolean
 	local character = player.Character
-	return character ~= nil and character:GetAttribute("Status_" .. name) == true
+	return character ~= nil and character:GetAttribute(key) == true
 end
 
 function StatusEffectController.Start()
@@ -91,7 +99,7 @@ function StatusEffectController.Start()
 
 	local frost = Instance.new("ColorCorrectionEffect")
 	frost.Name = "HypothermiaTint"
-	frost.TintColor = Color3.new(1, 1, 1)
+	frost.TintColor = NEUTRAL_TINT
 	frost.Parent = Lighting
 
 	local wasBlind = false
@@ -109,7 +117,7 @@ function StatusEffectController.Start()
 
 	-- Après le ControlModule (priorité Input) : notre Move() inverse remplace le sien pour la frame.
 	RunService:BindToRenderStep("MicroWildInvertControls", Enum.RenderPriority.Character.Value + 1, function()
-		local inverted = hasStatus("InvertControls") or hasStatus("MindControl")
+		local inverted = hasStatus(STATUS_INVERT) or hasStatus(STATUS_MIND_CONTROL)
 		invertLabel.Visible = inverted
 		if not inverted or not controls then
 			return
@@ -132,7 +140,7 @@ function StatusEffectController.Start()
 
 	RunService.RenderStepped:Connect(function()
 		-- Éblouissement.
-		local blind = hasStatus("Blind")
+		local blind = hasStatus(STATUS_BLIND)
 		if blind and not wasBlind then
 			if blindFade then
 				blindFade:Cancel()
@@ -160,15 +168,27 @@ function StatusEffectController.Start()
 				humanoid.CameraOffset = Vector3.zero
 			end
 		end
+	end)
 
-		-- Soif : vision trouble ; hypothermie : teinte bleutée.
-		local thirst = (player:GetAttribute("Thirst") :: number?) or 100
-		blur.Size = if thirst < 20 then (20 - thirst) * 0.6 else 0
-		local bodyTemp = (player:GetAttribute("BodyTemperature") :: number?) or 20
-		local species = InsectData[(player:GetAttribute("Species") :: string?) or ""]
-		local cold = species ~= nil and bodyTemp < species.IdealTempMin
-		frost.TintColor = if cold then Color3.fromRGB(200, 225, 255) else Color3.new(1, 1, 1)
-		frost.Saturation = if cold then -0.3 else 0
+	-- Soif : vision trouble ; hypothermie : teinte bleutée. Écrit seulement quand la valeur change.
+	task.spawn(function()
+		local wasCold = false
+		while true do
+			local thirst = (player:GetAttribute("Thirst") :: number?) or 100
+			local blurSize = if thirst < 20 then (20 - thirst) * 0.6 else 0
+			if blur.Size ~= blurSize then
+				blur.Size = blurSize
+			end
+			local bodyTemp = (player:GetAttribute("BodyTemperature") :: number?) or 20
+			local species = InsectData[(player:GetAttribute("Species") :: string?) or ""]
+			local cold = species ~= nil and bodyTemp < species.IdealTempMin
+			if cold ~= wasCold then
+				wasCold = cold
+				frost.TintColor = if cold then FROST_TINT else NEUTRAL_TINT
+				frost.Saturation = if cold then -0.3 else 0
+			end
+			task.wait(AMBIENT_REFRESH)
+		end
 	end)
 
 	Remotes.Get("CameraShake").OnClientEvent:Connect(function(intensity: unknown, duration: unknown)

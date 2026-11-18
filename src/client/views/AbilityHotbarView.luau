@@ -82,6 +82,7 @@ type SlotCard = {
 	Cooldown: Frame,
 	Timer: TextLabel,
 	Press: Tween,
+	CooldownStart: number,
 	CooldownEnd: number,
 	Enabled: boolean,
 }
@@ -207,6 +208,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 			Cooldown = cooldown,
 			Timer = timer,
 			Press = TweenService:Create(scale, PRESS_INFO, { Scale = 1 }),
+			CooldownStart = 0,
 			CooldownEnd = 0,
 			Enabled = true,
 		}
@@ -403,6 +405,14 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 		if card and card.Enabled then
 			card.Scale.Scale = 0.9
 			card.Press:Play()
+			-- Appui pendant la recharge : éclat rouge du contour ("pas encore prêt"). On ignore une
+			-- recharge lancée à l'instant : c'est cet appui même qui l'a déclenchée (ordre CAS/InputBegan).
+			local now = os.clock()
+			if card.CooldownEnd > now and now - card.CooldownStart > 0.15 then
+				card.Stroke.Color = Colors.Danger
+				card.Stroke.Transparency = 0
+				UiTheme.Tween(card.Stroke, 0.35, { Transparency = 0.8 })
+			end
 		end
 	end
 
@@ -441,6 +451,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 						card.CooldownEnd = 0
 						card.Timer.Text = ""
 						card.Cooldown.Size = COOLDOWN_EMPTY
+						card.Stroke.Color = Colors.Accent
 						if card.Enabled then
 							card.Stroke.Transparency = 0
 							UiTheme.Tween(card.Stroke, 0.5, { Transparency = 0.8 })
@@ -460,7 +471,8 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 		abilityCooldownSignal.Event:Connect(function(slot: string, seconds: number)
 			local card = cards[slot]
 			if card and typeof(seconds) == "number" and seconds > 0 then
-				card.CooldownEnd = os.clock() + seconds
+				card.CooldownStart = os.clock()
+				card.CooldownEnd = card.CooldownStart + seconds
 				-- Balayage : un seul tween linéaire du voile, du plein vers le vide.
 				card.Cooldown.Size = COOLDOWN_FULL
 				UiTheme.Tween(card.Cooldown, seconds, { Size = COOLDOWN_EMPTY }, Enum.EasingStyle.Linear)

@@ -7,8 +7,10 @@
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ContextActionService = game:GetService("ContextActionService")
+local TweenService = game:GetService("TweenService")
 
 local Remotes = require(ReplicatedStorage.shared.Remotes)
+local UiTheme = require(script.Parent.UiTheme)
 
 local GrabPromptView = {}
 
@@ -17,6 +19,9 @@ local mounted = false
 local ESCAPE_ACTION = "MW_GrabEscape"
 -- Repli si le serveur n'envoie pas le nombre d'appuis requis.
 local DEFAULT_PRESSES_NEEDED = 12
+-- Tailles pré-allouées : l'entrée "pop" part d'un cadre un peu plus petit.
+local PROMPT_SIZE = UDim2.fromOffset(420, 90)
+local PROMPT_POP_START = UDim2.fromOffset(370, 80)
 
 function GrabPromptView.Mount()
 	if mounted then
@@ -34,59 +39,52 @@ function GrabPromptView.Mount()
 	screenGui.DisplayOrder = 30
 	screenGui.Parent = playerGui
 
+	local Colors = UiTheme.Colors
+
 	local promptFrame = Instance.new("Frame")
 	promptFrame.Name = "PromptFrame"
 	promptFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 	promptFrame.Position = UDim2.new(0.5, 0, 0.4, 0)
-	promptFrame.Size = UDim2.new(0, 420, 0, 90)
-	promptFrame.BackgroundColor3 = Color3.fromRGB(15, 15, 15)
-	promptFrame.BackgroundTransparency = 0.2
+	promptFrame.Size = PROMPT_SIZE
+	promptFrame.BackgroundColor3 = Colors.Panel
+	promptFrame.BackgroundTransparency = 0.1
+	promptFrame.BorderSizePixel = 0
 	promptFrame.Visible = false
 	promptFrame.Parent = screenGui
+	UiTheme.Corner(promptFrame, 12)
+	local promptStroke = UiTheme.Stroke(promptFrame, Colors.Danger, 2, 0.6)
+	UiTheme.Padding(promptFrame, 14, 10)
+	UiTheme.BindScale(promptFrame, 480, 360, 0.6, 1.2)
 
-	local promptCorner = Instance.new("UICorner")
-	promptCorner.CornerRadius = UDim.new(0, 10)
-	promptCorner.Parent = promptFrame
-
-	local promptPadding = Instance.new("UIPadding")
-	promptPadding.PaddingTop = UDim.new(0, 10)
-	promptPadding.PaddingLeft = UDim.new(0, 14)
-	promptPadding.PaddingRight = UDim.new(0, 14)
-	promptPadding.Parent = promptFrame
-
-	local promptLabel = Instance.new("TextLabel")
+	local promptLabel = UiTheme.Label(promptFrame, Enum.Font.GothamBold, 18, Colors.Danger)
 	promptLabel.Name = "PromptLabel"
 	promptLabel.Size = UDim2.new(1, 0, 0, 44)
-	promptLabel.BackgroundTransparency = 1
-	promptLabel.Font = Enum.Font.GothamBold
-	promptLabel.TextSize = 18
 	promptLabel.TextWrapped = true
-	promptLabel.TextColor3 = Color3.fromRGB(255, 70, 70)
-	promptLabel.Text = ""
-	promptLabel.Parent = promptFrame
+	promptLabel.TextXAlignment = Enum.TextXAlignment.Center
 
 	local track = Instance.new("Frame")
 	track.Name = "Track"
 	track.Position = UDim2.new(0, 0, 0, 52)
 	track.Size = UDim2.new(1, 0, 0, 18)
-	track.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
+	track.BackgroundColor3 = Colors.Track
 	track.BorderSizePixel = 0
 	track.Parent = promptFrame
-
-	local trackCorner = Instance.new("UICorner")
-	trackCorner.CornerRadius = UDim.new(0, 5)
-	trackCorner.Parent = track
+	UiTheme.Corner(track, 6)
 
 	local fill = Instance.new("Frame")
 	fill.Name = "Fill"
 	fill.Size = UDim2.new(0, 0, 1, 0)
 	fill.BorderSizePixel = 0
-	fill.BackgroundColor3 = Color3.fromRGB(95, 215, 120)
+	fill.BackgroundColor3 = Colors.Accent
 	fill.Parent = track
+	UiTheme.Corner(fill, 6)
 
-	local fillCorner = Instance.new("UICorner")
-	fillCorner.CornerRadius = UDim.new(0, 5)
-	fillCorner.Parent = fill
+	-- Alerte : contour pulsant, un seul tween en boucle joué seulement pendant l'agrippement.
+	local strokePulse = TweenService:Create(
+		promptStroke,
+		TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		{ Transparency = 0 }
+	)
 
 	local isGrabbed = false
 	local escapeProgress = 0
@@ -104,7 +102,12 @@ function GrabPromptView.Mount()
 
 	local function setEscapeProgress(value: number)
 		escapeProgress = math.clamp(value, 0, 1)
-		fill.Size = UDim2.new(escapeProgress, 0, 1, 0)
+		-- Remplissage tweené (une allocation par appui, jamais par frame) : ambre -> vert à mesure
+		-- qu'on approche de la libération.
+		UiTheme.Tween(fill, 0.12, {
+			Size = UDim2.new(escapeProgress, 0, 1, 0),
+			BackgroundColor3 = Colors.Warning:Lerp(Colors.Accent, escapeProgress),
+		})
 	end
 
 	local function onEscapeAction(_actionName: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
@@ -127,16 +130,23 @@ function GrabPromptView.Mount()
 		ContextActionService:SetTitle(ESCAPE_ACTION, "Libérer")
 		ContextActionService:SetPosition(ESCAPE_ACTION, UDim2.new(0.5, -40, 0.6, 0))
 		promptLabel.Text = string.format(
-			"AGRIPPÉ PAR %s — Appuie sur ESPACE pour te libérer !",
-			grabberName or "un prédateur"
+			"AGRIPPÉ PAR %s — %s pour te libérer !",
+			grabberName or "un prédateur",
+			if UiTheme.IsTouchOnly() then "Touche « Libérer »" else "Appuie sur ESPACE"
 		)
+		-- Entrée : petit "pop" + contour rouge pulsant.
+		promptFrame.Size = PROMPT_POP_START
 		promptFrame.Visible = true
+		UiTheme.Tween(promptFrame, 0.25, { Size = PROMPT_SIZE }, Enum.EasingStyle.Back)
+		strokePulse:Play()
 	end
 
 	local function hidePrompt()
 		isGrabbed = false
 		ContextActionService:UnbindAction(ESCAPE_ACTION)
 		promptFrame.Visible = false
+		strokePulse:Cancel()
+		promptStroke.Transparency = 0.6
 		setEscapeProgress(0)
 	end
 
@@ -163,7 +173,6 @@ function GrabPromptView.Mount()
 			hidePrompt()
 		end
 	end)
-
 end
 
 return GrabPromptView

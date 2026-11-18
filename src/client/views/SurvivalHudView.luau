@@ -441,6 +441,9 @@ function SurvivalHudView.Mount()
 			-- Bannière uniquement sur un vrai changement (pas à la première réplication).
 			if lastSeasonId ~= nil and seasonId ~= lastSeasonId and seasonInfo then
 				showSeasonBanner(seasonInfo.DisplayName, seasonInfo.Description)
+				-- Fondu d'apparition du nouveau nom de saison dans le pied du panneau.
+				seasonLabel.TextTransparency = 1
+				UiTheme.Tween(seasonLabel, 0.8, { TextTransparency = 0 })
 			end
 			lastSeasonId = seasonId
 		end

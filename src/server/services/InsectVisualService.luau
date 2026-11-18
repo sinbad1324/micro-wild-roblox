@@ -1485,7 +1485,8 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 	container.Name = CONTAINER_NAME
 	-- Échelle à laquelle les RestC0 sont exprimés (ScaleTo ne met pas les attributs à l'échelle).
 	container:SetAttribute("AnimScale", character:GetScale())
-	container.Parent = character
+	-- Stade du corps réellement affiché (le Stage du joueur change ~0,9 s avant le nouveau corps).
+	container:SetAttribute("Stage", stage)
 
 	local ctx: Ctx = {
 		root = root,
@@ -1520,6 +1521,8 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 		ctx.s = character:GetScale() * plan.Length * 1.5
 		buildLarva(ctx, false)
 	end
+	-- Parenté en une fois : un seul recalcul d'assemblage et une seule réplication du corps complet.
+	container.Parent = character
 
 	InsectVisualService.SetCamouflage(character, (character:GetAttribute("CamouflageLevel") :: number?) or 0)
 end

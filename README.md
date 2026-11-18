@@ -31,7 +31,8 @@ Un jeu de survie, d'évolution et de PvP à l'échelle microscopique sur **Roblo
 | **C** (maintenir) | Creuser là où regarde la caméra (espèces fouisseuses) |
 | **G** | Manger / Boire (approcher une nourriture, une goutte, la berge, une carcasse) |
 | **T** | Transporter la nourriture / un morceau de carcasse jusqu'au nid |
-| **Espace** | Sauter, puis décoller (volants adultes) ; monter en vol / à la nage. **Ctrl** pour descendre |
+| **Espace** | Sauter, puis décoller (volants adultes, nouvel appui en l'air) ; monter en vol / à la nage ; se détacher d'un mur. **Ctrl** ou **Q** pour descendre (inclinaison de la caméra en vol/nage aussi) |
+| **H** | Afficher / masquer l'aide des commandes (bouton **?** sur mobile) |
 
 ## ✅ Systèmes implémentés
 
@@ -46,6 +47,11 @@ Un jeu de survie, d'évolution et de PvP à l'échelle microscopique sur **Roblo
 * **Carcasses** en 4 étapes (fraîche → putréfaction → champignons → squelette-abri) et **Festin de Kaiju**.
 * **4 saisons visibles** : pluie et bombes d'eau, rosée, flaques qui sèchent l'été, feuilles mortes, fruits qui tombent, vent, neige, mare gelée.
 * **Progression** : Points d'Évolution, kills, classement (leaderstats), sauvegarde DataStore.
+* **Carte 1500 × 1500 studs** : toutes les coordonnées du monde viennent de `src/shared/WorldLayout.luau` (jamais en dur).
+* **Mouvement fluide** : escalade spider-walk multi-rayons (murs, plafonds, passage d'arête), vol avec inertie/roulis/tangage, nage avec flottabilité et sortie d'eau, vitesse de marche lissée côté serveur, caméra adaptée à l'échelle (zoom réduit en tunnel, FOV à la vitesse).
+* **Animations procédurales** (client) : pattes, ailes, antennes des insectes et membres des 5 animaux géants, limitées par la distance.
+* **Effets côté client** : VFX de combat (remote `CombatFx` : chiffres de dégâts, projectiles, télégraphes, auras de statut), jour/nuit fluide calé sur l'heure serveur, pluie/neige locales, chutes de fruits et bombes d'eau animées localement.
+* **Interface** : écran de chargement, HUD de survie réactif (mobile/tablette/PC), barre de pouvoirs avec recharges, toasts, écran de mort (cause + retour à l'œuf), aide des commandes (H).
 
 ## 📁 Structure Rojo du Projet (Identique à `Battelgrounds`)
 
@@ -90,10 +96,11 @@ micro-wild-roblox/
     │   └── utils/MathUtils.luau
     ├── client/                               # StarterPlayer.StarterPlayerScripts
     │   ├── bootstrap/ClientBootstrap.client.luau
-    │   ├── controllers/                      # AbilityController, StatusEffectController, MarkerController
+    │   ├── controllers/                      # Ability, StatusEffect, Marker, CombatFx, InsectAnimation,
+    │   │                                     #   AnimalAnimation, Camera, WorldFx (jour/nuit, météo, chutes)
     │   ├── managers/UIManager.luau
     │   ├── state/ClientState.luau
-    │   └── views/                            # HUD survie, barre de pouvoirs, menu de spawn, QTE, notifications
+    │   └── views/                            # HUD survie, pouvoirs, menu de spawn, QTE, toasts, mort, aide (H)
     ├── clientCharacter/                      # StarterPlayer.StarterCharacterScripts
     │   ├── charactercontrollers/             # Escalade 360°, Vol, Nage
     │   └── characterstate/CharacterState.luau

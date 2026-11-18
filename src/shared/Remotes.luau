@@ -30,7 +30,7 @@ export type RemoteEventName =
 	--   "Proj"   (from: Vector3, to: Vector3, color: Color3, travelSeconds: number)
 	--   "Flash"  (position: Vector3, color: Color3, size: number)
 	--   "Cone"   (origin: Vector3, lookTimesRange: Vector3, color: Color3)
-	--   "Tele"   (caster: Model, primitive: "Lunge" | "Leap", lookTimesRange | landing: Vector3)
+	--   "Tele"   (caster: Model, primitive: "Lunge" | "Leap", lookTimesRange | landing: Vector3, windupSeconds: number)
 	--   "Web"    (web: BasePart)
 	--   "Status" (victim: Model, status: string, duration: number)
 	| "CombatFx"
