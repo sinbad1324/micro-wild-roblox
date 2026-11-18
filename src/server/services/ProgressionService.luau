@@ -20,9 +20,12 @@ type Profile = {
 	Kills: number,
 	Deaths: number,
 	Mutations: { [string]: boolean },
+	ReachedAdult: boolean, -- a atteint l'âge adulte au moins une fois (débloque "Être une Maman")
 }
 
 local STORE_NAME = "MicroWild_Profile_v1"
+-- Déblocage du spawn "Être une Maman" : adulte une fois OU ce nombre de PE.
+local MOTHER_SPAWN_MIN_POINTS = 500
 local AUTOSAVE_SECONDS = 120
 local STAGE_POINTS = 20
 local MOTHER_POINTS_PER_CHILD_STAGE = 15
@@ -33,7 +36,7 @@ local profiles: { [Player]: Profile } = {}
 local loadFailed: { [Player]: boolean } = {}
 
 local function newProfile(): Profile
-	return { EvolutionPoints = 0, Kills = 0, Deaths = 0, Mutations = {} }
+	return { EvolutionPoints = 0, Kills = 0, Deaths = 0, Mutations = {}, ReachedAdult = false }
 end
 
 local function sanitize(raw: unknown): Profile
@@ -51,6 +54,7 @@ local function sanitize(raw: unknown): Profile
 	if typeof(data.Deaths) == "number" then
 		profile.Deaths = math.max(0, math.floor(data.Deaths))
 	end
+	profile.ReachedAdult = data.ReachedAdult == true
 	if typeof(data.Mutations) == "table" then
 		for id, unlocked in pairs(data.Mutations :: { [any]: any }) do
 			if typeof(id) == "string" and unlocked == true and InsectBodyPlans.Mutations[id] then
@@ -103,6 +107,7 @@ local function saveProfile(player: Player)
 					Kills = math.max(stored.Kills, profile.Kills),
 					Deaths = math.max(stored.Deaths, profile.Deaths),
 					Mutations = table.clone(stored.Mutations),
+					ReachedAdult = stored.ReachedAdult or profile.ReachedAdult, -- OU : ne se perd jamais
 				}
 				for id in pairs(profile.Mutations) do
 					merged.Mutations[id] = true
@@ -134,6 +139,9 @@ local function refreshLeaderstats(player: Player)
 	end
 	player:SetAttribute("EvolutionPoints", profile.EvolutionPoints)
 	player:SetAttribute("Kills", profile.Kills)
+	-- Lu par le menu de spawn (option "Être une Maman" verrouillée/déverrouillée).
+	player:SetAttribute("MotherSpawnUnlocked", profile.ReachedAdult or profile.EvolutionPoints >= MOTHER_SPAWN_MIN_POINTS)
+	player:SetAttribute("MotherSpawnMinPoints", MOTHER_SPAWN_MIN_POINTS)
 end
 
 local function createLeaderstats(player: Player)
@@ -180,6 +188,18 @@ function ProgressionService.RecordKill(attackerUserId: number?, victimName: stri
 	profile.Kills += 1
 	ProgressionService.AddEvolutionPoints(attacker, if victimIsGiant then 400 else 40)
 	Remotes.Get("NotifyClient"):FireClient(attacker, "Vous avez tué " .. victimName .. " !", "info")
+end
+
+-- Validation serveur du spawn "Être une Maman" : (autorisé, raison du refus).
+function ProgressionService.CanSpawnAsMother(player: Player): (boolean, string?)
+	local profile = profiles[player]
+	if not profile then
+		return false, "Profil en cours de chargement, réessayez."
+	end
+	if profile.ReachedAdult or profile.EvolutionPoints >= MOTHER_SPAWN_MIN_POINTS then
+		return true, nil
+	end
+	return false, string.format("Devenez adulte une fois ou atteignez %d PE pour naître Maman.", MOTHER_SPAWN_MIN_POINTS)
 end
 
 function ProgressionService.RecordDeath(player: Player)
@@ -295,6 +315,11 @@ function ProgressionService.Start()
 		end
 		-- La mutation rare se tire à l'âge adulte : il faut survivre pour la débloquer.
 		if newStage == "Adulte" then
+			local profile = profiles[player]
+			if profile and not profile.ReachedAdult then
+				profile.ReachedAdult = true
+				refreshLeaderstats(player)
+			end
 			ProgressionService.RollMutation(player)
 			local character = player.Character
 			if player:GetAttribute("Mutation") ~= nil and character then

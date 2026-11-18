@@ -1,8 +1,8 @@
 --!strict
 -- SpawnMenuView.luau
 -- Menu de spawn (GDD §2 "Spawn" / §8.2) : choix d'espèce (cartes filtrables par catégorie et par
--- nom, fiche détaillée de l'espèce sélectionnée, bouton "Éclore") ou naissance dans le nid d'une
--- Maman. Affiché tant que le joueur est un Oeuf à 0% de croissance sans choix confirmé.
+-- nom, fiche détaillée de l'espèce sélectionnée, bouton "Éclore"), naissance dans le nid d'une
+-- Maman (joueur ou PNJ), ou "Être une Maman" (adulte à 100%, débloqué par le profil). Affiché tant que le joueur est un Oeuf à 0% de croissance sans choix confirmé.
 -- Responsive : mise en page paysage (liste à gauche, fiche à droite) ou portrait (fiche en bas),
 -- le tout mis à l'échelle par un UIScale. Aucun travail par frame.
 
@@ -22,7 +22,13 @@ type NestSummary = {
 	OwnerName: string,
 	SpeciesId: string,
 	ChildCount: number,
+	IsNpc: boolean?, -- nid d'une Maman PNJ
+	MotherAlive: boolean?, -- nid PNJ : false si sa Maman est morte
+	Biome: string?,
 }
+
+-- Les trois façons de naître : espèce libre (nid sauvage), nid d'une Maman, ou Maman directement.
+type MenuMode = "Species" | "Nest" | "Mother"
 
 local SpawnMenuView = {}
 
@@ -235,7 +241,7 @@ function SpawnMenuView.Mount()
 	subtitle.TextTruncate = Enum.TextTruncate.AtEnd
 	subtitle.Text = "Chaque vie commence dans un œuf : restez au chaud, puis mangez pour grandir."
 
-	-- ---------- Onglets "Espèces" / "Nids" ----------
+	-- ---------- Onglets "Mon espèce" / "Nids" / "Être Maman" ----------
 	local tabBar = Instance.new("Frame")
 	tabBar.Name = "Tabs"
 	tabBar.BackgroundTransparency = 1
@@ -243,11 +249,16 @@ function SpawnMenuView.Mount()
 	tabBar.Size = UDim2.new(1, 0, 0, 32)
 	tabBar.Parent = root
 
-	local speciesTabButton = makePill(tabBar, "Choisir une espèce", 1)
-	speciesTabButton.Size = UDim2.new(0.5, -3, 1, 0)
-	local nestTabButton = makePill(tabBar, "Naître dans un nid (0)", 2)
-	nestTabButton.Position = UDim2.new(0.5, 3, 0, 0)
-	nestTabButton.Size = UDim2.new(0.5, -3, 1, 0)
+	local function makeTab(text: string, order: number): TextButton
+		local button = makePill(tabBar, text, order)
+		button.Position = UDim2.new((order - 1) / 3, (order - 1) * 2, 0, 0)
+		button.Size = UDim2.new(1 / 3, -4, 1, 0)
+		button.TextTruncate = Enum.TextTruncate.AtEnd
+		return button
+	end
+	local speciesTabButton = makeTab("Mon espèce", 1)
+	local nestTabButton = makeTab("Dans un nid (0)", 2)
+	local motherTabButton = makeTab("Être une Maman", 3)
 
 	local pageContainer = Instance.new("Frame")
 	pageContainer.Name = "Pages"
@@ -370,6 +381,49 @@ function SpawnMenuView.Mount()
 	local speciesList = sortedSpeciesList()
 	local selectedId: string? = nil
 	local activeCategory = "Tous"
+	local mode: MenuMode = "Species"
+	local confirmLocked = false
+
+	-- Mode "Être une Maman" : déblocage décidé par le serveur (attribut posé par ProgressionService).
+	local function motherUnlockState(): boolean?
+		local unlocked = player:GetAttribute("MotherSpawnUnlocked")
+		return if typeof(unlocked) == "boolean" then unlocked else nil
+	end
+
+	-- Seul endroit qui écrit le texte du bouton (mode, verrou, envoi en cours).
+	local function refreshConfirmText()
+		if confirmLocked then
+			return
+		end
+		local card = if selectedId then cards[selectedId] else nil
+		local speciesName = if card then card.Info.Name else ""
+		local available = true
+		local text: string
+		if mode == "Mother" then
+			local unlocked = motherUnlockState()
+			if unlocked == nil then
+				available = false
+				text = "Chargement du profil…"
+			elseif not unlocked then
+				available = false
+				text = string.format(
+					"Verrouillé : devenez adulte une fois ou atteignez %d PE (vous : %d)",
+					tonumber(player:GetAttribute("MotherSpawnMinPoints")) or 500,
+					tonumber(player:GetAttribute("EvolutionPoints")) or 0
+				)
+			else
+				text = if card then "Naître Maman : " .. speciesName else "Naître Maman"
+			end
+		else
+			text = if card then "Éclore : " .. speciesName else "Éclore"
+		end
+		confirmButton.Text = text
+		confirmButton.TextWrapped = not available
+		confirmButton.TextSize = if available then 15 else 12
+		confirmButton.AutoButtonColor = available
+		confirmButton.BackgroundColor3 = if not available then Colors.Track elseif mode == "Mother" then Colors.Warning else Colors.Accent
+		confirmButton.TextColor3 = if available then Colors.AccentDark else Colors.Muted
+	end
 
 	local function selectSpecies(speciesId: string)
 		local card = cards[speciesId]
@@ -400,7 +454,7 @@ function SpawnMenuView.Mount()
 			info.IdealTempMax,
 			abilitySummary(info)
 		)
-		confirmButton.Text = "Éclore : " .. info.Name
+		refreshConfirmText()
 	end
 
 	for index, info in ipairs(speciesList) do
@@ -491,22 +545,34 @@ function SpawnMenuView.Mount()
 		selectSpecies(speciesList[1].Id)
 	end
 
-	local confirmLocked = false
 	confirmButton.MouseButton1Click:Connect(function()
 		local speciesId = selectedId
 		if confirmLocked or not speciesId then
 			return
 		end
+		local asMother = mode == "Mother"
+		if asMother and motherUnlockState() ~= true then
+			return -- verrouillé : la raison est déjà écrite sur le bouton
+		end
 		-- Anti double-clic (le serveur limite aussi la cadence). Si le serveur refuse, un toast
 		-- l'explique et le bouton redevient cliquable.
 		confirmLocked = true
-		confirmButton.Text = "Éclosion…"
-		Remotes.Get("RequestSelectSpecies"):FireServer(speciesId)
+		confirmButton.Text = if asMother then "Naissance…" else "Éclosion…"
+		if asMother then
+			Remotes.Get("RequestSpawnAsMother"):FireServer(speciesId)
+		else
+			Remotes.Get("RequestSelectSpecies"):FireServer(speciesId)
+		end
 		task.delay(1, function()
 			confirmLocked = false
-			local card = if selectedId then cards[selectedId] else nil
-			confirmButton.Text = if card then "Éclore : " .. card.Info.Name else "Éclore"
+			refreshConfirmText()
 		end)
+	end)
+	player:GetAttributeChangedSignal("MotherSpawnUnlocked"):Connect(refreshConfirmText)
+	player:GetAttributeChangedSignal("EvolutionPoints"):Connect(function()
+		if mode == "Mother" then
+			refreshConfirmText()
+		end
 	end)
 
 	-- ================= Page 2 : nids =================
@@ -568,20 +634,35 @@ function SpawnMenuView.Mount()
 			local speciesInfo = InsectData[summary.SpeciesId]
 			local speciesName = if speciesInfo then speciesInfo.Name else tostring(summary.SpeciesId)
 
+			local isNpc = summary.IsNpc == true
 			local row = Instance.new("TextButton")
 			row.Name = "Nest"
 			row.AutoButtonColor = true
 			row.BackgroundColor3 = Colors.Card
 			row.BorderSizePixel = 0
-			row.LayoutOrder = index
+			row.LayoutOrder = if isNpc then 1000 + index else index -- nids de joueurs en premier
 			row.Size = UDim2.new(1, 0, 0, 54)
 			row.Text = ""
 			row.Parent = nestListContainer
 			UiTheme.Corner(row, 10)
 
+			-- Pastille "PNJ" devant le nom de l'espèce (Maman gérée par le serveur).
+			local nameX = 12
+			if isNpc then
+				local badge = UiTheme.Label(row, Enum.Font.GothamBold, 11, Colors.AccentDark)
+				badge.Position = UDim2.fromOffset(12, 10)
+				badge.Size = UDim2.fromOffset(34, 16)
+				badge.BackgroundTransparency = 0
+				badge.BackgroundColor3 = if summary.MotherAlive == false then Colors.Muted else Colors.Warning
+				badge.TextXAlignment = Enum.TextXAlignment.Center
+				badge.Text = "PNJ"
+				UiTheme.Corner(badge, 5)
+				nameX = 52
+			end
+
 			local nameLabel = UiTheme.Label(row, Enum.Font.GothamBold, 14, Colors.Text)
-			nameLabel.Position = UDim2.fromOffset(12, 9)
-			nameLabel.Size = UDim2.new(1, -130, 0, 18)
+			nameLabel.Position = UDim2.fromOffset(nameX, 9)
+			nameLabel.Size = UDim2.new(1, -(118 + nameX), 0, 18)
 			nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
 			nameLabel.Text = speciesName
 
@@ -589,7 +670,14 @@ function SpawnMenuView.Mount()
 			ownerLabel.Position = UDim2.fromOffset(12, 29)
 			ownerLabel.Size = UDim2.new(1, -130, 0, 16)
 			ownerLabel.TextTruncate = Enum.TextTruncate.AtEnd
-			ownerLabel.Text = string.format("Nid de %s  ·  %d enfant(s)", tostring(summary.OwnerName), tonumber(summary.ChildCount) or 0)
+			local biomeName = summary.Biome
+			local biome = if typeof(biomeName) == "string" then "  ·  " .. biomeName else ""
+			ownerLabel.Text = string.format(
+				"%s  ·  %d bébé(s)%s",
+				tostring(summary.OwnerName),
+				tonumber(summary.ChildCount) or 0,
+				biome
+			)
 
 			local joinLabel = UiTheme.Label(row, Enum.Font.GothamBold, 13, Colors.AccentDark)
 			joinLabel.AnchorPoint = Vector2.new(1, 0.5)
@@ -606,7 +694,7 @@ function SpawnMenuView.Mount()
 			end)
 		end
 		nestEmpty.Visible = count == 0
-		nestTabButton.Text = string.format("Naître dans un nid (%d)", count)
+		nestTabButton.Text = string.format("Dans un nid (%d)", count)
 	end
 
 	-- Liste reçue même menu caché, mais rendue seulement quand le menu est visible (pas de
@@ -630,19 +718,32 @@ function SpawnMenuView.Mount()
 	end)
 
 	-- ---------- Onglets ----------
-	local function showTab(showSpecies: boolean)
-		speciesPage.Visible = showSpecies
-		nestPage.Visible = not showSpecies
-		setPillActive(speciesTabButton, showSpecies)
-		setPillActive(nestTabButton, not showSpecies)
+	-- "Mon espèce" et "Être une Maman" partagent la page des espèces : seul le bouton change.
+	local SUBTITLES: { [MenuMode]: string } = {
+		Species = "Chaque vie commence dans un œuf : restez au chaud, puis mangez pour grandir.",
+		Nest = "Naissez dans le nid d'une Maman (joueur ou PNJ) : elle vous nourrit et vous protège.",
+		Mother = "Naissez adulte à 100% et fondez votre colonie près du nid de votre espèce.",
+	}
+	local function showTab(newMode: MenuMode)
+		mode = newMode
+		speciesPage.Visible = newMode ~= "Nest"
+		nestPage.Visible = newMode == "Nest"
+		setPillActive(speciesTabButton, newMode == "Species")
+		setPillActive(nestTabButton, newMode == "Nest")
+		setPillActive(motherTabButton, newMode == "Mother")
+		subtitle.Text = SUBTITLES[newMode]
+		refreshConfirmText()
 	end
 	speciesTabButton.MouseButton1Click:Connect(function()
-		showTab(true)
+		showTab("Species")
 	end)
 	nestTabButton.MouseButton1Click:Connect(function()
-		showTab(false)
+		showTab("Nest")
 	end)
-	showTab(true)
+	motherTabButton.MouseButton1Click:Connect(function()
+		showTab("Mother")
+	end)
+	showTab("Species")
 
 	-- ---------- Mise en page responsive (recalculée seulement au redimensionnement) ----------
 	local lastPortrait: boolean? = nil
@@ -696,7 +797,7 @@ function SpawnMenuView.Mount()
 		if show then
 			-- Entrée : le voile s'assombrit, le panneau remonte en place.
 			screenGui.Enabled = true
-			showTab(true)
+			showTab("Species") -- une nouvelle vie repart toujours du mode par défaut
 			if latestSummaries then
 				renderNestList(latestSummaries)
 			end

@@ -17,6 +17,7 @@ export type RemoteEventName =
 	| "RequestJoinNest" -- (motherUserId: number)
 	| "RequestLeaveNest" -- ()
 	| "RequestSelectSpecies" -- (speciesId: string)
+	| "RequestSpawnAsMother" -- (speciesId: string): naître adulte à 100% et fonder sa colonie
 	-- Diffusions serveur -> client
 	| "NestListChanged" -- ({ NestSummary })
 	| "AbilityFeedback" -- (success: boolean, reason: string?)
@@ -49,6 +50,7 @@ Remotes.EventNames = {
 	"RequestJoinNest",
 	"RequestLeaveNest",
 	"RequestSelectSpecies",
+	"RequestSpawnAsMother",
 	"NestListChanged",
 	"AbilityFeedback",
 	"GrabStateChanged",

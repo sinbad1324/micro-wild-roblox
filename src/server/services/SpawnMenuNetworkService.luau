@@ -1,7 +1,8 @@
 --!strict
 -- SpawnMenuNetworkService.luau
--- Gestionnaires réseau du menu de spawn : choix d'espèce + jonction/sortie de nid, et fondation
--- de colonie par un adulte (GDD §2 "Spawn" et §8.2). Le client envoie une intention, ce module valide.
+-- Gestionnaires réseau du menu de spawn : choix d'espèce, jonction/sortie de nid, naissance directe
+-- en Maman (débloquée par le profil) et fondation de colonie par un adulte (GDD §2 "Spawn" et §8.2).
+-- Le client envoie une intention, ce module valide.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -9,13 +10,20 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
 local ProgressionService = require(ServerScriptService.services.ProgressionService)
 local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
+local GameConstants = require(ServerScriptService.constant.GameConstants)
 
 local SpawnMenuNetworkService = {}
 
 local lastRequest: { [Player]: number } = {}
+-- Délai entre deux naissances en Maman (anti mort/renaissance en boucle). Indexé par UserId et
+-- jamais vidé au départ : quitter/revenir sur le serveur ne remet pas le délai à zéro.
+local MOTHER_SPAWN_COOLDOWN = 60
+local MOTHER_NEST_DELAY = 1.5 -- laisse le corps se poser avant de construire le nid
+local lastMotherSpawn: { [number]: number } = {}
 
 local function notify(player: Player, message: string, kind: string)
 	Remotes.Get("NotifyClient"):FireClient(player, message, kind)
@@ -92,6 +100,12 @@ local function onCreateNest(player: Player)
 		notify(player, "Il faut être adulte à 100% de croissance pour fonder une colonie.", "warning")
 		return
 	end
+	-- Au sol AVANT de quitter sa famille (CreateNest échoue en l'air : famille perdue pour rien).
+	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
+	if humanoid and humanoid.FloorMaterial == Enum.Material.Air and humanoid:GetState() ~= Enum.HumanoidStateType.Swimming then
+		notify(player, "Posez-vous au sol pour construire votre nid.", "warning")
+		return
+	end
 	if player:GetAttribute("OwnerNestUserId") ~= nil then
 		GrowthAndNestService.LeaveNest(player)
 	end
@@ -101,6 +115,93 @@ local function onCreateNest(player: Player)
 	else
 		notify(player, "Impossible de construire le nid ici (posez-vous au sol).", "warning")
 	end
+end
+
+-- Point de naissance d'une Maman : au sol, à 30-45 studs de la maison par défaut de l'espèce
+-- (pas dans le nid sauvage). Repli sur la maison elle-même si le sol trouvé est incohérent.
+local function motherSpawnPoint(home: Vector3, character: Model?): Vector3
+	local angle = math.random() * 2 * math.pi
+	local distance = 30 + math.random() * 15
+	local probe = home + Vector3.new(math.cos(angle) * distance, 40, math.sin(angle) * distance)
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.FilterDescendantsInstances = if character then { character } else {}
+	params.IgnoreWater = false -- une mère terrestre ne naît pas au fond de l'eau
+	local result = workspace:Raycast(probe, Vector3.new(0, -120, 0), params)
+	-- Sol trop haut/bas (souche, rocher, tronc) ou eau : on reste à la maison par défaut.
+	if not result or result.Material == Enum.Material.Water or math.abs(result.Position.Y - home.Y) > 10 then
+		return home
+	end
+	return result.Position + Vector3.new(0, 2, 0)
+end
+
+-- "Être une Maman" : naissance directe en adulte à 100%, puis fondation de colonie automatique.
+local function onSpawnAsMother(player: Player, speciesId: unknown)
+	if not throttle(player) then
+		return
+	end
+	local isValidId = typeof(speciesId) == "string" and #(speciesId :: string) <= 64 and InsectData[speciesId :: string] ~= nil
+	if not isValidId or not canStillChoose(player) then
+		notify(player, "Choix impossible maintenant.", "warning")
+		return
+	end
+	local allowed, reason = ProgressionService.CanSpawnAsMother(player)
+	if not allowed then
+		notify(player, reason or "Option verrouillée.", "warning")
+		return
+	end
+	local now = os.clock()
+	local last = lastMotherSpawn[player.UserId]
+	if last and now - last < MOTHER_SPAWN_COOLDOWN then
+		notify(player, string.format("Naître Maman à nouveau dans %d s.", math.ceil(MOTHER_SPAWN_COOLDOWN - (now - last))), "warning")
+		return
+	end
+	lastMotherSpawn[player.UserId] = now
+
+	local id = speciesId :: string
+	local character = player.Character
+	local aquatic = InsectData[id].Category == "Aquatique"
+	-- Seule une Maman aquatique naît à la nurserie de la mare ; les volants à larve aquatique
+	-- (Libellule, Moustique...) sont adultes : nid sauvage terrestre, sinon noyade au fond.
+	local home = GrowthAndNestService.GetDefaultHome(if aquatic then id else GameConstants.DEFAULT_SPECIES)
+		or (WorldLayout.SPAWN_POSITION + Vector3.new(0, 2, 0))
+	-- Aquatique : la maison est sous l'eau (nurserie de la mare), on reste juste à côté.
+	local spot = if aquatic then home + Vector3.new(6, 0, 0) else motherSpawnPoint(home, character)
+
+	-- Ordre synchrone (aucune attente avant SetStage) : Growth à 100 AVANT HasConfirmedSpawn, sinon
+	-- la boucle de croissance ferait avancer l'oeuf. Pas de StageChanged (ni PE ni mutation).
+	if player:GetAttribute("OwnerNestUserId") ~= nil then
+		GrowthAndNestService.LeaveNest(player)
+	end
+	player:SetAttribute("Species", id)
+	player:SetAttribute("HomePosition", spot)
+	player:SetAttribute("Mutation", nil)
+	player:SetAttribute("Growth", 100)
+	player:SetAttribute("CanLeaveNest", true)
+	player:SetAttribute("HasConfirmedSpawn", true)
+	-- Pas de mutation tirée ici : elle reste la récompense d'une vie menée jusqu'à l'âge adulte.
+	EvolutionDomain.SetStage(player, id, "Adulte", true)
+	if character and character.Parent then
+		character:PivotTo(CFrame.new(spot + Vector3.new(0, 3, 0)))
+	end
+	notify(player, "Vous êtes une Maman " .. InsectData[id].Name .. " ! Votre colonie se construit...", "info")
+
+	local lifeToken = player:GetAttribute("LifeToken")
+	task.delay(MOTHER_NEST_DELAY, function()
+		if not player.Parent
+			or player:GetAttribute("LifeToken") ~= lifeToken
+			or player:GetAttribute("Stage") ~= "Adulte"
+			or player:GetAttribute("IsMother") == true
+		then
+			return
+		end
+		if GrowthAndNestService.CreateNest(player) then
+			notify(player, "Colonie fondée ! Les nouveaux joueurs peuvent naître dans votre nid.", "info")
+			broadcastNestList()
+		else
+			notify(player, "Trouvez un bon endroit au sol puis appuyez sur « Fonder une colonie ».", "warning")
+		end
+	end)
 end
 
 local function onJoinNest(player: Player, motherUserId: unknown)
@@ -151,6 +252,7 @@ function SpawnMenuNetworkService.Start()
 	Remotes.Get("RequestCreateNest").OnServerEvent:Connect(onCreateNest)
 	Remotes.Get("RequestJoinNest").OnServerEvent:Connect(onJoinNest)
 	Remotes.Get("RequestLeaveNest").OnServerEvent:Connect(onLeaveNest)
+	Remotes.Get("RequestSpawnAsMother").OnServerEvent:Connect(onSpawnAsMother)
 
 	-- Snapshot immédiat pour l'arrivant (sinon jusqu'à 10s de liste vide).
 	Players.PlayerAdded:Connect(function(player)

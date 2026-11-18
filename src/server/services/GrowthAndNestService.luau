@@ -443,12 +443,29 @@ function GrowthAndNestService.RefreshNestDisplay(ownerUserId: number)
 	)
 end
 
+-- Biome d'une position (un biome par quadrant, le Chêne au centre : voir WorldLayout).
+local function biomeNameAt(position: Vector3): string
+	local fromOak = position - WorldLayout.OAK_CENTER
+	if Vector2.new(fromOak.X, fromOak.Z).Magnitude <= WorldLayout.OAK_RADIUS then
+		return "Grand Chêne"
+	elseif position.Z < 0 then
+		return if position.X >= 0 then "La Mare" else "La Souche"
+	end
+	return if position.X >= 0 then "Rochers arides" else "Prairie fleurie"
+end
+
+-- shortcut: Biome n'est pas déclaré dans ServerTypes.NestSummary (fichier hors périmètre), l'y ajouter.
+local function withBiome(summary: ServerTypes.NestSummary, position: Vector3): ServerTypes.NestSummary
+	(summary :: any).Biome = biomeNameAt(position)
+	return summary
+end
+
 function GrowthAndNestService.GetNestSummaries(): { ServerTypes.NestSummary }
 	local summaries: { ServerTypes.NestSummary } = {}
 	for ownerUserId, nest in pairs(GrowthAndNestService.ActiveNests) do
 		-- Nid PNJ : pas de joueur propriétaire, il persiste même quand sa Maman est morte.
 		if nest.IsNpc then
-			table.insert(summaries, {
+			table.insert(summaries, withBiome({
 				OwnerUserId = ownerUserId,
 				-- Suffixe dans le nom : le menu de spawn l'affiche sans changement client.
 				OwnerName = (nest.DisplayName or "PNJ") .. (if nest.MotherAlive == false then " — sans mère" else ""),
@@ -456,17 +473,17 @@ function GrowthAndNestService.GetNestSummaries(): { ServerTypes.NestSummary }
 				ChildCount = #nest.Children,
 				IsNpc = true,
 				MotherAlive = nest.MotherAlive ~= false,
-			})
+			}, nest.Position))
 			continue
 		end
 		local ownerPlayer = Players:GetPlayerByUserId(ownerUserId)
 		if ownerPlayer then
-			table.insert(summaries, {
+			table.insert(summaries, withBiome({
 				OwnerUserId = ownerUserId,
 				OwnerName = ownerPlayer.Name,
 				SpeciesId = nest.SpeciesId,
 				ChildCount = #nest.Children,
-			})
+			}, nest.Position))
 		else
 			GrowthAndNestService.RemoveNest(ownerUserId)
 		end
