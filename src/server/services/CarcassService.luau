@@ -28,6 +28,10 @@ local COLOR_EASE_STEP_SECONDS = 1.5
 
 local carcassesFolder: Folder? = nil
 
+-- Plafond FIFO des petites carcasses (joueurs, Mères, alevins) ; les festins Kaiju n'y entrent pas.
+local MAX_SMALL_CARCASSES = 25
+local smallCarcasses: { Model } = {}
+
 -- Fait glisser chaque BasePart du modèle vers `target` (fraction `amount`) en paliers lissés ;
 -- `material` éventuel appliqué à mi-parcours (os qui blanchissent).
 local function easeColors(model: Model, target: Color3, amount: number, material: Enum.Material?)
@@ -175,6 +179,20 @@ function CarcassService.SpawnCarcassFor(
 	if isGiantAnimal then
 		local kaijuEvent = Remotes.Get("KaijuFeastEvent")
 		kaijuEvent:FireAllClients(ownerName, position)
+	else
+		-- Purge les carcasses déjà détruites ailleurs (durée de vie, mangées) : sinon on évince une vivante trop tôt.
+		for i = #smallCarcasses, 1, -1 do
+			if not smallCarcasses[i].Parent then
+				table.remove(smallCarcasses, i)
+			end
+		end
+		table.insert(smallCarcasses, model)
+		while #smallCarcasses > MAX_SMALL_CARCASSES do
+			local oldest = table.remove(smallCarcasses, 1) :: Model
+			if oldest.Parent then
+				oldest:Destroy()
+			end
+		end
 	end
 
 	task.delay(FRESH_SECONDS, function()

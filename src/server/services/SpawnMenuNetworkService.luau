@@ -15,12 +15,14 @@ local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestS
 local ProgressionService = require(ServerScriptService.services.ProgressionService)
 local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
+local ServerTypes = require(ServerScriptService.types.ServerTypes)
 
 local SpawnMenuNetworkService = {}
 
 local lastRequest: { [Player]: number } = {}
 -- Délai entre deux naissances en Maman (anti mort/renaissance en boucle). Indexé par UserId et
--- jamais vidé au départ : quitter/revenir sur le serveur ne remet pas le délai à zéro.
+-- jamais vidé au départ : quitter/revenir sur le serveur ne remet pas le délai à zéro (seules les
+-- entrées expirées sont purgées par la boucle de Start).
 local MOTHER_SPAWN_COOLDOWN = 60
 local MOTHER_NEST_DELAY = 1.5 -- laisse le corps se poser avant de construire le nid
 local lastMotherSpawn: { [number]: number } = {}
@@ -29,8 +31,22 @@ local function notify(player: Player, message: string, kind: string)
 	Remotes.Get("NotifyClient"):FireClient(player, message, kind)
 end
 
+-- Signature compacte de la liste (ordre stable) : la boucle de sécurité n'envoie que si elle change.
+local lastBroadcastSignature = ""
+local function nestSignature(summaries: { ServerTypes.NestSummary }): string
+	local parts = table.create(#summaries)
+	for _, summary in ipairs(summaries) do
+		table.insert(parts, tostring(summary.OwnerUserId) .. ":" .. summary.SpeciesId .. ":" .. tostring(summary.ChildCount) .. ":" .. tostring(summary.MotherAlive))
+	end
+	table.sort(parts)
+	return table.concat(parts, "|")
+end
+
+-- Diffusions sur événement (création/jonction/départ) : toujours envoyées, et le cache suit.
 local function broadcastNestList()
-	Remotes.Get("NestListChanged"):FireAllClients(GrowthAndNestService.GetNestSummaries())
+	local summaries = GrowthAndNestService.GetNestSummaries()
+	lastBroadcastSignature = nestSignature(summaries)
+	Remotes.Get("NestListChanged"):FireAllClients(summaries)
 end
 
 local function throttle(player: Player): boolean
@@ -100,9 +116,15 @@ local function onCreateNest(player: Player)
 		notify(player, "Il faut être adulte à 100% de croissance pour fonder une colonie.", "warning")
 		return
 	end
-	-- Au sol AVANT de quitter sa famille (CreateNest échoue en l'air : famille perdue pour rien).
-	local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
-	if humanoid and humanoid.FloorMaterial == Enum.Material.Air and humanoid:GetState() ~= Enum.HumanoidStateType.Swimming then
+	-- Mêmes gardes que CreateNest AVANT de quitter sa famille (sinon famille perdue pour rien).
+	local character = player.Character
+	if not character or not character.PrimaryPart then
+		return
+	end
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local species = InsectData[(player:GetAttribute("Species") :: string?) or ""]
+	local swimming = species ~= nil and species.CanSwim and humanoid ~= nil and humanoid:GetState() == Enum.HumanoidStateType.Swimming
+	if humanoid and humanoid.FloorMaterial == Enum.Material.Air and not swimming then
 		notify(player, "Posez-vous au sol pour construire votre nid.", "warning")
 		return
 	end
@@ -157,6 +179,8 @@ local function onSpawnAsMother(player: Player, speciesId: unknown)
 		return
 	end
 	lastMotherSpawn[player.UserId] = now
+	-- Horloge partagée client/serveur : le menu affiche le compte à rebours au lieu d'un faux bouton actif.
+	player:SetAttribute("MotherSpawnReadyAt", workspace:GetServerTimeNow() + MOTHER_SPAWN_COOLDOWN)
 
 	local id = speciesId :: string
 	local character = player.Character
@@ -256,6 +280,12 @@ function SpawnMenuNetworkService.Start()
 
 	-- Snapshot immédiat pour l'arrivant (sinon jusqu'à 10s de liste vide).
 	Players.PlayerAdded:Connect(function(player)
+		-- Reconnexion pendant le délai Maman : le compte à rebours reste visible.
+		local last = lastMotherSpawn[player.UserId]
+		local remaining = if last then MOTHER_SPAWN_COOLDOWN - (os.clock() - last) else 0
+		if remaining > 0 then
+			player:SetAttribute("MotherSpawnReadyAt", workspace:GetServerTimeNow() + remaining)
+		end
 		Remotes.Get("NestListChanged"):FireClient(player, GrowthAndNestService.GetNestSummaries())
 	end)
 	Players.PlayerRemoving:Connect(function(player)
@@ -273,7 +303,20 @@ function SpawnMenuNetworkService.Start()
 		broadcastNestList()
 		while true do
 			task.wait(10) -- filet de sécurité (ex: Maman déconnectée sans PlayerRemoving propre)
-			broadcastNestList()
+			-- GetNestSummaries nettoie aussi les nids orphelins : appelé à chaque tour, envoyé seulement si changé.
+			local summaries = GrowthAndNestService.GetNestSummaries()
+			local signature = nestSignature(summaries)
+			if signature ~= lastBroadcastSignature then
+				lastBroadcastSignature = signature
+				Remotes.Get("NestListChanged"):FireAllClients(summaries)
+			end
+			-- Délais Maman expirés : inutile de les garder (borne la table).
+			local now = os.clock()
+			for userId, last in pairs(lastMotherSpawn) do
+				if now - last >= MOTHER_SPAWN_COOLDOWN then
+					lastMotherSpawn[userId] = nil
+				end
+			end
 		end
 	end)
 end

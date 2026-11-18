@@ -24,7 +24,12 @@ local started = false
 local SCAVENGER_ABILITY = "OdoratCharogne"
 local KAIJU_MARKER_SECONDS = 180
 
-local familyMarkers: { [Player]: BillboardGui } = {}
+-- Clé : Player, ou Model "NpcMother" (Maman PNJ de la famille).
+local familyMarkers: { [Instance]: BillboardGui } = {}
+-- Repère du nid (HomePosition) : ancre locale invisible, visible tant que le joueur est un bébé.
+local homeAnchor: Part? = nil
+local homeMarker: BillboardGui? = nil
+local FAMILY_COLOR = Color3.fromRGB(255, 225, 120)
 local threatMarkers: { [Player]: BillboardGui } = {}
 
 -- Passifs de détection (portée en studs = Power dans AbilityCatalog).
@@ -75,7 +80,7 @@ local function refreshFamilyMarkers()
 				if marker then
 					marker:Destroy()
 				end
-				marker = makeBillboard("FamilyMarker", text, Color3.fromRGB(255, 225, 120), root, 4, false, FAMILY_MARKER_DISTANCE)
+				marker = makeBillboard("FamilyMarker", text, FAMILY_COLOR, root, 4, false, FAMILY_MARKER_DISTANCE)
 				familyMarkers[other] = marker
 			end
 			local label = (marker :: BillboardGui):FindFirstChild("Text") :: TextLabel?
@@ -87,11 +92,75 @@ local function refreshFamilyMarkers()
 			familyMarkers[other] = nil
 		end
 	end
+	-- Maman PNJ de la famille (bébé né dans un nid PNJ).
+	for _, model in ipairs(CollectionService:GetTagged("NpcMother")) do
+		local primary = if model:IsA("Model") then (model :: Model).PrimaryPart else nil
+		local marker = familyMarkers[model]
+		if myFamily ~= nil and primary and model:GetAttribute("FamilyId") == myFamily then
+			if not marker or marker.Adornee ~= primary then
+				if marker then
+					marker:Destroy()
+				end
+				familyMarkers[model] = makeBillboard("FamilyMarker", "👑 " .. model.Name, FAMILY_COLOR, primary, 5, false, FAMILY_MARKER_DISTANCE)
+			end
+		elseif marker then
+			marker:Destroy()
+			familyMarkers[model] = nil
+		end
+	end
 	for other, marker in pairs(familyMarkers) do
 		if not other.Parent then
 			marker:Destroy()
 			familyMarkers[other] = nil
 		end
+	end
+end
+
+local function refreshHomeMarker()
+	local home = player:GetAttribute("HomePosition")
+	if typeof(home) ~= "Vector3" then
+		if homeMarker then
+			homeMarker:Destroy()
+			homeMarker = nil
+		end
+		if homeAnchor then
+			homeAnchor:Destroy()
+			homeAnchor = nil
+		end
+		return
+	end
+	local anchor = homeAnchor
+	if not anchor or not anchor.Parent then
+		local newAnchor = Instance.new("Part")
+		newAnchor.Name = "HomeNestAnchor"
+		newAnchor.Anchored = true
+		newAnchor.CanCollide = false
+		newAnchor.CanQuery = false
+		newAnchor.CanTouch = false
+		newAnchor.Transparency = 1
+		newAnchor.Size = Vector3.one
+		newAnchor.Parent = workspace.CurrentCamera
+		anchor = newAnchor
+		homeAnchor = newAnchor
+	end
+	local part = anchor :: Part
+	local homePosition = home :: Vector3
+	if part.Position ~= homePosition then
+		part.Position = homePosition
+	end
+	local marker = homeMarker
+	if not marker or not marker.Parent then
+		local created = makeBillboard("HomeNestMarker", "🏠 Nid", FAMILY_COLOR, part, 4, true, FAMILY_MARKER_DISTANCE)
+		homeMarker = created
+		marker = created
+	end
+	-- L'ancre a pu être recréée (caméra remplacée) : on re-pointe le marqueur.
+	if marker and marker.Adornee ~= part then
+		marker.Adornee = part
+	end
+	local stage = player:GetAttribute("Stage")
+	if marker then
+		marker.Enabled = stage == "Oeuf" or stage == "Larve" or stage == "Mue" or stage == "Cocon"
 	end
 end
 
@@ -204,6 +273,7 @@ function MarkerController.Start()
 	task.spawn(function()
 		while true do
 			refreshFamilyMarkers()
+			refreshHomeMarker()
 			refreshCarcassMarkers()
 			refreshThreatMarkers()
 			task.wait(1)

@@ -383,11 +383,22 @@ function SpawnMenuView.Mount()
 	local activeCategory = "Tous"
 	local mode: MenuMode = "Species"
 	local confirmLocked = false
+	local shown = false -- menu affiché (déclaré ici : lu par refreshConfirmText)
+	local cooldownTicking = false
 
 	-- Mode "Être une Maman" : déblocage décidé par le serveur (attribut posé par ProgressionService).
 	local function motherUnlockState(): boolean?
 		local unlocked = player:GetAttribute("MotherSpawnUnlocked")
 		return if typeof(unlocked) == "boolean" then unlocked else nil
+	end
+
+	-- Secondes restantes avant de pouvoir renaître Maman (attribut posé par SpawnMenuNetworkService).
+	local function motherCooldownLeft(): number
+		local readyAt = player:GetAttribute("MotherSpawnReadyAt")
+		if typeof(readyAt) ~= "number" then
+			return 0
+		end
+		return readyAt - workspace:GetServerTimeNow()
 	end
 
 	-- Seul endroit qui écrit le texte du bouton (mode, verrou, envoi en cours).
@@ -412,7 +423,23 @@ function SpawnMenuView.Mount()
 					tonumber(player:GetAttribute("EvolutionPoints")) or 0
 				)
 			else
-				text = if card then "Naître Maman : " .. speciesName else "Naître Maman"
+				local remaining = motherCooldownLeft()
+				if remaining > 0 then
+					available = false
+					text = string.format("Maman de nouveau dans %d s", math.ceil(remaining))
+					-- Un seul tic à la fois, seulement onglet Maman ouvert : aucun coût hors de ce cas.
+					if not cooldownTicking then
+						cooldownTicking = true
+						task.delay(1, function()
+							cooldownTicking = false
+							if shown and mode == "Mother" then
+								refreshConfirmText()
+							end
+						end)
+					end
+				else
+					text = if card then "Naître Maman : " .. speciesName else "Naître Maman"
+				end
 			end
 		else
 			text = if card then "Éclore : " .. speciesName else "Éclore"
@@ -551,8 +578,8 @@ function SpawnMenuView.Mount()
 			return
 		end
 		local asMother = mode == "Mother"
-		if asMother and motherUnlockState() ~= true then
-			return -- verrouillé : la raison est déjà écrite sur le bouton
+		if asMother and (motherUnlockState() ~= true or motherCooldownLeft() > 0) then
+			return -- verrouillé ou délai en cours : la raison est déjà écrite sur le bouton
 		end
 		-- Anti double-clic (le serveur limite aussi la cadence). Si le serveur refuse, un toast
 		-- l'explique et le bouton redevient cliquable.
@@ -570,6 +597,11 @@ function SpawnMenuView.Mount()
 	end)
 	player:GetAttributeChangedSignal("MotherSpawnUnlocked"):Connect(refreshConfirmText)
 	player:GetAttributeChangedSignal("EvolutionPoints"):Connect(function()
+		if mode == "Mother" then
+			refreshConfirmText()
+		end
+	end)
+	player:GetAttributeChangedSignal("MotherSpawnReadyAt"):Connect(function()
 		if mode == "Mother" then
 			refreshConfirmText()
 		end
@@ -619,17 +651,52 @@ function SpawnMenuView.Mount()
 	nestListLayout.Padding = UDim.new(0, 6)
 	nestListLayout.Parent = nestListContainer
 
+	-- Rang d'affichage : nids de joueurs, puis PNJ avec Maman vivante, puis nids orphelins.
+	local function nestRank(summary: NestSummary): number
+		if summary.IsNpc ~= true then
+			return 1
+		end
+		return if summary.MotherAlive ~= false then 2 else 3
+	end
+
+	-- Le serveur parcourt ses nids avec pairs() : ordre instable. On trie, et on ne reconstruit
+	-- les lignes que si la liste a vraiment changé (sinon un clic peut tomber sur une ligne détruite).
+	local lastNestSignature: string? = nil
 	local function renderNestList(summaries: { NestSummary })
+		local sorted: { NestSummary } = {}
+		for _, summary in ipairs(summaries) do
+			if typeof(summary) == "table" and typeof(summary.OwnerUserId) == "number" then
+				table.insert(sorted, summary)
+			end
+		end
+		table.sort(sorted, function(a, b)
+			local rankA, rankB = nestRank(a), nestRank(b)
+			if rankA ~= rankB then
+				return rankA < rankB
+			end
+			local childrenA, childrenB = tonumber(a.ChildCount) or 0, tonumber(b.ChildCount) or 0
+			if childrenA ~= childrenB then
+				return childrenA < childrenB
+			end
+			return a.OwnerUserId < b.OwnerUserId
+		end)
+		local parts = table.create(#sorted)
+		for _, summary in ipairs(sorted) do
+			table.insert(parts, string.format("%s:%s:%s:%s:%s:%s", tostring(summary.OwnerUserId), tostring(summary.ChildCount), tostring(summary.MotherAlive), tostring(summary.SpeciesId), tostring(summary.OwnerName), tostring(summary.Biome)))
+		end
+		local signature = table.concat(parts, "|")
+		if signature == lastNestSignature then
+			return
+		end
+		lastNestSignature = signature
+
 		for _, child in ipairs(nestListContainer:GetChildren()) do
 			if child:IsA("GuiObject") then
 				child:Destroy()
 			end
 		end
 		local count = 0
-		for index, summary in ipairs(summaries) do
-			if typeof(summary) ~= "table" or typeof(summary.OwnerUserId) ~= "number" then
-				continue
-			end
+		for index, summary in ipairs(sorted) do
 			count += 1
 			local speciesInfo = InsectData[summary.SpeciesId]
 			local speciesName = if speciesInfo then speciesInfo.Name else tostring(summary.SpeciesId)
@@ -640,7 +707,7 @@ function SpawnMenuView.Mount()
 			row.AutoButtonColor = true
 			row.BackgroundColor3 = Colors.Card
 			row.BorderSizePixel = 0
-			row.LayoutOrder = if isNpc then 1000 + index else index -- nids de joueurs en premier
+			row.LayoutOrder = index -- ordre déjà trié (joueurs, PNJ, orphelins)
 			row.Size = UDim2.new(1, 0, 0, 54)
 			row.Text = ""
 			row.Parent = nestListContainer
@@ -687,6 +754,12 @@ function SpawnMenuView.Mount()
 			joinLabel.BackgroundColor3 = Colors.Accent
 			joinLabel.TextXAlignment = Enum.TextXAlignment.Center
 			joinLabel.Text = "Rejoindre"
+			-- Nid PNJ orphelin : rejoignable, mais personne ne vous nourrira (GDD §8.2).
+			if isNpc and summary.MotherAlive == false then
+				joinLabel.Text = "Sans mère"
+				joinLabel.BackgroundColor3 = Colors.Track
+				joinLabel.TextColor3 = Colors.Muted
+			end
 			UiTheme.Corner(joinLabel, 8)
 
 			row.MouseButton1Click:Connect(function()
@@ -699,7 +772,6 @@ function SpawnMenuView.Mount()
 
 	-- Liste reçue même menu caché, mais rendue seulement quand le menu est visible (pas de
 	-- reconstruction des lignes pendant toute la vie adulte).
-	local shown = false
 	local latestSummaries: { NestSummary }? = nil
 	task.spawn(function()
 		local ok, remote = pcall(Remotes.Get, "NestListChanged")
@@ -786,7 +858,10 @@ function SpawnMenuView.Mount()
 	local function refreshVisibility()
 		local stage = player:GetAttribute("Stage")
 		local growth = player:GetAttribute("Growth")
+		-- Corps vivant requis : pendant le délai de réapparition, le serveur refuse tout choix.
+		local humanoid = player.Character and player.Character:FindFirstChildOfClass("Humanoid")
 		local show = stage == "Oeuf" and growth == 0 and player:GetAttribute("HasConfirmedSpawn") ~= true
+			and humanoid ~= nil and humanoid.Health > 0
 		if show == shown then
 			return
 		end
@@ -821,6 +896,18 @@ function SpawnMenuView.Mount()
 	player:GetAttributeChangedSignal("HasConfirmedSpawn"):Connect(refreshVisibility)
 	player:GetAttributeChangedSignal("Stage"):Connect(refreshVisibility)
 	player:GetAttributeChangedSignal("Growth"):Connect(refreshVisibility)
+	-- Le menu s'ouvre une fois le nouveau corps apparu (et se ferme dès la mort).
+	local function watchCharacter(character: Model)
+		local humanoid = character:WaitForChild("Humanoid", 10) :: Humanoid?
+		if humanoid then
+			humanoid.Died:Connect(refreshVisibility)
+		end
+		refreshVisibility()
+	end
+	player.CharacterAdded:Connect(watchCharacter)
+	if player.Character then
+		task.spawn(watchCharacter, player.Character)
+	end
 end
 
 return SpawnMenuView

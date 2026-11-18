@@ -695,7 +695,10 @@ local function birdUpdate(bird: Animal, dt: number)
 		end
 		-- Lissé : il se redresse en douceur après l'atterrissage (roulis/tangage du vol).
 		local perchTarget = CFrame.new(root.Position) * (bird.Data.PerchRotation :: CFrame) * CFrame.Angles(0, math.sin(os.clock() * 1.3) * 0.5, 0)
-		root.CFrame = root.CFrame:Lerp(perchTarget, math.min(1, dt * 4))
+		-- Endormi (personne à portée) : pas d'oscillation cosmétique, donc pas de CFrame répliqué.
+		if not bird.Data.Asleep then
+			root.CFrame = root.CFrame:Lerp(perchTarget, math.min(1, dt * 4))
+		end
 		-- Balayage (raycasts de 400 studs) limité à ~5 Hz : l'IA tourne à chaque frame près des joueurs.
 		local now = os.clock()
 		if bird.Cooldown <= 0 and now >= ((bird.Data.ScanAt :: number?) or 0) then
@@ -714,6 +717,9 @@ local function birdUpdate(bird: Animal, dt: number)
 				bird.Mode = "Dive"
 				bird.Prey = prey
 				bird.Timer = 6
+				-- Préavis de quelques secondes : la parade (abri, camouflage, immobilité) devient jouable.
+				notify(prey, "Une ombre fond sur vous depuis le Chêne ! Abritez-vous ou figez-vous !", "warning")
+				Remotes.Get("CameraShake"):FireClient(prey, 0.4, 0.4)
 				return
 			end
 		end
@@ -754,6 +760,13 @@ local function birdUpdate(bird: Animal, dt: number)
 		local prey = bird.Prey
 		local preyRoot = prey and getPlayerRoot(prey)
 		if not prey or not preyRoot or not isExposed(prey) or bird.Timer <= 0 then
+			bird.Mode = "Return"
+			bird.Goal = home
+			bird.Cooldown = 4
+			return
+		end
+		-- Proie figée (après 0,6 s de réaction) : il la perd de vue, la parade annoncée fonctionne.
+		if bird.Timer < 5.4 and preyRoot.AssemblyLinearVelocity.Magnitude <= 2 then
 			bird.Mode = "Return"
 			bird.Goal = home
 			bird.Cooldown = 4
@@ -1293,6 +1306,9 @@ local function crabUpdate(crab: Animal, dt: number)
 		local inFront = flat.Magnitude > 0.1 and root.CFrame.LookVector:Dot(flat.Unit) > 0.55
 		if crab.Cooldown <= 0 and inFront and flat.Magnitude <= 14 and hasLineOfSight(root.Position, threatRoot, getFolderFilter()) then
 			crab.Cooldown = 2.5
+			-- Le client fait claquer la pince du côté de la cible au moment du coup (Side +1 = +X = droite).
+			crab.Model:SetAttribute("AttackSide", if root.CFrame.RightVector:Dot(flat) >= 0 then 1 else -1)
+			crab.Model:SetAttribute("AttackAt", workspace:GetServerTimeNow())
 			hitPlayer(threat, AnimalData.Crabe.AttackDamage, flat.Unit * 70 + Vector3.new(0, 35, 0), "Les pinces du crabe vous broient !")
 		end
 		return

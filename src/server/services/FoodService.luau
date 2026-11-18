@@ -68,6 +68,8 @@ local lastAction: { [Player]: number } = {}
 -- Un émetteur de miettes par joueur, déplacé et allumé brièvement (même principe que DigService).
 local nibbleFxParts: { [Player]: Part } = {}
 local nibbleFxStopAt: { [Player]: number } = {}
+-- Anti-spam du toast "réserve du nid vide" (1 par minute et par bébé).
+local emptyNestNotifiedAt: { [Player]: number } = {}
 
 local function notify(player: Player, message: string, kind: string)
 	Remotes.Get("NotifyClient"):FireClient(player, message, kind)
@@ -616,14 +618,31 @@ local function nestTick()
 				notify(player, string.format("Nourriture déposée au nid (réserve : %d).", nest.StoredFood), "info")
 			end
 			-- Les bébés de la famille mangent dans la réserve et grandissent plus vite.
-			if isBaby(player) and nest.StoredFood >= NEST_FEED_COST then
+			if isBaby(player) then
 				local hunger = (player:GetAttribute("Hunger") :: number?) or 0
 				local thirst = (player:GetAttribute("Thirst") :: number?) or 0
 				if hunger < 75 or thirst < 75 then
-					nest.StoredFood -= NEST_FEED_COST
-					player:SetAttribute("Hunger", math.min(100, hunger + 25))
-					player:SetAttribute("Thirst", math.min(100, thirst + 20))
-					player:SetAttribute("NestFedUntil", os.clock() + 30)
+					local now = os.clock()
+					-- Seules les larves (et mues) profitent du bonus et peuvent rapporter de la nourriture.
+					local stage = player:GetAttribute("Stage")
+					local canBoost = stage == "Larve" or stage == "Mue"
+					if nest.StoredFood >= NEST_FEED_COST then
+						nest.StoredFood -= NEST_FEED_COST
+						player:SetAttribute("Hunger", math.min(100, hunger + 25))
+						player:SetAttribute("Thirst", math.min(100, thirst + 20))
+						-- Toast seulement à l'ouverture de la fenêtre (au plus 1 toutes les 30 s).
+						local prev = player:GetAttribute("NestFedUntil") :: number?
+						if canBoost and (not prev or prev <= now) then
+							local who = if nest.IsNpc
+								then (if nest.MotherAlive == false then "Le nid" else (nest.DisplayName or "Maman"))
+								else "Maman"
+							notify(player, who .. " vous nourrit : croissance x1.5 pendant 30 s", "info")
+						end
+						player:SetAttribute("NestFedUntil", now + 30)
+					elseif canBoost and now - (emptyNestNotifiedAt[player] or -math.huge) > 60 then
+						emptyNestNotifiedAt[player] = now
+						notify(player, "Réserve du nid vide : rapportez de la nourriture", "warning")
+					end
 				end
 			end
 			-- Un adulte affamé peut aussi se servir dans la réserve commune (GDD §8.2).
@@ -686,6 +705,7 @@ function FoodService.Start()
 	Players.PlayerRemoving:Connect(function(player)
 		lastAction[player] = nil
 		nibbleFxStopAt[player] = nil
+		emptyNestNotifiedAt[player] = nil
 		local fxPart = nibbleFxParts[player]
 		nibbleFxParts[player] = nil
 		if fxPart then

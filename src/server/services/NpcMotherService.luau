@@ -541,6 +541,10 @@ local function think(m: Mother, now: number)
 			-- Toast seulement pour un nouvel agresseur ou après 5 s (pas de spam en ré-entrée).
 			if m.Target ~= aggressor or now - m.NotifiedAt > 5 then
 				notify(aggressor, m.DisplayName .. " défend sa famille !", "warning")
+				-- Un bébé attaqué près du nid : la famille sait que Maman arrive (courir vers elle).
+				if leashFrom == m.Nest.Position then
+					notifyFamily(m, m.DisplayName .. " accourt pour vous défendre !")
+				end
 				m.NotifiedAt = now
 			end
 			m.Target = aggressor
@@ -586,7 +590,13 @@ local function think(m: Mother, now: number)
 			or isFamily(m, target)
 			or now - m.ModeSince > DEFEND_MAX_SECONDS
 			or flatDistance(targetRoot.Position, m.DefendFrom) > DEFEND_LEASH
+			-- Une Maman terrestre abandonne dès que l'intrus est dans l'eau (pas d'oscillation sur la berge).
+			or (not m.Aquatic and targetRoot.Position.Y < ((workspace:GetAttribute("PondWaterLevel") :: number?) or WorldLayout.POND_WATER_LEVEL) + 1)
 		then
+			-- Intrus mort (toujours connecté, sans personnage vivant) : un seul toast de fin de combat.
+			if target and target.Parent and not character then
+				notifyFamily(m, m.DisplayName .. " a chassé l'intrus !")
+			end
 			setMode(m, "Return", now)
 			return
 		end
@@ -601,6 +611,8 @@ local function think(m: Mother, now: number)
 			if model then
 				model:SetAttribute("BiteAt", now)
 			end
+			-- Une mort par morsure revient à la Maman, pas au dernier joueur ayant touché la cible.
+			character:SetAttribute("LastAttackerUserId", nil)
 			DamageService.ApplyDamage(character, (if species then species.Damage else 10) * BITE_DAMAGE_FACTOR)
 		end
 	elseif m.Mode == "Forage" then
@@ -737,9 +749,18 @@ local function refreshPresence()
 	end
 end
 
+-- Régénération lente hors combat (2 %/s) : plusieurs raids courts ne suffisent plus à tuer la Maman.
+local function regen(m: Mother, dt: number, now: number)
+	local hum = m.Humanoid
+	if hum and hum.Health > 0 and hum.Health < hum.MaxHealth and m.Mode ~= "Defend" and now - m.ModeSince > 5 then
+		hum.Health = math.min(hum.MaxHealth, hum.Health + hum.MaxHealth * 0.02 * dt)
+	end
+end
+
 -- Pas de closure par frame : pcall(updateMother, m, dt, now).
 local function updateMother(m: Mother, dt: number, now: number)
 	if m.Near then
+		regen(m, dt, now)
 		-- Modulo (et non remise à 0) : chaque Maman garde son décalage de phase, les raycasts et
 		-- décisions restent répartis sur des frames différentes.
 		m.ThinkAcc += dt
@@ -759,6 +780,7 @@ local function updateMother(m: Mother, dt: number, now: number)
 		if m.FarAcc >= FAR_TICK_SECONDS then
 			local elapsed = math.min(m.FarAcc, FAR_TICK_SECONDS * 2)
 			m.FarAcc %= FAR_TICK_SECONDS
+			regen(m, elapsed, now)
 			-- 1 raycast/s : même endormie, une Maman terrestre ne traverse pas la mare et suit le relief.
 			sampleGround(m, now)
 			think(m, now)

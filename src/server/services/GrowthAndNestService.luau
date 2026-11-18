@@ -305,6 +305,28 @@ function GrowthAndNestService.CreateNest(motherPlayer: Player): boolean
 	local plan = InsectBodyPlans.Get(speciesId)
 	local style = nestStyleFor(speciesId)
 	local groundPosition = findGroundBelow(character.PrimaryPart.Position, { character })
+	-- Pas de nid empilé sur un autre (nid joueur, PNJ ou nid IA) : modèles et zones de nourrissage se chevaucheraient.
+	local minSpacing = GameConstants.NEST_RADIUS * 2
+	local nestPosition = groundPosition + Vector3.new(0, 2, 0)
+	local tooClose = false
+	for ownerId, other in pairs(GrowthAndNestService.ActiveNests) do
+		if ownerId ~= motherPlayer.UserId and (other.Position - nestPosition).Magnitude < minSpacing then
+			tooClose = true
+			break
+		end
+	end
+	if not tooClose then
+		for _, tagged in ipairs(CollectionService:GetTagged("AINest")) do
+			if tagged:IsA("BasePart") and (tagged.Position - nestPosition).Magnitude < minSpacing then
+				tooClose = true
+				break
+			end
+		end
+	end
+	if tooClose then
+		notify(motherPlayer, "Trop près d'un autre nid : éloignez-vous un peu.", "warning")
+		return false
+	end
 	local model, core = buildNestModel(style, groundPosition, plan.LarvaColor:Lerp(Color3.new(1, 1, 1), 0.6))
 	model.Name = "Nid_" .. motherPlayer.Name
 	core:SetAttribute("OwnerUserId", motherPlayer.UserId)

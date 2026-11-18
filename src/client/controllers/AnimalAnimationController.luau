@@ -75,6 +75,7 @@ type Record = {
 	root: BasePart?,
 	humanoid: Humanoid?,
 	addConn: RBXScriptConnection?,
+	attackConn: RBXScriptConnection?,
 	dirty: boolean,
 	species: number,
 	fry: boolean,
@@ -456,6 +457,9 @@ local function untrack(instance: Instance)
 	if rec.addConn then
 		rec.addConn:Disconnect()
 	end
+	if rec.attackConn then
+		rec.attackConn:Disconnect()
+	end
 	clearCache(rec)
 end
 
@@ -468,6 +472,7 @@ local function track(instance: Instance)
 		root = nil,
 		humanoid = nil,
 		addConn = nil,
+		attackConn = nil,
 		dirty = true,
 		species = S_OTHER,
 		fry = false,
@@ -514,6 +519,16 @@ local function track(instance: Instance)
 	rec.addConn = instance.DescendantAdded:Connect(function()
 		rec.dirty = true
 	end)
+	-- Crabe : la pince claque sur le vrai coup serveur (côté de la cible), pas seulement au hasard.
+	if SPECIES_CODES[instance.Name] == S_CRAB then
+		rec.attackConn = instance:GetAttributeChangedSignal("AttackAt"):Connect(function()
+			local side = instance:GetAttribute("AttackSide")
+			local now = os.clock()
+			rec.snapAt = now
+			rec.snapSide = if side == -1 then -1 else 1
+			rec.nextSnap = now + 2 + math.random() * 2
+		end)
+	end
 end
 
 local function onHeartbeat()
