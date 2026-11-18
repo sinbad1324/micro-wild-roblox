@@ -50,6 +50,8 @@ type Ctx = {
 	animSide: number,
 	animIndex: number,
 	animPivot: Vector3,
+	-- Vrai = formes arrondies conservées (oeuf, cocon, bulle d'air) ; sinon tout est en blocs.
+	rounded: boolean,
 }
 
 local InsectVisualService = {}
@@ -132,8 +134,19 @@ local function addPart(ctx: Ctx, name: string, size: Vector3, localCf: CFrame, r
 	local part = Instance.new("Part")
 	part.Name = name
 	part.Size = Vector3.new(math.max(size.X, 0.05), math.max(size.Y, 0.05), math.max(size.Z, 0.05))
-	-- Style "blocky" Roblox : toutes les pièces restent des blocs (pas de sphère/cylindre), même
-	-- taille qu'avant pour que les attaches (yeux, pattes, ailes) restent alignées.
+	-- Style "blocky" Roblox : les pièces sont des blocs (même taille qu'avant, attaches alignées),
+	-- sauf là où une forme ronde a du sens (ctx.rounded : oeuf, cocon, bulle d'air).
+	if ctx.rounded then
+		if shape == "Cylinder" then
+			part.Shape = Enum.PartType.Cylinder
+		elseif shape == "Ball" then
+			part.Shape = Enum.PartType.Ball
+		elseif shape == "Ellipsoid" then
+			local mesh = Instance.new("SpecialMesh")
+			mesh.MeshType = Enum.MeshType.Sphere
+			mesh.Parent = part
+		end
+	end
 	local color, material, reflectance = paint(ctx, role, raw)
 	part.Color = color
 	part.Material = if role == "Wing" then Enum.Material.Glass else material
@@ -841,6 +854,8 @@ local function buildGlowAndBubble(ctx: Ctx, L: Layout)
 		light.Parent = lantern
 	end
 	if plan.Bubble then
+		local wasRounded = ctx.rounded
+		ctx.rounded = true -- une bulle d'air reste une bulle
 		local bubble: Part
 		if plan.Shape == "Spider" then
 			-- Argyronète : cloche d'air argentée qui enveloppe l'abdomen.
@@ -851,6 +866,7 @@ local function buildGlowAndBubble(ctx: Ctx, L: Layout)
 		end
 		bubble.Material = Enum.Material.Glass
 		bubble.Reflectance = 0.3
+		ctx.rounded = wasRounded
 	end
 	setAnim(ctx, nil)
 end
@@ -1503,6 +1519,7 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 		animSide = 0,
 		animIndex = 0,
 		animPivot = Vector3.zero,
+		rounded = stage == "Oeuf" or stage == "Cocon",
 	}
 
 	if stage == "Oeuf" then
