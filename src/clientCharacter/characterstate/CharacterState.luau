@@ -19,6 +19,8 @@ local CharacterState = {
 	IsFlying = false,
 	IsSwimming = false,
 	IsGrabbingPrey = false,
+	-- Fin de la fenêtre d'un saut mural (os.clock) : l'appui qui détache du mur ne fait pas décoller.
+	WallJumpUntil = 0,
 }
 
 local player = Players.LocalPlayer

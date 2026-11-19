@@ -134,7 +134,13 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	lastJumpHeld = jumpHeld
 
 	if not isFlying then
-		if jumpPressed and humanoid:GetState() == Enum.HumanoidStateType.Freefall and canFlyNow() then
+		if
+			jumpPressed
+			and not CharacterState.IsClimbingWall
+			and os.clock() >= CharacterState.WallJumpUntil
+			and humanoid:GetState() == Enum.HumanoidStateType.Freefall
+			and canFlyNow()
+		then
 			startFlying()
 		else
 			return
