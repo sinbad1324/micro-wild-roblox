@@ -21,6 +21,7 @@ local PlayerLifecycleService = require(services.PlayerLifecycleService)
 local SurvivalService = require(services.SurvivalService)
 local FoodService = require(services.FoodService)
 local SpawnMenuNetworkService = require(services.SpawnMenuNetworkService)
+local AdminService = require(services.AdminService)
 local NpcMotherService = require(services.NpcMotherService)
 local CombatService = require(services.CombatService)
 local DigService = require(services.DigService)
@@ -60,6 +61,7 @@ start("FoodService", FoodService.Start)
 -- Nids PNJ enregistrés avant la première diffusion de la liste des nids (menu de spawn).
 start("NpcMotherService", NpcMotherService.Start)
 start("SpawnMenuNetworkService", SpawnMenuNetworkService.Start)
+start("AdminService", AdminService.Start)
 
 -- Mutation tirée à l'âge adulte : reconstruit le corps 3D avec ses couleurs rares.
 ProgressionService.MutationRolledHook = function(player: Player)

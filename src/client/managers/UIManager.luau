@@ -12,6 +12,7 @@ local SpawnMenuView = require(playerScripts.views.SpawnMenuView)
 local AbilityHotbarView = require(playerScripts.views.AbilityHotbarView)
 local DeathScreenView = require(playerScripts.views.DeathScreenView)
 local ControlsHelpView = require(playerScripts.views.ControlsHelpView)
+local AdminPanelView = require(playerScripts.views.AdminPanelView)
 
 local UIManager = {}
 
@@ -36,6 +37,7 @@ function UIManager.Init()
 	end)
 	safeMount("DeathScreenView", DeathScreenView.Mount)
 	safeMount("ControlsHelpView", ControlsHelpView.Mount)
+	safeMount("AdminPanelView", AdminPanelView.Mount)
 end
 
 return UIManager

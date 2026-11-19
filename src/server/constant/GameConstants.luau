@@ -77,6 +77,10 @@ local GameConstants = {
 	-- Galerie de tous les modèles 3D, à l'ouest de la carte (ShowcaseService) : Studio seulement
 	-- (des milliers de parts et ~140 Humanoids de trop pour les serveurs live / mobiles).
 	SHOWCASE_IN_GAME = game:GetService("RunService"):IsStudio(),
+
+	-- Admins de test (AdminService) en plus du créateur du jeu et de tout le monde en Studio.
+	-- Ajoute ici ton UserId Roblox si le jeu appartient à un groupe.
+	ADMIN_USER_IDS = {} :: { number },
 }
 
 return GameConstants
