@@ -27,6 +27,7 @@
 -- Le conteneur porte "AnimScale" (number) : échelle du personnage à la construction. Après un
 -- ScaleTo, utiliser RestC0.Position * (character:GetScale() / AnimScale).
 
+local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
@@ -1454,6 +1455,67 @@ local function hookLateAvatarPieces(character: Model, rootPart: BasePart)
 	end)
 end
 
+-- Parts qui ne comptent pas dans la "boîte" physique du corps (pattes écartées, ailes, antennes).
+local NON_BODY_ANIM: { [string]: boolean } = { Leg = true, Wing = true, Antenna = true }
+local MIN_ROOT_SIZE = 0.25
+
+-- Adapte le HumanoidRootPart (collision, cible des attaques, caméra) au corps de l'insecte : sans
+-- ça il garde la taille et la hauteur de hanche d'un avatar humain et flotte au-dessus de l'insecte.
+-- Le root prend la boîte du corps (sans pattes/ailes/antennes), HipHeight = hauteur des pattes, et
+-- les soudures sont décalées pour que le corps reste exactement où il a été construit.
+local function fitRootToBody(character: Model, root: BasePart, container: Model, groundY: number)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or not Players:GetPlayerFromCharacter(character) then
+		return -- mannequins (galerie, Mamans PNJ) : positionnés par leur propre service
+	end
+	local rootInverse = root.CFrame:Inverse()
+	local minV = Vector3.new(math.huge, math.huge, math.huge)
+	local maxV = -minV
+	for _, part in ipairs(container:GetDescendants()) do
+		if part:IsA("BasePart") and not NON_BODY_ANIM[(part:GetAttribute("Anim") :: string?) or ""] and part.Transparency < 0.9 then
+			local half = part.Size * 0.5
+			for _, sx in ipairs({ -1, 1 }) do
+				for _, sy in ipairs({ -1, 1 }) do
+					for _, sz in ipairs({ -1, 1 }) do
+						local corner = rootInverse * (part.CFrame * Vector3.new(half.X * sx, half.Y * sy, half.Z * sz))
+						minV = minV:Min(corner)
+						maxV = maxV:Max(corner)
+					end
+				end
+			end
+		end
+	end
+	if minV.X == math.huge then
+		return
+	end
+	local size = (maxV - minV):Max(Vector3.one * MIN_ROOT_SIZE)
+	local center = (minV + maxV) * 0.5
+	-- Le bas du root ne descend jamais sous le sol (oeuf, larve posés à plat).
+	local bodyBottom = math.max(minV.Y, groundY)
+	local hipHeight = math.max(bodyBottom - groundY, 0.05)
+	center = Vector3.new(center.X, bodyBottom + size.Y / 2, center.Z)
+
+	-- Décale toutes les soudures : le root va être recentré sur le corps (offset dans son repère).
+	local shift = CFrame.new(-center)
+	for _, weld in ipairs(container:GetDescendants()) do
+		if weld:IsA("Weld") and weld.Part0 == root then
+			weld.C0 = shift * weld.C0
+			local part = weld.Part1
+			local rest = part and part:GetAttribute("RestC0") :: CFrame?
+			if part and rest then
+				part:SetAttribute("RestC0", shift * rest)
+			end
+		end
+	end
+
+	-- Roblox ne doit pas recalculer HipHeight d'après les jambes (cachées) de l'avatar.
+	humanoid.AutomaticScalingEnabled = false
+	root.Size = size
+	humanoid.HipHeight = hipHeight
+	-- Le Humanoid maintient root.Y = sol + HipHeight + Size.Y/2 : on le place directement là.
+	root.CFrame = root.CFrame * CFrame.new(center)
+end
+
 -- Cache l'avatar Roblox dès l'apparition, sans attendre la construction du corps d'insecte (si
 -- celle-ci échoue ou tarde, on ne doit jamais voir le personnage Roblox).
 function InsectVisualService.HideDefaultAvatar(character: Model)
@@ -1540,6 +1602,7 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 		buildLarva(ctx, false)
 	end
 	-- Parenté en une fois : un seul recalcul d'assemblage et une seule réplication du corps complet.
+	fitRootToBody(character, root, container, ctx.groundY)
 	container.Parent = character
 
 	InsectVisualService.SetCamouflage(character, (character:GetAttribute("CamouflageLevel") :: number?) or 0)
