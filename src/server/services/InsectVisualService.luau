@@ -509,10 +509,12 @@ local function buildLegPair(ctx: Ctx, L: Layout, index: number, pairCount: numbe
 		local hip = at(ctx, side * halfWidth, hipY, z)
 		local knee: Vector3
 		local ankle: Vector3
+		local ikKnee: Vector3? = nil
 		setAnim(ctx, "Leg", side, index, hip)
+		local coxa: Part? = nil
 		if plan.Shape ~= "Stick" then
 			-- Coxa : rotule visible à l'insertion de la patte (cachée dans la brindille du phasme).
-			ellipsoid(ctx, "LegCoxa", hip, Vector3.one * d * 1.7, femurRole, nil, nil, tint)
+			coxa = ellipsoid(ctx, "LegCoxa", hip, Vector3.one * d * 1.7, femurRole, nil, nil, tint)
 		end
 		if style == "Jumper" and isHind then
 			-- Sauterelle : fémur arrière massif replié vers le haut, tibia qui redescend, tarse au sol.
@@ -532,15 +534,36 @@ local function buildLegPair(ctx: Ctx, L: Layout, index: number, pairCount: numbe
 		else
 			knee = at(ctx, side * (halfWidth + span * 0.45), hipY + kneeUp, z + spreadZ * 0.3)
 			ankle = at(ctx, side * (halfWidth + span * 0.92), 0.12, z + spreadZ * 0.9)
-			limb(ctx, "LegFemur", hip, knee, d * 1.15, femurRole, tint)
-			limb(ctx, "LegTibia", knee, ankle, d * 0.8, tibiaRole, tint)
-			limb(ctx, "LegTarsus", ankle, at(ctx, side * (halfWidth + span * 1.08), 0.03, z + spreadZ - 0.1), d * 0.55, tarsusRole, tint)
+			local toe = at(ctx, side * (halfWidth + span * 1.08), 0.03, z + spreadZ - 0.1)
+			local femur = limb(ctx, "LegFemur", hip, knee, d * 1.15, femurRole, tint)
+			local tibia = limb(ctx, "LegTibia", knee, ankle, d * 0.8, tibiaRole, tint)
+			local tarsus = limb(ctx, "LegTarsus", ankle, toe, d * 0.55, tarsusRole, tint)
+			-- Patte à cinématique inverse (InsectAnimationController) : "Upper" pivote à la hanche,
+			-- "Lower" (tibia + tarse, rigides) pivote au genou. Géométrie de repos en offsets depuis
+			-- la hanche (repère du root, échelle "AnimScale") : indépendante du recentrage du root.
+			if femur and tibia and tarsus then
+				femur:SetAttribute("IKKnee", knee - hip)
+				femur:SetAttribute("IKToe", toe - hip)
+				femur:SetAttribute("LegSeg", "Upper")
+				tibia:SetAttribute("LegSeg", "Lower")
+				tarsus:SetAttribute("LegSeg", "Lower")
+				if coxa then
+					coxa:SetAttribute("LegSeg", "Upper")
+				end
+				ikKnee = knee
+			end
 		end
 		if legColor == "Striped" then
-			ellipsoid(ctx, "LegBand", hip:Lerp(knee, 0.55), Vector3.one * d * 1.9, "Raw", nil, nil, tint)
+			local band = ellipsoid(ctx, "LegBand", hip:Lerp(knee, 0.55), Vector3.one * d * 1.9, "Raw", nil, nil, tint)
+			if ikKnee then
+				band:SetAttribute("LegSeg", "Upper")
+			end
 		end
 		if plan.PollenBaskets and isHind then
-			ellipsoid(ctx, "PollenBasket", knee:Lerp(ankle, 0.45), Vector3.new(0.2, 0.26, 0.2), "Raw", nil, nil, Color3.fromRGB(245, 200, 40))
+			local basket = ellipsoid(ctx, "PollenBasket", knee:Lerp(ankle, 0.45), Vector3.new(0.2, 0.26, 0.2), "Raw", nil, nil, Color3.fromRGB(245, 200, 40))
+			if ikKnee then
+				basket:SetAttribute("LegSeg", "Lower")
+			end
 		end
 	end
 	setAnim(ctx, nil)

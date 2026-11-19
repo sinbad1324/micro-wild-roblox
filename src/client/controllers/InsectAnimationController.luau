@@ -6,6 +6,10 @@
 -- InsectVisualService) ; ici chaque client écrit Weld.C0 = RestC0 * rotation, toujours à partir du
 -- repos (jamais d'accumulation). Rien n'est répliqué : c'est purement cosmétique.
 --
+-- Pattes : CINÉMATIQUE INVERSE (IK) procédurale. Chaque patte cherche son appui par raycast dans
+-- le repère du corps (marche aussi au mur/plafond), reste plantée pendant que le corps avance, puis
+-- fait un pas en arc (tripodes alternés) ; une IK à 2 os place le genou pour que le pied touche
+-- exactement le sol, qu'il soit plus haut (marche, caillou) ou plus bas (creux, bord).
 -- Mouvements : marche en tripodes alternés (vitesse), respiration + balancement des antennes,
 -- battement d'ailes en l'air (repliées au sol), élytres ouverts en vol, brasses sous l'eau,
 -- ondulation des larves, léger bercement de l'oeuf/du cocon, coup de mâchoires/pinces/queue
@@ -22,6 +26,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
 
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
+local InsectData = require(ReplicatedStorage.shared.InsectData)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 
 local InsectAnimationController = {}
@@ -39,6 +44,15 @@ local MAX_SPEED = 150 -- au-delà : téléportation / réapparition, on ignore l
 local BITE_DURATION = 0.3
 local ZONE_REFRESH_PERIOD = 2
 local TWO_PI = math.pi * 2
+
+-- IK des pattes
+local IK_RANGE_SQ = 60 * 60 -- au-delà : pattes au repos (pas de raycast)
+local STEP_IDLE = 0.22 -- à l'arrêt : petits pas de recalage (fraction de la longueur de patte)
+local STEP_MIN_DURATION = 0.05
+-- Ordre à respecter : appui accepté (REACH_OK) < pas d'urgence (REACH_STRETCH) < 1 (pied bloqué par l'IK).
+local REACH_OK = 0.95
+local REACH_STRETCH = 0.98
+local STEP_MAX_DURATION = 0.2
 
 local K_LEG = 1
 local K_WING = 2
@@ -65,6 +79,30 @@ local KIND_CODES: { [string]: number } = {
 
 local FREEFALL = Enum.HumanoidStateType.Freefall
 local JUMPING = Enum.HumanoidStateType.Jumping
+
+type IKLeg = {
+	group: number, -- 0 / 1 : tripodes alternés
+	upperWelds: { Weld },
+	upperRests: { CFrame },
+	lowerWelds: { Weld },
+	lowerRests: { CFrame },
+	hip: Vector3, -- articulation de la hanche (repère du root, échelle actuelle)
+	knee: Vector3, -- offset hanche -> genou au repos
+	toe: Vector3, -- offset hanche -> pointe du pied au repos
+	pole: Vector3, -- direction de pliage du genou (perpendiculaire à hanche -> pied au repos)
+	a: number, -- longueur hanche -> genou
+	b: number, -- longueur genou -> pied
+	foot: Vector3?, -- position monde du pied (planté ou en vol)
+	stepping: boolean,
+	stepT: number,
+	stepDuration: number,
+	stepFrom: Vector3,
+	stepTo: Vector3,
+	stepArc: number,
+	planted: boolean, -- false après un vol / une nage / un vide : un pas d'atterrissage le replante
+	upperBasis: CFrame, -- inverse du repère (corde, normale du plan de patte) au repos
+	lowerBasis: CFrame,
+}
 
 type Record = {
 	player: Player?, -- nil pour une Maman PNJ
@@ -106,6 +144,12 @@ type Record = {
 	scorpion: boolean,
 	wingRate: number,
 	wingIdle: number,
+	legs: { IKLeg },
+	walkOnWater: boolean, -- gerris : les pattes prennent appui sur la surface de l'étang
+	distSq: number,
+	velocity: Vector3,
+	lastRot: CFrame?,
+	omega: Vector3, -- vitesse angulaire mesurée (la Root d'un grimpeur / d'une PNJ n'en a pas)
 }
 
 -- Clé = Player pour un joueur, Model pour une Maman PNJ.
@@ -119,6 +163,21 @@ local frameWaterLevel: number? = nil
 -- Tables de travail réutilisées par rebuild (clé = Side * 10 + Index).
 local scratchSpread: { [number]: number } = {}
 local scratchBias: { [number]: number } = {}
+local scratchLegs: { [number]: IKLeg } = {}
+
+-- Rayons des pieds : ignorent TOUS les personnages animés (sinon un pied se pose sur la Root d'un voisin).
+local legRayParams = RaycastParams.new()
+legRayParams.FilterType = Enum.RaycastFilterType.Exclude
+legRayParams.IgnoreWater = true
+legRayParams.RespectCanCollide = true
+local rayFilter: { Instance } = {}
+
+-- Repère d'un segment de patte : X = corde, Z = normale du plan de la patte (sans roulis parasite).
+local function legFrame(chord: Vector3, normal: Vector3): CFrame
+	local x = chord.Unit
+	local n = (normal - x * normal:Dot(x)).Unit
+	return CFrame.fromMatrix(Vector3.zero, x, n:Cross(x), n)
+end
 
 local function isInPondZone(position: Vector3): boolean
 	for _, zone in ipairs(pondZones) do
@@ -142,6 +201,7 @@ local function clearCache(rec: Record)
 	table.clear(rec.indices)
 	table.clear(rec.spreads)
 	table.clear(rec.biases)
+	table.clear(rec.legs)
 end
 
 -- Reconstruit le cache depuis le conteneur (appelé seulement quand il change : jamais par frame).
@@ -149,6 +209,14 @@ local function rebuild(rec: Record, whole: boolean)
 	-- Remet d'abord au repos ce qu'on animait : une part qui sort du cache ne reste pas tordue.
 	for i = 1, rec.count do
 		rec.welds[i].C0 = rec.rests[i]
+	end
+	for _, leg in ipairs(rec.legs) do
+		for i, weld in ipairs(leg.upperWelds) do
+			weld.C0 = leg.upperRests[i]
+		end
+		for i, weld in ipairs(leg.lowerWelds) do
+			weld.C0 = leg.lowerRests[i]
+		end
 	end
 	clearCache(rec)
 	rec.dirty = false
@@ -166,6 +234,8 @@ local function rebuild(rec: Record, whole: boolean)
 	rec.scorpion = plan.Tail == "ScorpionTail"
 	rec.wingRate = if wings == "Butterfly" then 14 elseif wings == "Mayfly" then 28 elseif wings == "Dragonfly" then 45 else 65
 	rec.wingIdle = if wings == "Butterfly" then 0.3 else 0
+	local info = InsectData[if type(species) == "string" then species else ""]
+	rec.walkOnWater = info ~= nil and info.CanWalkOnWater
 	-- ScaleTo (transition de stade) met à l'échelle C0/C1 des Welds mais PAS l'attribut RestC0 :
 	-- on ramène donc les repos de l'échelle de construction ("AnimScale") à l'échelle actuelle.
 	local scale = rec.character:GetScale()
@@ -176,6 +246,7 @@ local function rebuild(rec: Record, whole: boolean)
 
 	table.clear(scratchSpread)
 	table.clear(scratchBias)
+	table.clear(scratchLegs)
 	local maxLegIndex = 0
 	local count = 0
 	for _, child in ipairs(container:GetChildren()) do
@@ -223,6 +294,55 @@ local function rebuild(rec: Record, whole: boolean)
 		local indexValue = child:GetAttribute("Index")
 		local side: number = if type(sideValue) == "number" then sideValue else 0
 		local index: number = if type(indexValue) == "number" then indexValue else 0
+
+		-- Patte à IK : rangée dans sa structure de patte, pas dans le cache générique.
+		local segment = child:GetAttribute("LegSeg")
+		if code == K_LEG and (segment == "Upper" or segment == "Lower") then
+			maxLegIndex = math.max(maxLegIndex, index)
+			local key = side * 10 + index
+			local leg = scratchLegs[key]
+			if not leg then
+				leg = {
+					group = (index + (if side > 0 then 1 else 0)) % 2,
+					upperWelds = {},
+					upperRests = {},
+					lowerWelds = {},
+					lowerRests = {},
+					hip = restCf.Position,
+					knee = Vector3.zero,
+					toe = Vector3.zero,
+					pole = Vector3.yAxis,
+					a = 0,
+					b = 0,
+					foot = nil,
+					stepping = false,
+					stepT = 0,
+					stepDuration = STEP_MAX_DURATION,
+					stepFrom = Vector3.zero,
+					stepTo = Vector3.zero,
+					stepArc = 0,
+					planted = false,
+					upperBasis = CFrame.identity,
+					lowerBasis = CFrame.identity,
+				}
+				scratchLegs[key] = leg
+			end
+			local ikLeg = leg :: IKLeg
+			if segment == "Upper" then
+				table.insert(ikLeg.upperWelds, weld)
+				table.insert(ikLeg.upperRests, restCf)
+			else
+				table.insert(ikLeg.lowerWelds, weld)
+				table.insert(ikLeg.lowerRests, restCf)
+			end
+			local kneeOffset = child:GetAttribute("IKKnee")
+			local toeOffset = child:GetAttribute("IKToe")
+			if typeof(kneeOffset) == "Vector3" and typeof(toeOffset) == "Vector3" then
+				ikLeg.knee = kneeOffset * ratio
+				ikLeg.toe = toeOffset * ratio
+			end
+			continue
+		end
 		local spread = 0
 		local bias = 0.15
 		if code == K_LEG then
@@ -264,7 +384,235 @@ local function rebuild(rec: Record, whole: boolean)
 		rec.biases[count] = bias
 	end
 	rec.count = count
+	for _, leg in pairs(scratchLegs) do
+		local a = leg.knee.Magnitude
+		local b = (leg.toe - leg.knee).Magnitude
+		-- > 0.01 : sinon le min de math.clamp dans solveLeg dépasse son max (erreur à chaque frame).
+		if a > 0.01 and b > 0.01 and leg.toe.Magnitude > 1e-3 then
+			leg.a = a
+			leg.b = b
+			local restDir = leg.toe.Unit
+			local pole = leg.knee - restDir * leg.knee:Dot(restDir)
+			-- Patte droite au repos : n'importe quelle perpendiculaire (le pôle doit rester ⟂ à la corde).
+			leg.pole = if pole.Magnitude > 1e-3
+				then pole.Unit
+				else restDir:Cross(if math.abs(restDir.X) < 0.9 then Vector3.xAxis else Vector3.yAxis).Unit
+			local normal = leg.pole:Cross(restDir)
+			leg.upperBasis = legFrame(leg.knee, normal):Inverse()
+			leg.lowerBasis = legFrame(leg.toe - leg.knee, normal):Inverse()
+			table.insert(rec.legs, leg)
+		end
+	end
+	table.clear(scratchLegs)
 	rec.manyLegs = maxLegIndex > 4 -- scolopendre : vague le long du corps plutôt que tripodes
+end
+
+-- IK à 2 os (hanche -> genou -> pied) puis écriture des Welds : C0 = M * repos, où M est la
+-- transformation rigide du segment dans le repère du root.
+local function solveLeg(leg: IKLeg, footLocal: Vector3)
+	local hip, a, b = leg.hip, leg.a, leg.b
+	local toHip = footLocal - hip
+	local distance = toHip.Magnitude
+	local direction = if distance > 1e-4 then toHip / distance else leg.toe.Unit
+	distance = math.clamp(distance, math.abs(a - b) + 0.01, a + b - 0.001)
+	-- Genou plié du même côté qu'au repos (vers le haut / l'extérieur).
+	local pole = leg.pole - direction * leg.pole:Dot(direction)
+	if pole.Magnitude < 1e-3 then
+		pole = Vector3.yAxis - direction * direction.Y
+	end
+	pole = if pole.Magnitude > 1e-4 then pole.Unit else Vector3.xAxis
+	local cosine = math.clamp((a * a + distance * distance - b * b) / (2 * a * distance), -1, 1)
+	local sine = math.sqrt(1 - cosine * cosine)
+	local knee = hip + direction * (a * cosine) + pole * (a * sine)
+	local foot = hip + direction * distance
+
+	-- Rotation de chaque segment = repère résolu * inverse du repère de repos (corde + plan de la patte).
+	local normal = pole:Cross(direction)
+	local upper = CFrame.new(hip) * legFrame(knee - hip, normal) * leg.upperBasis * CFrame.new(-hip)
+	local lower = CFrame.new(knee) * legFrame(foot - knee, normal) * leg.lowerBasis * CFrame.new(-(hip + leg.knee))
+	for i, weld in ipairs(leg.upperWelds) do
+		weld.C0 = upper * leg.upperRests[i]
+	end
+	for i, weld in ipairs(leg.lowerWelds) do
+		weld.C0 = lower * leg.lowerRests[i]
+	end
+end
+
+-- Appui sous `from` à portée de la hanche, ou nil (vide, bord, trop bas pour la patte).
+local function groundBelow(rec: Record, from: Vector3, hip: Vector3, up: Vector3, reach: number): Vector3?
+	-- Le rayon part de la hanche vers le haut du pied : sous une feuille / un surplomb, il ne passe pas au-dessus.
+	local start = from + up * (reach * 0.9)
+	local rise = start - hip
+	if rise.Magnitude > 1e-3 then
+		local block = workspace:Raycast(hip, rise, legRayParams)
+		if block then
+			start = block.Position - rise.Unit * 0.05
+		end
+	end
+	local direction = up * (-reach * 1.9)
+	local hit = workspace:Raycast(start, direction, legRayParams)
+	local position = if hit then hit.Position else nil
+	-- Gerris : la surface de l'étang porte (le flotteur de SwimController n'existe que chez son propriétaire).
+	local level = frameWaterLevel
+	if rec.walkOnWater and level and up.Y > 0.8 then
+		local t = (level - start.Y) / direction.Y
+		if t >= 0 and t <= 1 and (position == nil or position.Y < level) and isInPondZone(start) then
+			position = start + direction * t
+		end
+	end
+	if position and (position - hip).Magnitude <= reach * REACH_OK then
+		return position
+	end
+	return nil
+end
+
+-- Pas planté / pas en arc pour chaque patte, puis IK. `grounded` = corps posé (sol, mur, plafond).
+local function updateLegs(rec: Record, root: BasePart, dt: number, air: number, swim: number)
+	local legs = rec.legs
+	if #legs == 0 then
+		return
+	end
+	if rec.distSq > IK_RANGE_SQ then
+		-- Loin : pattes remises au repos une seule fois, aucun raycast.
+		for _, leg in ipairs(legs) do
+			if leg.foot ~= nil then
+				leg.foot = nil
+				leg.stepping = false
+				leg.planted = false
+				for i, weld in ipairs(leg.upperWelds) do
+					weld.C0 = leg.upperRests[i]
+				end
+				for i, weld in ipairs(leg.lowerWelds) do
+					weld.C0 = leg.lowerRests[i]
+				end
+			end
+		end
+		return
+	end
+
+	local rootCFrame = root.CFrame
+	local rootPosition = rootCFrame.Position
+	local up = rootCFrame.UpVector
+	local back = -rootCFrame.LookVector
+	local grounded = air < 0.5 and swim < 0.5
+	local velocity = rec.velocity
+	local omega = rec.omega
+	local busy0, busy1 = 0, 0
+	for _, leg in ipairs(legs) do
+		if leg.stepping then
+			if leg.group == 0 then
+				busy0 += 1
+			else
+				busy1 += 1
+			end
+		end
+	end
+
+	for _, leg in ipairs(legs) do
+		local reach = leg.a + leg.b
+		local hipWorld = rootCFrame * leg.hip
+		local homeWorld = rootCFrame * (leg.hip + leg.toe)
+		local current: Vector3
+
+		if not grounded then
+			-- En vol : pattes pendantes, traînées vers l'arrière. À la nage : les tripodes rament en alternance.
+			local stroke = if swim > 0.01 then math.sin(rec.gait + leg.group * math.pi) * reach * 0.4 * swim else 0
+			local tucked = homeWorld:Lerp(hipWorld, 0.3) - up * (reach * 0.35 * air) + back * (reach * 0.25 * air + stroke)
+			current = (leg.foot or tucked):Lerp(tucked, math.min(1, dt * 12))
+			leg.stepping = false
+			leg.planted = false
+		elseif leg.stepping then
+			leg.stepT += dt / leg.stepDuration
+			local t = math.min(1, leg.stepT)
+			local ease = t * t * (3 - 2 * t)
+			current = leg.stepFrom:Lerp(leg.stepTo, ease) + up * (math.sin(math.pi * t) * leg.stepArc)
+			if t >= 1 then
+				leg.stepping = false
+				leg.planted = true
+				current = leg.stepTo
+				if leg.group == 0 then
+					busy0 -= 1
+				else
+					busy1 -= 1
+				end
+			end
+		else
+			-- Bord / trou : la patte agrippe la lèvre plus près du corps.
+			local ground = groundBelow(rec, homeWorld, hipWorld, up, reach)
+				or groundBelow(rec, homeWorld:Lerp(hipWorld, 0.5), hipWorld, up, reach)
+			local foot = leg.foot
+			if not ground then
+				-- Rien à portée : la patte pend dans le vide.
+				local hang = homeWorld:Lerp(hipWorld, 0.3) - up * (reach * 0.3)
+				current = (foot or hang):Lerp(hang, math.min(1, dt * 8))
+				leg.planted = false
+			elseif not foot then
+				current = ground
+				leg.planted = true
+			else
+				current = foot
+				local stepTarget: Vector3? = nil
+				local duration, arc = 0, 0
+				if not leg.planted then
+					-- Atterrissage (après un saut, la nage ou un vide) : pas immédiat, hors cadence des tripodes.
+					stepTarget, duration, arc = ground, 0.08, reach * 0.1
+				else
+					local offset = ground - foot
+					local along = offset:Dot(up)
+					local planar = offset - up * along
+					local drift = planar.Magnitude
+					if drift > reach * 6 then
+						current = ground -- téléportation / réapparition : on replante directement
+					else
+						-- Vitesse du point d'attache : translation + rotation du corps (virage sur place).
+						local homeVelocity = velocity + omega:Cross(homeWorld - rootPosition)
+						homeVelocity -= up * homeVelocity:Dot(up)
+						local homeSpeed = homeVelocity.Magnitude
+						local moving = homeSpeed > 0.4
+						local stride = if moving
+							then math.clamp(homeSpeed * 0.11, reach * 0.5, reach)
+							else reach * STEP_IDLE * 2
+						local stepDistance = stride * 0.5
+						local heading = if moving then homeVelocity / homeSpeed else Vector3.zero
+						-- En marche, seul le retard compte : un pied posé devant attend que le corps le dépasse.
+						local late = if moving
+							then planar:Dot(heading) > stepDistance or drift > stride
+							else drift > stepDistance
+						local stretch = (foot - hipWorld).Magnitude
+						local otherBusy = if leg.group == 0 then busy1 else busy0
+						if (late or stretch > reach * REACH_STRETCH or math.abs(along) > reach * 0.6) and otherBusy == 0 then
+							-- Le pied se pose une demi-foulée DEVANT l'endroit où sera la hanche à l'atterrissage.
+							duration = if moving
+								then math.clamp(stride / homeSpeed, STEP_MIN_DURATION, STEP_MAX_DURATION)
+								else 0.16
+							local aim = homeWorld + homeVelocity * duration + heading * stepDistance
+							local target = groundBelow(rec, aim, hipWorld, up, reach) or ground
+							if (target - foot).Magnitude > reach * 0.08 then
+								stepTarget = target
+								arc = math.clamp(drift * 0.45, reach * 0.12, reach * 0.45)
+									+ math.max(0, (target - foot):Dot(up))
+							end
+						end
+					end
+				end
+				if stepTarget then
+					leg.stepFrom = foot
+					leg.stepTo = stepTarget
+					leg.stepT = 0
+					leg.stepDuration = duration
+					leg.stepArc = arc
+					leg.stepping = true
+					if leg.group == 0 then
+						busy0 += 1
+					else
+						busy1 += 1
+					end
+				end
+			end
+		end
+		leg.foot = current
+		solveLeg(leg, rootCFrame:PointToObjectSpace(current))
+	end
 end
 
 local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: number)
@@ -289,18 +637,33 @@ local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: num
 	local position = root.Position
 	local speed: number
 	if rec.player then
-		speed = root.AssemblyLinearVelocity.Magnitude
+		rec.velocity = root.AssemblyLinearVelocity
+		speed = rec.velocity.Magnitude
 	else
 		-- Root ancrée : vitesse = déplacement lissé (la réplication arrive par à-coups).
 		local lastPos = rec.lastPos
 		rec.lastPos = position
 		if lastPos and elapsed > 0 and elapsed < 0.5 then
-			local measured = (position - lastPos).Magnitude / elapsed
+			local delta = (position - lastPos) / elapsed
+			local measured = delta.Magnitude
 			if measured < MAX_SPEED then
 				rec.speed += (measured - rec.speed) * math.min(1, dt * 5)
+				rec.velocity = rec.velocity:Lerp(delta, math.min(1, dt * 5))
 			end
 		end
 		speed = rec.speed
+	end
+	-- Vitesse angulaire déduite de la rotation (un grimpeur a AssemblyAngularVelocity = 0, une PNJ est ancrée).
+	local rotation = root.CFrame.Rotation
+	local lastRot = rec.lastRot
+	rec.lastRot = rotation
+	if lastRot and elapsed > 0 and elapsed < 0.5 then
+		local axis, angle = (lastRot:Inverse() * rotation):ToAxisAngle()
+		local rate = angle / elapsed
+		if rate < 30 then
+			local measured = if angle > 1e-5 then lastRot:VectorToWorldSpace(axis) * rate else Vector3.zero
+			rec.omega = rec.omega:Lerp(measured, math.min(1, dt * 10))
+		end
 	end
 	local waterLevel = frameWaterLevel
 	local swimming = waterLevel ~= nil and position.Y < waterLevel and isInPondZone(position)
@@ -411,6 +774,7 @@ local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: num
 		end
 		welds[i].C0 = rests[i] * rot
 	end
+	updateLegs(rec, root, dt, air, swim)
 end
 
 local function bindContainer(rec: Record, container: Instance?)
@@ -432,12 +796,22 @@ local function bindContainer(rec: Record, container: Instance?)
 	end
 end
 
+-- FilterDescendantsInstances est copié à l'affectation : on le réaffecte à chaque changement.
+local function refreshRayFilter()
+	table.clear(rayFilter)
+	for _, rec in records do
+		table.insert(rayFilter, rec.character)
+	end
+	legRayParams.FilterDescendantsInstances = rayFilter
+end
+
 local function untrack(key: Instance)
 	local rec = records[key]
 	if not rec then
 		return
 	end
 	records[key] = nil
+	refreshRayFilter()
 	if rec.charConn then
 		rec.charConn:Disconnect()
 	end
@@ -490,8 +864,15 @@ local function track(key: Instance, player: Player?, character: Model)
 		scorpion = false,
 		wingRate = 65,
 		wingIdle = 0,
+		legs = {},
+		walkOnWater = false,
+		distSq = 0,
+		velocity = Vector3.zero,
+		lastRot = nil,
+		omega = Vector3.zero,
 	}
 	records[key] = rec
+	refreshRayFilter()
 	-- Changement de stade : le serveur détruit le conteneur et en crée un nouveau.
 	rec.charConn = character.ChildAdded:Connect(function(child)
 		if child.Name == CONTAINER_NAME then
@@ -568,6 +949,7 @@ local function onHeartbeat()
 		local distanceSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
 		if distanceSq > rec.farSq then
 			rec.lastPos = nil -- pas de pic de vitesse au retour dans le champ
+			rec.lastRot = nil
 			continue
 		end
 		rec.odd = not rec.odd
@@ -579,7 +961,8 @@ local function onHeartbeat()
 		if rec.dirty or whole ~= rec.whole or character:GetScale() ~= rec.scale then
 			rebuild(rec, whole)
 		end
-		if rec.count > 0 then
+		rec.distSq = distanceSq
+		if rec.count > 0 or #rec.legs > 0 then
 			animate(rec, root, humanoid, now)
 		end
 	end
