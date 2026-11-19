@@ -96,17 +96,29 @@ local function buildFallbackVisual(ownerName: string, sizeScale: number): Model
 	return model
 end
 
-local function spawnMushroomsAround(position: Vector3, count: number, radius: number)
+local function spawnMushroomsAround(model: Model, position: Vector3, count: number, radius: number)
 	local foliage = getCarcassesFolder()
+	-- Anneau hors de l'emprise de la carcasse (un géant couché déborde largement des 14 studs).
+	radius = math.max(radius, model:GetExtentsSize().Magnitude * 0.5 + 2)
+	-- Sol inégal : chaque champignon est recalé sur le terrain (ni enterré, ni flottant).
+	local groundParams = RaycastParams.new()
+	groundParams.FilterType = Enum.RaycastFilterType.Exclude
+	groundParams.FilterDescendantsInstances = { foliage }
 	for i = 1, count do
 		local angle = (i / count) * math.pi * 2
 		local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)
+		local mushroomPos = position + offset + Vector3.new(0, 0.4, 0)
+		local hit = workspace:Raycast(position + offset + Vector3.new(0, 20, 0), Vector3.new(0, -60, 0), groundParams)
+		if hit then
+			mushroomPos = hit.Position + Vector3.new(0, 0.4, 0)
+		end
 
 		local mushroom = Instance.new("Part")
 		mushroom.Name = "FoodNode_Champignon"
 		mushroom.Shape = Enum.PartType.Cylinder
 		mushroom.Size = Vector3.new(0.6, 0.8, 0.8)
-		mushroom.CFrame = CFrame.new(position + offset) * CFrame.Angles(0, 0, math.rad(90))
+		-- Relevé d'une demi-hauteur : position = point de sol, le champignon ne doit pas être enterré.
+		mushroom.CFrame = CFrame.new(mushroomPos) * CFrame.Angles(0, 0, math.rad(90))
 		mushroom.Anchored = true
 		mushroom.CanCollide = false
 		mushroom.Material = Enum.Material.Neon
@@ -220,7 +232,7 @@ function CarcassService.SpawnCarcassFor(
 		model:SetAttribute("Stage", "Pourrissement")
 		model:SetAttribute("CarcassFoodType", nil)
 		easeColors(model, Color3.fromRGB(45, 40, 30), 0.5, nil)
-		spawnMushroomsAround(position, if isGiantAnimal then 8 else 2, if isGiantAnimal then 14 else 3)
+		spawnMushroomsAround(model, position, if isGiantAnimal then 8 else 2, if isGiantAnimal then 14 else 3)
 
 		task.wait(ADVANCED_SECONDS)
 		if not model.Parent then

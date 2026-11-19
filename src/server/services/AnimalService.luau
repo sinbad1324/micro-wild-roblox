@@ -912,7 +912,8 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 	chameleon.Cooldown -= dt
 	chameleon.Timer -= dt
 	chameleon.Data.ColorTimer = (chameleon.Data.ColorTimer or 4) - dt
-	if chameleon.Data.ColorTimer <= 0 then
+	-- Endormi (aucun joueur proche) : inutile de répliquer une recoloration que personne ne voit.
+	if chameleon.Data.ColorTimer <= 0 and not chameleon.Data.Asleep then
 		chameleon.Data.ColorTimer = 4
 		chameleonRecolor(chameleon)
 	end
@@ -1338,7 +1339,28 @@ local function crabUpdate(crab: Animal, dt: number)
 			-- Le client fait claquer la pince du côté de la cible au moment du coup (Side +1 = +X = droite).
 			crab.Model:SetAttribute("AttackSide", if root.CFrame.RightVector:Dot(flat) >= 0 then 1 else -1)
 			crab.Model:SetAttribute("AttackAt", workspace:GetServerTimeNow())
-			hitPlayer(threat, AnimalData.Crabe.AttackDamage, flat.Unit * 70 + Vector3.new(0, 35, 0), "Les pinces du crabe vous broient !")
+			-- Armé 0.3 s : le coup tombe quand la pince claque côté client, et un pas de côté l'esquive.
+			local target: Player = threat
+			task.delay(0.3, function()
+				-- En fuite pendant l'armement : le coup est annulé.
+				if crab.Mode == "Dead" or crab.Mode == "Retreat" or not crab.Model.Parent then
+					return
+				end
+				local targetRoot = getPlayerRoot(target)
+				if not targetRoot or not isExposed(target, true) then
+					return
+				end
+				local crabRoot = crab.Root
+				local delta = targetRoot.Position - crabRoot.Position
+				local flatNow = Vector3.new(delta.X, 0, delta.Z)
+				if flatNow.Magnitude > 14 or flatNow.Magnitude <= 0.1 or crabRoot.CFrame.LookVector:Dot(flatNow.Unit) <= 0.55
+					or not hasLineOfSight(crabRoot.Position, targetRoot, getFolderFilter())
+				then
+					return
+				end
+				local push = flatDirection(crabRoot.Position, targetRoot.Position, crabRoot.CFrame.LookVector)
+				hitPlayer(target, AnimalData.Crabe.AttackDamage, push * 70 + Vector3.new(0, 35, 0), "Les pinces du crabe vous broient !")
+			end)
 		end
 		return
 	end

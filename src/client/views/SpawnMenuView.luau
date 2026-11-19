@@ -49,7 +49,6 @@ local LANDSCAPE_SIZE = Vector2.new(720, 440)
 local PORTRAIT_SIZE = Vector2.new(400, 660)
 local PORTRAIT_DETAIL_HEIGHT = 200
 local FILTER_ROW_HEIGHT = 30
-local MAX_NEST_CHILDREN = 6 -- miroir de SpawnMenuNetworkService (le serveur fait foi)
 local PAGES_TOP = 86
 
 local ROOT_SHOWN = UDim2.fromScale(0.5, 0.5)
@@ -387,6 +386,8 @@ function SpawnMenuView.Mount()
 	local joinLocked = false -- anti double-clic des lignes de nid (même principe que confirmLocked)
 	-- Dernier mode utilisé pour naître : le menu s'y rouvre à la vie suivante.
 	local lastConfirmedMode: MenuMode = "Species"
+	-- Mode du dernier clic : ne devient lastConfirmedMode que si le serveur accepte (menu fermé).
+	local pendingMode: MenuMode = "Species"
 	local shown = false -- menu affiché (déclaré ici : lu par refreshConfirmText)
 	local cooldownTicking = false
 
@@ -578,7 +579,7 @@ function SpawnMenuView.Mount()
 
 	confirmButton.MouseButton1Click:Connect(function()
 		local speciesId = selectedId
-		if confirmLocked or not speciesId then
+		if confirmLocked or joinLocked or not speciesId then
 			return
 		end
 		local asMother = mode == "Mother"
@@ -588,7 +589,7 @@ function SpawnMenuView.Mount()
 		-- Anti double-clic (le serveur limite aussi la cadence). Si le serveur refuse, un toast
 		-- l'explique et le bouton redevient cliquable.
 		confirmLocked = true
-		lastConfirmedMode = mode
+		pendingMode = mode
 		confirmButton.Text = if asMother then "Naissance…" else "Éclosion…"
 		if asMother then
 			Remotes.Get("RequestSpawnAsMother"):FireServer(speciesId)
@@ -765,20 +766,15 @@ function SpawnMenuView.Mount()
 				joinLabel.BackgroundColor3 = Colors.Track
 				joinLabel.TextColor3 = Colors.Muted
 			end
-			-- Nid plein : la ligne reste cliquable, le serveur explique le refus.
-			if (tonumber(summary.ChildCount) or 0) >= MAX_NEST_CHILDREN then
-				joinLabel.Text = "Complet"
-				joinLabel.BackgroundColor3 = Colors.Track
-				joinLabel.TextColor3 = Colors.Muted
-			end
+			-- Pas d'étiquette "Complet" : ChildCount inclut les adultes, seul le serveur sait si le nid est plein.
 			UiTheme.Corner(joinLabel, 8)
 
 			row.MouseButton1Click:Connect(function()
-				if joinLocked then
+				if joinLocked or confirmLocked then
 					return
 				end
 				joinLocked = true
-				lastConfirmedMode = "Nest"
+				pendingMode = "Nest"
 				local idleText = joinLabel.Text
 				joinLabel.Text = "…"
 				Remotes.Get("RequestJoinNest"):FireServer(summary.OwnerUserId)
@@ -899,7 +895,8 @@ function SpawnMenuView.Mount()
 			screenGui.Enabled = true
 			-- Rouvre sur le dernier mode utilisé, sauf s'il n'est plus disponible.
 			local reopenMode = lastConfirmedMode
-			if (reopenMode == "Mother" and motherUnlockState() ~= true)
+			-- Délai Maman en cours : on ouvre sur Espèce pour pouvoir renaître tout de suite.
+			if (reopenMode == "Mother" and (motherUnlockState() ~= true or motherCooldownLeft() > 0))
 				or (reopenMode == "Nest" and (latestSummaries == nil or #(latestSummaries :: { NestSummary }) == 0))
 			then
 				reopenMode = "Species"
@@ -914,6 +911,10 @@ function SpawnMenuView.Mount()
 			UiTheme.Tween(root, 0.35, { Position = ROOT_SHOWN }, Enum.EasingStyle.Back)
 		else
 			-- Sortie : le panneau glisse vers le bas et le voile s'éclaircit, puis on désactive.
+			-- Fermeture corps vivant = naissance acceptée (la Maman pose Growth avant HasConfirmedSpawn).
+			if humanoid ~= nil and humanoid.Health > 0 then
+				lastConfirmedMode = pendingMode
+			end
 			searchBox:ReleaseFocus()
 			UiTheme.Tween(backdrop, 0.3, { BackgroundTransparency = 1 })
 			UiTheme.Tween(root, 0.3, { Position = ROOT_OFFSCREEN }, Enum.EasingStyle.Quad, Enum.EasingDirection.In).Completed:Connect(function()

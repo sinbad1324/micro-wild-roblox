@@ -29,6 +29,8 @@ local familyMarkers: { [Instance]: BillboardGui } = {}
 -- Repère du nid (HomePosition) : ancre locale invisible, visible tant que le joueur est un bébé.
 local homeAnchor: Part? = nil
 local homeMarker: BillboardGui? = nil
+-- Vrai si la Maman PNJ de ma famille existe encore (passe précédente de refreshFamilyMarkers).
+local npcMotherSeen = false
 local FAMILY_COLOR = Color3.fromRGB(255, 225, 120)
 local DANGER_COLOR = Color3.fromRGB(255, 90, 80)
 local threatMarkers: { [Player]: BillboardGui } = {}
@@ -94,15 +96,19 @@ local function refreshFamilyMarkers()
 		end
 	end
 	-- Maman PNJ de la famille (bébé né dans un nid PNJ).
+	npcMotherSeen = false
 	for _, model in ipairs(CollectionService:GetTagged("NpcMother")) do
 		local primary = if model:IsA("Model") then (model :: Model).PrimaryPart else nil
 		local marker = familyMarkers[model]
+		if myFamily ~= nil and model:GetAttribute("FamilyId") == myFamily then
+			npcMotherSeen = true
+		end
 		if myFamily ~= nil and primary and model:GetAttribute("FamilyId") == myFamily then
 			if not marker or marker.Adornee ~= primary then
 				if marker then
 					marker:Destroy()
 				end
-				marker = makeBillboard("FamilyMarker", "👑 " .. model.Name, FAMILY_COLOR, primary, 5, false, FAMILY_MARKER_DISTANCE)
+				marker = makeBillboard("FamilyMarker", "👑 " .. model.Name, FAMILY_COLOR, primary, 5, true, FAMILY_MARKER_DISTANCE)
 				familyMarkers[model] = marker
 			end
 			-- Activité de la Maman (attribut "Mode" répliqué par NpcMotherService) : le bébé sait quoi faire.
@@ -116,6 +122,9 @@ local function refreshFamilyMarkers()
 				text = "🍃 " .. model.Name .. " cherche à manger"
 			elseif mode == "Return" then
 				text = "🏠 " .. model.Name .. " rentre au nid"
+			elseif mode == "Feed" then
+				-- Le repas n'est servi qu'au coeur du nid (NEST_RADIUS) : le bébé doit revenir.
+				text = "🍼 " .. model.Name .. " nourrit au nid — venez !"
 			end
 			local label = (marker :: BillboardGui):FindFirstChild("Text") :: TextLabel?
 			if label and label.Text ~= text then
@@ -176,6 +185,14 @@ local function refreshHomeMarker()
 	-- L'ancre a pu être recréée (caméra remplacée) : on re-pointe le marqueur.
 	if marker and marker.Adornee ~= part then
 		marker.Adornee = part
+	end
+	local familyId = player:GetAttribute("FamilyId")
+	local homeText = if typeof(familyId) == "string" and string.sub(familyId, 1, 8) == "NpcNest_" and not npcMotherSeen
+		then "🏠 Nid (Maman absente)"
+		else "🏠 Nid"
+	local homeLabel = if marker then marker:FindFirstChild("Text") :: TextLabel? else nil
+	if homeLabel and homeLabel.Text ~= homeText then
+		homeLabel.Text = homeText
 	end
 	local stage = player:GetAttribute("Stage")
 	if marker then

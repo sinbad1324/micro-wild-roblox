@@ -332,7 +332,8 @@ function ProgressionService.Start()
 		end
 		local motherUserId = player:GetAttribute("OwnerNestUserId") :: number?
 		local mother = if motherUserId then Players:GetPlayerByUserId(motherUserId) else nil
-		if mother then
+		-- Pas de prime à la Maman pour l'éclosion non plus : sinon rejoindre/mourir en boucle = farm.
+		if mother and newStage ~= "Larve" then
 			ProgressionService.AddEvolutionPoints(mother, MOTHER_POINTS_PER_CHILD_STAGE)
 		end
 	end)

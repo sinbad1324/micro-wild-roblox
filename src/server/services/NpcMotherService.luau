@@ -349,6 +349,8 @@ local function spawnMotherBody(m: Mother)
 
 	m.Nest.MotherAlive = true
 	GrowthAndNestService.RefreshNestDisplay(m.NestId)
+	-- Menus de spawn ouverts : retirer « sans mère » tout de suite.
+	Remotes.Get("NestListChanged"):FireAllClients(GrowthAndNestService.GetNestSummaries())
 end
 
 local function notifyFamily(m: Mother, message: string)
@@ -387,6 +389,9 @@ onDeath = function(m: Mother, model: Model)
 		if not last or now - last >= GameConstants.NPC_MOTHER_RESPAWN_SECONDS * 3 then
 			perNest[m.NestId] = now
 			ProgressionService.AddEvolutionPoints(killer, GameConstants.KILL_EVOLUTION_POINTS)
+			notify(killer, "Vous avez vaincu " .. m.DisplayName .. " !", "info")
+		else
+			notify(killer, m.DisplayName .. " vaincue (pas de PE : déjà récompensé récemment).", "info")
 		end
 	end
 	m.Model = nil
@@ -397,6 +402,7 @@ onDeath = function(m: Mother, model: Model)
 	-- Le nid et la famille persistent, sans mère, jusqu'à la réapparition.
 	m.Nest.MotherAlive = false
 	GrowthAndNestService.RefreshNestDisplay(m.NestId)
+	Remotes.Get("NestListChanged"):FireAllClients(GrowthAndNestService.GetNestSummaries())
 	notifyFamily(m, m.DisplayName .. " est morte ! Le nid tient bon jusqu'à son retour.")
 	task.delay(GameConstants.NPC_MOTHER_RESPAWN_SECONDS, function()
 		if GrowthAndNestService.ActiveNests[m.NestId] ~= m.Nest then
@@ -562,6 +568,21 @@ local function think(m: Mother, now: number)
 		end
 	end
 
+	-- Frappée hors laisse (checkVictim l'ignore) : elle rentre en courant, la prochaine morsure près
+	-- du nid déclenchera la défense (sinon elle se laisse mordre en continuant sa cueillette).
+	local body = m.Model
+	local lastHit = if body then (body:GetAttribute("LastAttackAt") :: number?) else nil
+	local hitRecently = lastHit ~= nil and now - lastHit < AGGRESSION_MEMORY
+	-- Déjà au nid : pas de bascule Return/Feed en boucle.
+	if
+		hitRecently
+		and (m.Mode == "Forage" or m.Mode == "Idle" or m.Mode == "Feed")
+		and flatDistance(m.Position, nestPosition) > GameConstants.NEST_RADIUS
+	then
+		m.FoodNode = nil
+		setMode(m, "Return", now)
+	end
+
 	-- 2. Fuite : un animal géant approche. Le nid sert d'abri : y arriver met fin à la fuite
 	-- (sinon les Mamans de la mare, frôlées en continu par le poisson et le crabe, ne sortiraient jamais).
 	local giantDistance = nearestGiantDistance(m.Position)
@@ -654,7 +675,7 @@ local function think(m: Mother, now: number)
 		end
 	elseif m.Mode == "Return" then
 		m.Goal = nestPosition
-		m.Speed = baseSpeed * 0.8
+		m.Speed = baseSpeed * (if hitRecently then 1.2 else 0.8)
 		if flatDistance(m.Position, nestPosition) <= 4 then
 			deposit(m)
 			setMode(m, "Feed", now)
@@ -771,7 +792,16 @@ end
 -- Régénération lente hors combat (2 %/s) : plusieurs raids courts ne suffisent plus à tuer la Maman.
 local function regen(m: Mother, dt: number, now: number)
 	local hum = m.Humanoid
-	if hum and hum.Health > 0 and hum.Health < hum.MaxHealth and m.Mode ~= "Defend" and now - m.ModeSince > 5 then
+	local model = m.Model
+	local lastHit = if model then (model:GetAttribute("LastAttackAt") :: number?) else nil
+	if
+		hum
+		and hum.Health > 0
+		and hum.Health < hum.MaxHealth
+		and m.Mode ~= "Defend"
+		and now - m.ModeSince > 5
+		and now - (lastHit or 0) > 5
+	then
 		hum.Health = math.min(hum.MaxHealth, hum.Health + hum.MaxHealth * 0.02 * dt)
 	end
 end

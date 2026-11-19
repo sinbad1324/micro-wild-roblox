@@ -4,6 +4,7 @@
 -- en Maman (débloquée par le profil) et fondation de colonie par un adulte (GDD §2 "Spawn" et §8.2).
 -- Le client envoie une intention, ce module valide.
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
@@ -139,23 +140,24 @@ local function onCreateNest(player: Player)
 		notify(player, "Colonie fondée ! Les nouveaux joueurs peuvent naître dans votre nid.", "info")
 		broadcastNestList()
 	else
+		-- Retour dans la famille d'origine : liste inchangée, pas de diffusion. CreateNest a déjà
+		-- expliqué le refus (espacement), pas de second toast.
 		if previousOwner and GrowthAndNestService.GetNest(previousOwner) then
 			GrowthAndNestService.JoinNest(player, previousOwner)
-			broadcastNestList()
 		end
-		notify(player, "Impossible de construire le nid ici (posez-vous au sol).", "warning")
 	end
 end
 
 -- Point de naissance d'une Maman : au sol, hors de l'espacement minimal des nids (CreateNest refuse
--- à moins de NEST_RADIUS*2 d'un autre nid). Repli sur la maison elle-même après plusieurs essais.
+-- à moins de NEST_RADIUS*2 d'un autre nid). Repli décalé hors de la maison après plusieurs essais.
 local function motherSpawnPoint(home: Vector3, character: Model?): Vector3
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = if character then { character } else {}
 	params.IgnoreWater = false -- une mère terrestre ne naît pas au fond de l'eau
 	local minSpacing = GameConstants.NEST_RADIUS * 2
-	for _ = 1, 4 do
+	local aiNests = CollectionService:GetTagged("AINest")
+	for _ = 1, 8 do
 		local angle = math.random() * 2 * math.pi
 		local distance = minSpacing + 4 + math.random() * 20
 		local probe = home + Vector3.new(math.cos(angle) * distance, 40, math.sin(angle) * distance)
@@ -170,12 +172,22 @@ local function motherSpawnPoint(home: Vector3, character: Model?): Vector3
 					break
 				end
 			end
+			-- CreateNest refuse aussi la proximité des nids IA (tag "AINest").
+			if free then
+				for _, tagged in ipairs(aiNests) do
+					if tagged:IsA("BasePart") and (tagged.Position - spot).Magnitude < minSpacing then
+						free = false
+						break
+					end
+				end
+			end
 			if free then
 				return spot
 			end
 		end
 	end
-	return home
+	-- Repli hors de l'espacement de la maison (sinon la colonie automatique est toujours refusée).
+	return home + Vector3.new(minSpacing + 4, 0, 0)
 end
 
 -- "Être une Maman" : naissance directe en adulte à 100%, puis fondation de colonie automatique.
@@ -269,7 +281,14 @@ local function onJoinNest(player: Player, motherUserId: unknown)
 		Remotes.Get("NestListChanged"):FireClient(player, GrowthAndNestService.GetNestSummaries())
 		return
 	end
-	if #nest.Children >= MAX_NEST_CHILDREN then
+	-- Seuls les enfants encore dépendants comptent : un adulte reste dans Children (FamilyId) sans occuper de place.
+	local dependents = 0
+	for _, child in ipairs(nest.Children) do
+		if child:GetAttribute("CanLeaveNest") ~= true then
+			dependents += 1
+		end
+	end
+	if dependents >= MAX_NEST_CHILDREN then
 		notify(player, "Ce nid est complet, choisissez-en un autre.", "warning")
 		return
 	end
@@ -278,7 +297,12 @@ local function onJoinNest(player: Player, motherUserId: unknown)
 	end
 	if GrowthAndNestService.JoinNest(player, motherUserId :: number) then
 		confirmSpawn(player, nest.SpeciesId, nest.Position)
-		notify(player, "Vous êtes né(e) dans le nid de votre Maman !", "info")
+		if nest.MotherAlive == false then
+			-- Nid orphelin : personne ne viendra nourrir l'oeuf (GDD §8.2), on le dit tout de suite.
+			notify(player, "Nid sans mère : personne ne vous nourrira, trouvez vite à manger !", "warning")
+		else
+			notify(player, "Vous êtes né(e) dans le nid de votre Maman !", "info")
+		end
 		local mother = Players:GetPlayerByUserId(motherUserId :: number)
 		if mother then
 			notify(mother, player.Name .. " a éclos dans votre nid !", "info")

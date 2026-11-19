@@ -93,6 +93,10 @@ local function nestPart(model: Model, name: string, size: Vector3, cf: CFrame, c
 		part.Shape = shape
 	end
 	part.Transparency = transparency or 0
+	-- Pièces fines (aiguilles, fils de toile) : ombre invisible mais coûteuse sur mobile.
+	if math.min(size.X, size.Y, size.Z) < 1 then
+		part.CastShadow = false
+	end
 	part.Parent = model
 	return part
 end
@@ -441,6 +445,18 @@ function GrowthAndNestService.GetNest(ownerUserId: number): ServerTypes.NestData
 	return GrowthAndNestService.ActiveNests[ownerUserId]
 end
 
+-- Bébés encore dépendants : un adulte reste dans Children (FamilyId) mais n'est plus un bébé du nid
+-- (même règle que le plafond de SpawnMenuNetworkService).
+local function countDependents(nest: ServerTypes.NestData): number
+	local count = 0
+	for _, child in ipairs(nest.Children) do
+		if child:GetAttribute("CanLeaveNest") ~= true then
+			count += 1
+		end
+	end
+	return count
+end
+
 function GrowthAndNestService.RefreshNestDisplay(ownerUserId: number)
 	local nest = GrowthAndNestService.ActiveNests[ownerUserId]
 	if not nest or not nest.Model or not nest.Model.PrimaryPart then
@@ -459,7 +475,7 @@ function GrowthAndNestService.RefreshNestDisplay(ownerUserId: number)
 			nest.Style or "Nid",
 			ownerName,
 			if species then species.Name else nest.SpeciesId,
-			#nest.Children,
+			countDependents(nest),
 			math.floor(nest.StoredFood)
 		)
 	)
@@ -492,7 +508,7 @@ function GrowthAndNestService.GetNestSummaries(): { ServerTypes.NestSummary }
 				-- Suffixe dans le nom : le menu de spawn l'affiche sans changement client.
 				OwnerName = (nest.DisplayName or "PNJ") .. (if nest.MotherAlive == false then " — sans mère" else ""),
 				SpeciesId = nest.SpeciesId,
-				ChildCount = #nest.Children,
+				ChildCount = countDependents(nest),
 				IsNpc = true,
 				MotherAlive = nest.MotherAlive ~= false,
 			}, nest.Position))
@@ -504,7 +520,7 @@ function GrowthAndNestService.GetNestSummaries(): { ServerTypes.NestSummary }
 				OwnerUserId = ownerUserId,
 				OwnerName = ownerPlayer.Name,
 				SpeciesId = nest.SpeciesId,
-				ChildCount = #nest.Children,
+				ChildCount = countDependents(nest),
 			}, nest.Position))
 		else
 			GrowthAndNestService.RemoveNest(ownerUserId)
