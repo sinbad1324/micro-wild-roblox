@@ -601,6 +601,8 @@ end
 
 local function nestTick()
 	for ownerUserId, nest in pairs(GrowthAndNestService.ActiveNests) do
+		-- Étiquette réécrite seulement si la réserve change ici (les autres écritures rafraîchissent déjà).
+		local changed = false
 		for _, player in ipairs(Players:GetPlayers()) do
 			if player:GetAttribute("FamilyId") ~= nest.FamilyId then
 				continue
@@ -613,6 +615,7 @@ local function nestTick()
 			local carried = player:GetAttribute("CarriedFood") :: number?
 			if carried then
 				nest.StoredFood = math.min(nest.StoredFood + carried, 500)
+				changed = true
 				clearCarried(player)
 				ProgressionService.AddEvolutionPoints(player, 5)
 				notify(player, string.format("Nourriture déposée au nid (réserve : %d).", nest.StoredFood), "info")
@@ -628,6 +631,7 @@ local function nestTick()
 					local canBoost = stage == "Larve" or stage == "Mue"
 					if nest.StoredFood >= NEST_FEED_COST then
 						nest.StoredFood -= NEST_FEED_COST
+						changed = true
 						player:SetAttribute("Hunger", math.min(100, hunger + 25))
 						player:SetAttribute("Thirst", math.min(100, thirst + 20))
 						-- Toast seulement à l'ouverture de la fenêtre (au plus 1 toutes les 30 s).
@@ -650,11 +654,14 @@ local function nestTick()
 				local hunger = (player:GetAttribute("Hunger") :: number?) or 0
 				if hunger < 30 then
 					nest.StoredFood -= NEST_FEED_COST * 2
+					changed = true
 					player:SetAttribute("Hunger", math.min(100, hunger + 30))
 				end
 			end
 		end
-		GrowthAndNestService.RefreshNestDisplay(ownerUserId)
+		if changed then
+			GrowthAndNestService.RefreshNestDisplay(ownerUserId)
+		end
 	end
 end
 

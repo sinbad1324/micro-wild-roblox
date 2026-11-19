@@ -26,6 +26,8 @@ local lastRequest: { [Player]: number } = {}
 local MOTHER_SPAWN_COOLDOWN = 60
 local MOTHER_NEST_DELAY = 1.5 -- laisse le corps se poser avant de construire le nid
 local lastMotherSpawn: { [number]: number } = {}
+-- Taille max d'un nid : répartit les nouveaux joueurs entre Mamans (dont PNJ). Miroir côté client (SpawnMenuView).
+local MAX_NEST_CHILDREN = 6
 
 local function notify(player: Player, message: string, kind: string)
 	Remotes.Get("NotifyClient"):FireClient(player, message, kind)
@@ -128,33 +130,52 @@ local function onCreateNest(player: Player)
 		notify(player, "Posez-vous au sol pour construire votre nid.", "warning")
 		return
 	end
-	if player:GetAttribute("OwnerNestUserId") ~= nil then
+	-- CreateNest peut encore refuser (espacement des nids) : on mémorise la famille pour y revenir.
+	local previousOwner = player:GetAttribute("OwnerNestUserId") :: number?
+	if previousOwner ~= nil then
 		GrowthAndNestService.LeaveNest(player)
 	end
 	if GrowthAndNestService.CreateNest(player) then
 		notify(player, "Colonie fondée ! Les nouveaux joueurs peuvent naître dans votre nid.", "info")
 		broadcastNestList()
 	else
+		if previousOwner and GrowthAndNestService.GetNest(previousOwner) then
+			GrowthAndNestService.JoinNest(player, previousOwner)
+			broadcastNestList()
+		end
 		notify(player, "Impossible de construire le nid ici (posez-vous au sol).", "warning")
 	end
 end
 
--- Point de naissance d'une Maman : au sol, à 30-45 studs de la maison par défaut de l'espèce
--- (pas dans le nid sauvage). Repli sur la maison elle-même si le sol trouvé est incohérent.
+-- Point de naissance d'une Maman : au sol, hors de l'espacement minimal des nids (CreateNest refuse
+-- à moins de NEST_RADIUS*2 d'un autre nid). Repli sur la maison elle-même après plusieurs essais.
 local function motherSpawnPoint(home: Vector3, character: Model?): Vector3
-	local angle = math.random() * 2 * math.pi
-	local distance = 30 + math.random() * 15
-	local probe = home + Vector3.new(math.cos(angle) * distance, 40, math.sin(angle) * distance)
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.FilterDescendantsInstances = if character then { character } else {}
 	params.IgnoreWater = false -- une mère terrestre ne naît pas au fond de l'eau
-	local result = workspace:Raycast(probe, Vector3.new(0, -120, 0), params)
-	-- Sol trop haut/bas (souche, rocher, tronc) ou eau : on reste à la maison par défaut.
-	if not result or result.Material == Enum.Material.Water or math.abs(result.Position.Y - home.Y) > 10 then
-		return home
+	local minSpacing = GameConstants.NEST_RADIUS * 2
+	for _ = 1, 4 do
+		local angle = math.random() * 2 * math.pi
+		local distance = minSpacing + 4 + math.random() * 20
+		local probe = home + Vector3.new(math.cos(angle) * distance, 40, math.sin(angle) * distance)
+		local result = workspace:Raycast(probe, Vector3.new(0, -120, 0), params)
+		-- Sol trop haut/bas (souche, rocher, tronc) ou eau : nouvel essai.
+		if result and result.Material ~= Enum.Material.Water and math.abs(result.Position.Y - home.Y) <= 10 then
+			local spot = result.Position + Vector3.new(0, 2, 0)
+			local free = true
+			for _, nest in pairs(GrowthAndNestService.ActiveNests) do
+				if (nest.Position - spot).Magnitude < minSpacing then
+					free = false
+					break
+				end
+			end
+			if free then
+				return spot
+			end
+		end
 	end
-	return result.Position + Vector3.new(0, 2, 0)
+	return home
 end
 
 -- "Être une Maman" : naissance directe en adulte à 100%, puis fondation de colonie automatique.
@@ -189,8 +210,9 @@ local function onSpawnAsMother(player: Player, speciesId: unknown)
 	-- (Libellule, Moustique...) sont adultes : nid sauvage terrestre, sinon noyade au fond.
 	local home = GrowthAndNestService.GetDefaultHome(if aquatic then id else GameConstants.DEFAULT_SPECIES)
 		or (WorldLayout.SPAWN_POSITION + Vector3.new(0, 2, 0))
-	-- Aquatique : la maison est sous l'eau (nurserie de la mare), on reste juste à côté.
-	local spot = if aquatic then home + Vector3.new(6, 0, 0) else motherSpawnPoint(home, character)
+	-- Aquatique : la maison est sous l'eau (nurserie de la mare, centrée en X sur une mare de 200 studs) :
+	-- on se décale hors de l'espacement minimal des nids, sinon la colonie automatique est refusée.
+	local spot = if aquatic then home + Vector3.new(GameConstants.NEST_RADIUS * 2 + 4, 0, 0) else motherSpawnPoint(home, character)
 
 	-- Ordre synchrone (aucune attente avant SetStage) : Growth à 100 AVANT HasConfirmedSpawn, sinon
 	-- la boucle de croissance ferait avancer l'oeuf. Pas de StageChanged (ni PE ni mutation).
@@ -243,6 +265,12 @@ local function onJoinNest(player: Player, motherUserId: unknown)
 	local nest = GrowthAndNestService.GetNest(motherUserId :: number)
 	if not nest then
 		notify(player, "Ce nid n'existe plus.", "warning")
+		-- Liste fraîche à ce seul client : la ligne périmée disparaît sans attendre la boucle de sécurité.
+		Remotes.Get("NestListChanged"):FireClient(player, GrowthAndNestService.GetNestSummaries())
+		return
+	end
+	if #nest.Children >= MAX_NEST_CHILDREN then
+		notify(player, "Ce nid est complet, choisissez-en un autre.", "warning")
 		return
 	end
 	if player:GetAttribute("OwnerNestUserId") ~= nil then

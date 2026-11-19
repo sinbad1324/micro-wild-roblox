@@ -124,7 +124,8 @@ local function getPlayerRoot(player: Player): BasePart?
 end
 
 -- Proie "visible" : vivante, éclose, ni camouflée ni à l'abri (attribut posé par SurvivalService).
-local function isExposed(player: Player): boolean
+-- `ignoreShelter` : le gardien d'un abri (crabe dans sa tanière) voit quand même l'intrus.
+local function isExposed(player: Player, ignoreShelter: boolean?): boolean
 	local character = player.Character
 	if not character or character:GetAttribute("Camouflaged") ~= nil then
 		return false
@@ -133,7 +134,7 @@ local function isExposed(player: Player): boolean
 	if stage == "Oeuf" or stage == "Cocon" or player:GetAttribute("HasConfirmedSpawn") ~= true then
 		return false
 	end
-	return player:GetAttribute("InShelterOrColony") ~= true and not holds[player] and player:GetAttribute("IsGrabbed") ~= true
+	return (ignoreShelter or player:GetAttribute("InShelterOrColony") ~= true) and not holds[player] and player:GetAttribute("IsGrabbed") ~= true
 end
 
 -- Cache des joueurs vivants (rafraîchi à 20 Hz par la boucle principale) : les IA appelées à
@@ -173,7 +174,7 @@ end
 
 -- `crowdPenalty` (optionnel) : studs ajoutés au score par voisin à moins de 30 studs, pour
 -- préférer une proie isolée à une proie plus proche mais entourée d'alliés.
-local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePart) -> boolean)?, crowdPenalty: number?): (Player?, BasePart?)
+local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePart) -> boolean)?, crowdPenalty: number?, ignoreShelter: boolean?): (Player?, BasePart?)
 	local bestPlayer: Player? = nil
 	local bestRoot: BasePart? = nil
 	local bestScore = math.huge
@@ -184,7 +185,7 @@ local function findPrey(origin: Vector3, range: number, filter: ((Player, BasePa
 			local distance = (root.Position - origin).Magnitude
 			if distance <= range then
 				local score = if crowdPenalty then distance + crowdPenalty * crowdCount(root.Position, 30, root) else distance
-				if score <= bestScore and isExposed(player) and (not filter or filter(player, root)) then
+				if score <= bestScore and isExposed(player, ignoreShelter) and (not filter or filter(player, root)) then
 					bestPlayer = player
 					bestRoot = root
 					bestScore = score
@@ -564,33 +565,39 @@ local function onAnimalDied(animal: Animal)
 		return
 	end
 	animal.Mode = "Dead"
-	local held = animal.Data.HeldPlayer :: Player?
-	if held then
-		releaseHold(held, nil)
-	end
-	if animal.Data.Tongue then
-		(animal.Data.Tongue :: Instance):Destroy()
-	end
-	local position = animal.Root.Position
-	local killer = animal.Model:GetAttribute("LastAttackerUserId") :: number?
-	ProgressionService.RecordKill(killer, animal.DisplayName, animal.Giant)
-	-- Seul le Terrain compte comme "sol" : une carcasse ne reste pas coincée dans l'arbre
-	-- ni ne flotte entre deux eaux (alevin : l'eau est ignorée, on touche le fond).
-	local hit = workspace:Raycast(position + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), terrainOnlyParams)
-	local feastPosition = if hit then hit.Position else Vector3.new(position.X, GROUND_Y, position.Z)
-	if animal.Giant then
-		local template = buildCarcassTemplate(animal.Model)
-		layCarcass(template, animal.Root, feastPosition)
-		CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, true, animal.CarcassScale, template)
-	else
-		CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, false, animal.CarcassScale, nil)
-	end
-	animal.Model:Destroy()
+	-- Respawn et retrait planifiés AVANT les effets de bord : une erreur plus bas ne doit pas faire disparaître l'animal à jamais.
+	task.delay(animal.RespawnSeconds, animal.Respawn)
 	local index = table.find(animals, animal)
 	if index then
 		table.remove(animals, index)
 	end
-	task.delay(animal.RespawnSeconds, animal.Respawn)
+	local ok, err = pcall(function()
+		local held = animal.Data.HeldPlayer :: Player?
+		if held then
+			releaseHold(held, nil)
+		end
+		if animal.Data.Tongue then
+			(animal.Data.Tongue :: Instance):Destroy()
+		end
+		local position = animal.Root.Position
+		local killer = animal.Model:GetAttribute("LastAttackerUserId") :: number?
+		ProgressionService.RecordKill(killer, animal.DisplayName, animal.Giant)
+		-- Seul le Terrain compte comme "sol" : une carcasse ne reste pas coincée dans l'arbre
+		-- ni ne flotte entre deux eaux (alevin : l'eau est ignorée, on touche le fond).
+		local hit = workspace:Raycast(position + Vector3.new(0, 5, 0), Vector3.new(0, -400, 0), terrainOnlyParams)
+		local feastPosition = if hit then hit.Position else Vector3.new(position.X, GROUND_Y, position.Z)
+		if animal.Giant then
+			local template = buildCarcassTemplate(animal.Model)
+			layCarcass(template, animal.Root, feastPosition)
+			CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, true, animal.CarcassScale, template)
+		else
+			CarcassService.SpawnCarcassFor(feastPosition, animal.DisplayName, false, animal.CarcassScale, nil)
+		end
+	end)
+	if not ok then
+		warn("[AnimalService] mort " .. animal.Id .. " : " .. tostring(err))
+	end
+	animal.Model:Destroy()
 end
 
 local function register(
@@ -918,15 +925,15 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 			chameleon.Data.ScanAt = now + 0.2 -- balayage ~5 Hz
 			local mouth = chameleonMouth(chameleon)
 			local prey, preyRoot = findPrey(mouth, 40, function(_player, playerRoot)
-				return hasLineOfSight(mouth, playerRoot, { chameleon.Model })
+				return hasLineOfSight(mouth, playerRoot, chameleon.Data.SelfFilter :: { Instance })
 			end)
 			if prey and preyRoot then
-				chameleon.Mode = "Tongue"
+				-- Annonce avant la langue (télégraphier puis punir) : 0,6 s pour fuir ou se cacher.
+				chameleon.Mode = "Aim"
 				chameleon.Prey = prey
-				chameleon.Timer = 0.7
-				chameleon.Data.TongueStart = preyRoot.Position
-				startHold(chameleon, prey)
-				notify(prey, "La langue du caméléon vous attrape ! (ESPACE, ou un allié mord le caméléon)", "warning")
+				chameleon.Timer = 0.6
+				notify(prey, "Le caméléon vous fixe... bougez !", "warning")
+				Remotes.Get("CameraShake"):FireClient(prey, 0.3, 0.3)
 				return
 			end
 		end
@@ -972,6 +979,24 @@ local function chameleonUpdate(chameleon: Animal, dt: number)
 	elseif mode == "Digging" then
 		if chameleon.Timer <= 0 then
 			chameleon.Mode = "Climb"
+		end
+	elseif mode == "Aim" then
+		if chameleon.Timer <= 0 then
+			local prey = chameleon.Prey
+			local preyRoot = prey and getPlayerRoot(prey)
+			local mouth = chameleonMouth(chameleon)
+			if prey and preyRoot and prey.Parent and isExposed(prey) and (preyRoot.Position - mouth).Magnitude <= 40
+				and hasLineOfSight(mouth, preyRoot, chameleon.Data.SelfFilter :: { Instance }) then
+				chameleon.Mode = "Tongue"
+				chameleon.Timer = 0.7
+				chameleon.Data.TongueStart = preyRoot.Position
+				startHold(chameleon, prey)
+				notify(prey, "La langue du caméléon vous attrape ! (ESPACE, ou un allié mord le caméléon)", "warning")
+			else
+				chameleon.Prey = nil
+				chameleon.Mode = "Climb"
+				chameleon.Cooldown = 3
+			end
 		end
 	elseif mode == "Tongue" then
 		local prey = chameleon.Prey
@@ -1054,6 +1079,7 @@ local function spawnChameleon()
 	chameleon.Data.Outward = outward
 	chameleon.Data.Angle = startAngle
 	chameleon.Data.Height = 40
+	chameleon.Data.SelfFilter = { model } -- réutilisé par hasLineOfSight (pas d'alloc par balayage)
 	chameleon.Cooldown = 8
 end
 
@@ -1092,7 +1118,9 @@ local function goldfishUpdate(fish: Animal, dt: number)
 		end
 		moveToward(fish, fish.Goal :: Vector3, if frozen then 4 else 9, dt)
 		-- Aspiration : attire les insectes proches vers sa bouche (GDD §6.3).
-		if fish.Cooldown <= 0 then
+		local now = os.clock()
+		if fish.Cooldown <= 0 and now >= ((fish.Data.ScanAt :: number?) or 0) then
+			fish.Data.ScanAt = now + 0.2 -- balayage ~5 Hz
 			local prey, preyRoot = findPrey(mouth, 16, function(_player, playerRoot)
 				return isSubmergedOrSurface(playerRoot, center, size, waterLevel)
 			end)
@@ -1145,9 +1173,10 @@ local function goldfishUpdate(fish: Animal, dt: number)
 		if fish.Timer <= 0 then
 			fish.Mode = "Swim"
 			-- Retombée : grosse vague qui assomme les insectes en surface.
-			for _, player in ipairs(Players:GetPlayers()) do
-				local root = getPlayerRoot(player)
-				if root and (root.Position - to).Magnitude <= 12 and root.Position.Y > waterLevel - 3 then
+			for i = 1, cachedCount do
+				local player = cachedPlayers[i]
+				local root = cachedRoots[i]
+				if root.Parent and isExposed(player) and (root.Position - to).Magnitude <= 12 and root.Position.Y > waterLevel - 3 then
 					hitPlayer(player, AnimalData.PoissonRouge.AttackDamage * 0.5, flatDirection(to, root.Position, Vector3.xAxis) * 40 + Vector3.new(0, 30, 0), "Le poisson rouge retombe sur vous !")
 				end
 			end
@@ -1290,7 +1319,7 @@ local function crabUpdate(crab: Animal, dt: number)
 	end
 
 	-- Fait face à l'intrus le plus proche : sa carapace frontale est impénétrable (GDD §6.4).
-	local threat, threatRoot = findPrey(root.Position, 26, nil)
+	local threat, threatRoot = findPrey(root.Position, 26, nil, nil, true)
 	if threat and threatRoot then
 		local toThreat = threatRoot.Position - root.Position
 		local flat = Vector3.new(toThreat.X, 0, toThreat.Z)
@@ -1408,9 +1437,10 @@ local SQUIRREL_LEG_OFFSET = 9
 local function shakeTreeClimbers(landing: Vector3): number
 	local knocked = 0
 	local remote = Remotes.Get("CameraShake")
-	for _, player in ipairs(Players:GetPlayers()) do
-		local root = getPlayerRoot(player)
-		if root then
+	for i = 1, cachedCount do
+		local player = cachedPlayers[i]
+		local root = cachedRoots[i]
+		if root.Parent and isExposed(player) then
 			local flat = Vector3.new(root.Position.X - TREE_POSITION.X, 0, root.Position.Z - TREE_POSITION.Z)
 			local onTree = flat.Magnitude < CANOPY_RADIUS + 10 and root.Position.Y > GROUND_Y + 5
 			if onTree then

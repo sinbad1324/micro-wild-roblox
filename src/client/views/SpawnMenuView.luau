@@ -49,6 +49,7 @@ local LANDSCAPE_SIZE = Vector2.new(720, 440)
 local PORTRAIT_SIZE = Vector2.new(400, 660)
 local PORTRAIT_DETAIL_HEIGHT = 200
 local FILTER_ROW_HEIGHT = 30
+local MAX_NEST_CHILDREN = 6 -- miroir de SpawnMenuNetworkService (le serveur fait foi)
 local PAGES_TOP = 86
 
 local ROOT_SHOWN = UDim2.fromScale(0.5, 0.5)
@@ -383,6 +384,9 @@ function SpawnMenuView.Mount()
 	local activeCategory = "Tous"
 	local mode: MenuMode = "Species"
 	local confirmLocked = false
+	local joinLocked = false -- anti double-clic des lignes de nid (même principe que confirmLocked)
+	-- Dernier mode utilisé pour naître : le menu s'y rouvre à la vie suivante.
+	local lastConfirmedMode: MenuMode = "Species"
 	local shown = false -- menu affiché (déclaré ici : lu par refreshConfirmText)
 	local cooldownTicking = false
 
@@ -584,6 +588,7 @@ function SpawnMenuView.Mount()
 		-- Anti double-clic (le serveur limite aussi la cadence). Si le serveur refuse, un toast
 		-- l'explique et le bouton redevient cliquable.
 		confirmLocked = true
+		lastConfirmedMode = mode
 		confirmButton.Text = if asMother then "Naissance…" else "Éclosion…"
 		if asMother then
 			Remotes.Get("RequestSpawnAsMother"):FireServer(speciesId)
@@ -760,10 +765,30 @@ function SpawnMenuView.Mount()
 				joinLabel.BackgroundColor3 = Colors.Track
 				joinLabel.TextColor3 = Colors.Muted
 			end
+			-- Nid plein : la ligne reste cliquable, le serveur explique le refus.
+			if (tonumber(summary.ChildCount) or 0) >= MAX_NEST_CHILDREN then
+				joinLabel.Text = "Complet"
+				joinLabel.BackgroundColor3 = Colors.Track
+				joinLabel.TextColor3 = Colors.Muted
+			end
 			UiTheme.Corner(joinLabel, 8)
 
 			row.MouseButton1Click:Connect(function()
+				if joinLocked then
+					return
+				end
+				joinLocked = true
+				lastConfirmedMode = "Nest"
+				local idleText = joinLabel.Text
+				joinLabel.Text = "…"
 				Remotes.Get("RequestJoinNest"):FireServer(summary.OwnerUserId)
+				-- La liste n'est reconstruite que si elle change : on remet le texte en cas de refus.
+				task.delay(1, function()
+					joinLocked = false
+					if joinLabel.Parent then
+						joinLabel.Text = idleText
+					end
+				end)
 			end)
 		end
 		nestEmpty.Visible = count == 0
@@ -872,7 +897,14 @@ function SpawnMenuView.Mount()
 		if show then
 			-- Entrée : le voile s'assombrit, le panneau remonte en place.
 			screenGui.Enabled = true
-			showTab("Species") -- une nouvelle vie repart toujours du mode par défaut
+			-- Rouvre sur le dernier mode utilisé, sauf s'il n'est plus disponible.
+			local reopenMode = lastConfirmedMode
+			if (reopenMode == "Mother" and motherUnlockState() ~= true)
+				or (reopenMode == "Nest" and (latestSummaries == nil or #(latestSummaries :: { NestSummary }) == 0))
+			then
+				reopenMode = "Species"
+			end
+			showTab(reopenMode)
 			if latestSummaries then
 				renderNestList(latestSummaries)
 			end

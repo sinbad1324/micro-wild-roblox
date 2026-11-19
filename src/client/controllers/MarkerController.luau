@@ -30,6 +30,7 @@ local familyMarkers: { [Instance]: BillboardGui } = {}
 local homeAnchor: Part? = nil
 local homeMarker: BillboardGui? = nil
 local FAMILY_COLOR = Color3.fromRGB(255, 225, 120)
+local DANGER_COLOR = Color3.fromRGB(255, 90, 80)
 local threatMarkers: { [Player]: BillboardGui } = {}
 
 -- Passifs de détection (portée en studs = Power dans AbilityCatalog).
@@ -101,7 +102,25 @@ local function refreshFamilyMarkers()
 				if marker then
 					marker:Destroy()
 				end
-				familyMarkers[model] = makeBillboard("FamilyMarker", "👑 " .. model.Name, FAMILY_COLOR, primary, 5, false, FAMILY_MARKER_DISTANCE)
+				marker = makeBillboard("FamilyMarker", "👑 " .. model.Name, FAMILY_COLOR, primary, 5, false, FAMILY_MARKER_DISTANCE)
+				familyMarkers[model] = marker
+			end
+			-- Activité de la Maman (attribut "Mode" répliqué par NpcMotherService) : le bébé sait quoi faire.
+			local mode = model:GetAttribute("Mode")
+			local text, color = "👑 " .. model.Name, FAMILY_COLOR
+			if mode == "Defend" then
+				text, color = "⚔ " .. model.Name .. " défend !", DANGER_COLOR
+			elseif mode == "Flee" then
+				text, color = "🏃 " .. model.Name .. " fuit !", DANGER_COLOR
+			elseif mode == "Forage" then
+				text = "🍃 " .. model.Name .. " cherche à manger"
+			elseif mode == "Return" then
+				text = "🏠 " .. model.Name .. " rentre au nid"
+			end
+			local label = (marker :: BillboardGui):FindFirstChild("Text") :: TextLabel?
+			if label and label.Text ~= text then
+				label.Text = text
+				label.TextColor3 = color
 			end
 		elseif marker then
 			marker:Destroy()
@@ -272,10 +291,16 @@ function MarkerController.Start()
 	Remotes.Get("KaijuFeastEvent").OnClientEvent:Connect(onKaijuFeast)
 	task.spawn(function()
 		while true do
-			refreshFamilyMarkers()
-			refreshHomeMarker()
-			refreshCarcassMarkers()
-			refreshThreatMarkers()
+			-- pcall : une erreur ponctuelle (caméra absente au respawn...) ne doit pas tuer la boucle pour la session.
+			local ok, err = pcall(function()
+				refreshFamilyMarkers()
+				refreshHomeMarker()
+				refreshCarcassMarkers()
+				refreshThreatMarkers()
+			end)
+			if not ok then
+				warn("[MarkerController] " .. tostring(err))
+			end
 			task.wait(1)
 		end
 	end)

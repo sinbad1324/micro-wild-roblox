@@ -80,7 +80,9 @@ local function loadProfile(player: Player): Profile
 		if ok then
 			return sanitize(result)
 		end
-		task.wait(attempt)
+		if attempt < 3 then
+			task.wait(attempt)
+		end
 	end
 	if player.Parent then
 		loadFailed[player] = true
@@ -118,7 +120,9 @@ local function saveProfile(player: Player)
 		if ok then
 			return
 		end
-		task.wait(attempt)
+		if attempt < 3 then
+			task.wait(attempt)
+		end
 	end
 	warn("[ProgressionService] Sauvegarde échouée pour " .. player.Name)
 end

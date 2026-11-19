@@ -163,7 +163,10 @@ function CarcassService.SpawnCarcassFor(
 	-- Un gabarit (corps 3D figé) est déjà posé à l'endroit de la mort ; le bloc de secours, lui,
 	-- doit être déplacé EN ENTIER (PivotTo), pas seulement sa PrimaryPart.
 	if not visualTemplate then
-		model:PivotTo(CFrame.new(position))
+		-- Relevé d'une demi-hauteur : position = point de sol, le bloc ne doit pas être à moitié enterré.
+		local body = model.PrimaryPart
+		local halfHeight = if body then body.Size.Y / 2 else 0
+		model:PivotTo(CFrame.new(position + Vector3.new(0, halfHeight, 0)))
 	end
 
 	model:SetAttribute("OwnerName", ownerName)
@@ -195,7 +198,9 @@ function CarcassService.SpawnCarcassFor(
 		end
 	end
 
-	task.delay(FRESH_SECONDS, function()
+	-- Un seul thread chaîné par carcasse : il s'arrête dès que la carcasse est détruite (mangée, évincée).
+	task.spawn(function()
+		task.wait(FRESH_SECONDS)
 		if not model.Parent then
 			return
 		end
@@ -207,9 +212,8 @@ function CarcassService.SpawnCarcassFor(
 		if model.PrimaryPart then
 			addOdorCloud(model.PrimaryPart)
 		end
-	end)
 
-	task.delay(FRESH_SECONDS + PUTREFACTION_SECONDS, function()
+		task.wait(PUTREFACTION_SECONDS)
 		if not model.Parent then
 			return
 		end
@@ -217,9 +221,8 @@ function CarcassService.SpawnCarcassFor(
 		model:SetAttribute("CarcassFoodType", nil)
 		easeColors(model, Color3.fromRGB(45, 40, 30), 0.5, nil)
 		spawnMushroomsAround(position, if isGiantAnimal then 8 else 2, if isGiantAnimal then 14 else 3)
-	end)
 
-	task.delay(FRESH_SECONDS + PUTREFACTION_SECONDS + ADVANCED_SECONDS, function()
+		task.wait(ADVANCED_SECONDS)
 		if not model.Parent then
 			return
 		end
@@ -227,9 +230,8 @@ function CarcassService.SpawnCarcassFor(
 		model:SetAttribute("CarcassFoodType", nil)
 		CollectionService:AddTag(model, "Shelter")
 		easeColors(model, Color3.fromRGB(225, 220, 205), 1, Enum.Material.Limestone)
-	end)
 
-	task.delay(FRESH_SECONDS + PUTREFACTION_SECONDS + ADVANCED_SECONDS + SKELETON_LIFETIME_SECONDS, function()
+		task.wait(SKELETON_LIFETIME_SECONDS)
 		if model.Parent then
 			model:Destroy()
 		end

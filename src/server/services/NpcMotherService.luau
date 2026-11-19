@@ -173,6 +173,11 @@ end
 local function setMode(m: Mother, mode: Mode, now: number)
 	m.Mode = mode
 	m.ModeSince = now
+	-- Répliqué pour l'étiquette de la famille (MarkerController) : écrit seulement au changement.
+	local model = m.Model
+	if model then
+		model:SetAttribute("Mode", mode)
+	end
 end
 
 -- ============================================================
@@ -458,12 +463,16 @@ local function isFamily(m: Mother, player: Player): boolean
 	return player:GetAttribute("FamilyId") == m.Nest.FamilyId
 end
 
--- Niveau module (pas de closure à 10 Hz). La Maman se défend partout (laisse mesurée depuis sa
--- position) ; un bébé n'est défendu que près du nid.
+-- Niveau module (pas de closure à 10 Hz). La Maman se défend jusqu'à DEFEND_LEASH du nid (laisse
+-- mesurée depuis sa position) ; un bébé n'est défendu que près du nid.
 local function checkVictim(m: Mother, victim: Instance, victimPosition: Vector3, now: number, isMother: boolean): Player?
 	local at = victim:GetAttribute("LastAttackAt") :: number?
 	local attackerId = victim:GetAttribute("LastAttackerUserId") :: number?
 	if not at or not attackerId or now - at > AGGRESSION_MEMORY then
+		return nil
+	end
+	-- Déjà loin du nid : la Maman ignore les coups et rentre (sinon un intrus la tire à travers la map).
+	if isMother and flatDistance(m.Position, m.Nest.Position) > DEFEND_LEASH then
 		return nil
 	end
 	if not isMother and flatDistance(victimPosition, m.Nest.Position) > DEFEND_RANGE then
@@ -559,9 +568,18 @@ local function think(m: Mother, now: number)
 	-- Tout le disque du nid abrite : la petite ronde Idle ne relance pas la fuite.
 	local atNest = flatDistance(m.Position, nestPosition) <= GameConstants.NEST_RADIUS
 	if m.Mode == "Flee" then
-		if giantDistance > FLEE_CLEAR_RANGE or atNest then
+		if atNest then
+			-- Rentrée chargée : la nourriture va dans la réserve tout de suite (sinon elle attend le prochain trajet).
+			deposit(m)
 			setMode(m, "Idle", now)
 			m.Timer = now + 2
+		elseif giantDistance > FLEE_CLEAR_RANGE then
+			if m.Carrying > 0 then
+				setMode(m, "Return", now)
+			else
+				setMode(m, "Idle", now)
+				m.Timer = now + 2
+			end
 		else
 			m.Goal = nestPosition
 			m.Speed = baseSpeed * 1.2
@@ -590,6 +608,7 @@ local function think(m: Mother, now: number)
 			or isFamily(m, target)
 			or now - m.ModeSince > DEFEND_MAX_SECONDS
 			or flatDistance(targetRoot.Position, m.DefendFrom) > DEFEND_LEASH
+			or flatDistance(m.Position, m.Nest.Position) > DEFEND_LEASH * 2
 			-- Une Maman terrestre abandonne dès que l'intrus est dans l'eau (pas d'oscillation sur la berge).
 			or (not m.Aquatic and targetRoot.Position.Y < ((workspace:GetAttribute("PondWaterLevel") :: number?) or WorldLayout.POND_WATER_LEVEL) + 1)
 		then
