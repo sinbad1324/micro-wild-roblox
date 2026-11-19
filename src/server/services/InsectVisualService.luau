@@ -1516,13 +1516,49 @@ local function fitRootToBody(character: Model, root: BasePart, container: Model,
 	root.CFrame = root.CFrame * CFrame.new(center)
 end
 
--- Cache l'avatar Roblox dès l'apparition, sans attendre la construction du corps d'insecte (si
--- celle-ci échoue ou tarde, on ne doit jamais voir le personnage Roblox).
+-- Pièce d'avatar Roblox à SUPPRIMER (enfant direct du personnage) : membres R15/R6, vêtements,
+-- accessoires, couleurs du corps, script d'animation humaine. On garde le HumanoidRootPart, le
+-- Humanoid, les scripts/dossiers du jeu et les pièces marquées KeepVisible.
+local function isAvatarPiece(child: Instance): boolean
+	if child:GetAttribute("KeepVisible") == true or child.Name == CONTAINER_NAME then
+		return false
+	end
+	if child:IsA("BasePart") then
+		return child.Name ~= "HumanoidRootPart"
+	end
+	return child:IsA("Accessory")
+		or child:IsA("Clothing")
+		or child:IsA("ShirtGraphic")
+		or child:IsA("BodyColors")
+		or child:IsA("CharacterMesh")
+		or (child:IsA("LocalScript") and child.Name == "Animate")
+end
+
+-- Transformation totale : le personnage Roblox est supprimé (pas seulement caché) dès
+-- l'apparition. Il ne reste que HumanoidRootPart + Humanoid + le corps d'insecte.
 function InsectVisualService.HideDefaultAvatar(character: Model)
-	local root = character:WaitForChild("HumanoidRootPart", 5)
-	if root and root:IsA("BasePart") then
-		hideDefaultAvatar(character, root)
-		hookLateAvatarPieces(character, root)
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		-- Sans ça, supprimer la tête tue le Humanoid.
+		humanoid.RequiresNeck = false
+	end
+	for _, child in ipairs(character:GetChildren()) do
+		if isAvatarPiece(child) then
+			child:Destroy()
+		end
+	end
+	-- Accessoires / pièces qui arrivent après coup (chargement d'apparence asynchrone).
+	if not character:GetAttribute("AvatarStripHooked") then
+		character:SetAttribute("AvatarStripHooked", true)
+		character.ChildAdded:Connect(function(child)
+			if isAvatarPiece(child) then
+				task.defer(function()
+					if child.Parent == character then
+						child:Destroy()
+					end
+				end)
+			end
+		end)
 	end
 end
 
