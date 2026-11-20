@@ -21,6 +21,7 @@ local InsectAnimationController = require(playerScripts.controllers.InsectAnimat
 local AnimalAnimationController = require(playerScripts.controllers.AnimalAnimationController)
 local CameraController = require(playerScripts.controllers.CameraController)
 local WorldFxController = require(playerScripts.controllers.WorldFxController)
+local BuildModeController = require(playerScripts.controllers.BuildModeController)
 
 -- Les RemoteEvents sont créés par ServerBootstrap au boot ; on attend qu'ils existent avant de
 -- câbler quoi que ce soit qui en dépend.
@@ -37,3 +38,4 @@ InsectAnimationController.Start()
 AnimalAnimationController.Start()
 CameraController.Start()
 WorldFxController.Start()
+BuildModeController.Start()

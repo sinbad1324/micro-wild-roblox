@@ -16,6 +16,9 @@ export type NestData = {
 	IsNpc: boolean?, -- nid d'une Maman PNJ (OwnerUserId = GameConstants.NPC_NEST_ID_BASE - n)
 	DisplayName: string?, -- nom de la Maman PNJ (ex: "Reine Fourmi Rousse (PNJ)")
 	MotherAlive: boolean?, -- false : Maman PNJ morte, le nid attend sa réapparition
+	BuildPoints: number?, -- matériaux déposés (NestBuildingService)
+	BuildLevel: number?, -- niveau de construction atteint (0..4)
+	Materials: { [string]: number }?, -- stock de matériaux du nid (mode construction)
 }
 
 export type NestSummary = {

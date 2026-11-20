@@ -39,6 +39,7 @@ local function resetToEgg(player: Player)
 	player:SetAttribute("CarriedFood", nil)
 	player:SetAttribute("CarriedFoodType", nil)
 	player:SetAttribute("LifeToken", ((player:GetAttribute("LifeToken") :: number?) or 0) + 1)
+	ProgressionService.ResetExperience(player) -- chaque vie repart du niveau 1
 end
 
 local function onCharacterDied(player: Player, character: Model)

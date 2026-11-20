@@ -468,15 +468,17 @@ function GrowthAndNestService.RefreshNestDisplay(ownerUserId: number)
 		then (nest.DisplayName or "PNJ") .. (if nest.MotherAlive == false then " — sans mère" else "")
 		elseif owner then owner.Name
 		else "?"
+	local build = nest.BuildLevel or 0
 	setNestLabel(
 		nest.Model.PrimaryPart,
 		string.format(
-			"%s de %s (%s)\n%d bébé(s) • Réserve : %d",
+			"%s de %s (%s)\n%d bébé(s) • Réserve : %d%s",
 			nest.Style or "Nid",
 			ownerName,
 			if species then species.Name else nest.SpeciesId,
 			countDependents(nest),
-			math.floor(nest.StoredFood)
+			math.floor(nest.StoredFood),
+			if (nest.BuildPoints or 0) > 0 then string.format(" • Construit : niv %d (%d pts)", build, nest.BuildPoints or 0) else ""
 		)
 	)
 end
@@ -534,6 +536,8 @@ function GrowthAndNestService.GetDefaultHome(speciesId: string): Vector3?
 	local species = InsectData[speciesId]
 	local aquaticLarva = GameConstants.AQUATIC_LARVA_SPECIES[speciesId] == true
 		or (species ~= nil and species.Category == "Aquatique")
+		-- Animal nageur (Poisson Rouge, Crabe) : naît à la mare.
+		or (species ~= nil and species.Category == "Animal" and species.CanSwim)
 	if aquaticLarva and pondAINestPosition then
 		return pondAINestPosition
 	end

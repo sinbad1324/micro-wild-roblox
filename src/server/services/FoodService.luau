@@ -118,6 +118,7 @@ local function feed(player: Player, value: number)
 	local restored = newHunger - hunger
 	if restored > 0 then
 		ProgressionService.AddEvolutionPoints(player, math.ceil(restored / 5))
+		ProgressionService.AddExperience(player, restored * 0.6) -- manger fait grandir
 	end
 end
 

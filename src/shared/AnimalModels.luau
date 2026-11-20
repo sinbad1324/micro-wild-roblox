@@ -17,14 +17,15 @@
 --     => pour animer un membre entier : weld.C0 = RestC0 * CFrame.Angles(...) sur chacun de ses
 --     welds ; la rotation se fait autour de l'articulation (épaule, hanche, base de queue...).
 --   * Attributs posés sur chaque part animable :
---       "Anim"   : "Wing" | "Leg" | "Tail" | "Fin" | "Claw" | "Head" | "Eye"
+--       "Anim"   : "Wing" | "WingTip" | "Leg" | "Knee" | "Tail" | "Fin" | "Claw" | "Neck" | "Head"
+--                  | "Jaw" | "Ear" | "Eye"
 --       "Side"   : -1 (gauche, -X) | 1 (droite, +X) | 0 (membre central)
 --       "Index"  : numéro du membre dans sa catégorie (voir chaque animal)
 --       "RestC0" : CFrame de repos du weld (= pivot)
---     Membre porté par un autre (oeil du caméléon sur la tête, doigt mobile de la pince sur le
---     bras) : en plus "ParentAnim", "ParentSide", "ParentIndex". Il n'y a PAS de hiérarchie de
---     welds : pour qu'il suive son parent, composer
---       C0 = parentRest * parentDelta * parentRest:Inverse() * RestC0 * delta.
+--     Membre porté par un autre (genou sur la cuisse, tête sur le cou, mâchoire sur la tête,
+--     segment de queue sur le précédent, doigt de pince...) : en plus "ParentAnim", "ParentSide",
+--     "ParentIndex". Chaînes de profondeur libre. Il n'y a PAS de hiérarchie de welds : pour qu'il
+--     suive son parent, composer C0 = parentFrame * parentRest:Inverse() * RestC0 * delta.
 
 local AnimalModels = {}
 
@@ -113,16 +114,33 @@ local function weldTo(b: Builder, part: BasePart)
 	end
 end
 
+-- Volume arrondi "en voxels" : au-delà de cette épaisseur, une forme ronde est faite de trois
+-- pavés croisés (chacun pleine longueur sur un axe, rétréci sur les deux autres) : silhouette
+-- chanfreinée, organique, mais toujours en blocs. Les détails fins restent un seul bloc (et les
+-- callers qui retouchent la part retournée — transparence d'une nageoire, reflet d'une écaille —
+-- ne concernent que des formes fines).
+local ROUND_MIN_THICKNESS = 2.4
+local ROUND_INSET = 0.72
+
 local function ellipsoid(b: Builder, name: string, size: Vector3, cf: CFrame, color: Color3, material: Enum.Material?): Part
-	local part = Instance.new("Part")
-	part.Name = name
-	part.Size = size
-	part.CFrame = cf
-	part.Color = color
-	part.Material = material or Enum.Material.SmoothPlastic
-	-- Style "blocky" Roblox : bloc à la place de la sphère (même taille, attaches inchangées).
-	weldTo(b, part)
-	return part
+	local function slab(slabName: string, slabSize: Vector3): Part
+		local part = Instance.new("Part")
+		part.Name = slabName
+		part.Size = slabSize
+		part.CFrame = cf
+		part.Color = color
+		part.Material = material or Enum.Material.SmoothPlastic
+		weldTo(b, part)
+		return part
+	end
+	if math.min(size.X, size.Y, size.Z) < ROUND_MIN_THICKNESS then
+		return slab(name, size) -- détail : un seul bloc
+	end
+	local k = ROUND_INSET
+	local main = slab(name, Vector3.new(size.X, size.Y * k, size.Z * k))
+	slab(name .. "Round", Vector3.new(size.X * k, size.Y, size.Z * k))
+	slab(name .. "Round", Vector3.new(size.X * k, size.Y * k, size.Z))
+	return main
 end
 
 local function block(b: Builder, name: string, size: Vector3, cf: CFrame, color: Color3, material: Enum.Material?): Part
@@ -219,7 +237,8 @@ end
 
 -- ============================================================
 -- 1. Oiseau (Rouge-Gorge)
--- Membres : Head(0,1) | Wing(±1,1) | Tail(0,1) | Leg(±1,1). Pattes 11 studs sous la Root.
+-- Membres : Neck(0,1) > Head(0,1) > Jaw(0,1) | Wing(±1,1) > WingTip(±1,1) | Tail(0,1) |
+-- Leg(±1,1) cuisse > Knee(±1,1) tarse + doigts. Pattes 11 studs sous la Root.
 -- ============================================================
 function AnimalModels.BuildBird(maxHealth: number): Model
 	local b = newBuilder("Oiseau", Vector3.new(6, 6, 6))
@@ -248,16 +267,22 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 	-- Tête : calotte sombre, face rouge-orangé, bec fin, oeil cerclé.
 	local headCenter = Vector3.new(0, 5, -10)
 	local headRadii = Vector3.new(5, 5, 5)
-	b.Group = newGroup("Head", 0, 1, Vector3.new(0, 2.5, -7.5))
+	-- Cou (gorge) qui porte la tête : hochement d'avant en arrière à chaque pas.
+	local neck = newGroup("Neck", 0, 1, Vector3.new(0, 1.5, -6.5))
+	b.Group = neck
+	ellipsoid(b, "Throat", Vector3.new(7.6, 5.5, 6.5), CFrame.new(0, 1.4, -10.6), breastTop)
+	local headGroup = newGroup("Head", 0, 1, Vector3.new(0, 3.5, -9), neck)
+	b.Group = headGroup
 	ellipsoid(b, "Head", Vector3.new(10, 10, 10), CFrame.new(headCenter), brown)
 	ellipsoid(b, "Cap", Vector3.new(8.8, 4.5, 9), CFrame.new(0, 8, -9.4), olive)
 	ellipsoid(b, "Face", Vector3.new(8.6, 7.2, 6.4), CFrame.new(0, 3.6, -12.4), breastTop)
-	ellipsoid(b, "Throat", Vector3.new(7.6, 5.5, 6.5), CFrame.new(0, 1.4, -10.6), breastTop)
 	ellipsoid(b, "BeakTop", Vector3.new(2.2, 1.5, 6.6), CFrame.new(0, 4.7, -16.1) * CFrame.Angles(math.rad(-6), 0, 0), beak)
-	ellipsoid(b, "BeakBottom", Vector3.new(1.9, 1.1, 5.4), CFrame.new(0, 3.8, -15.7), tint(beak, 0.12))
 	for _, side in ipairs(SIDES) do
 		ringedEye(b, headCenter, headRadii, Vector3.new(side * 4.2, 1.2, -2.5), 1.2, Color3.fromRGB(205, 190, 165))
 	end
+	-- Mandibule inférieure articulée à la base du bec.
+	b.Group = newGroup("Jaw", 0, 1, Vector3.new(0, 4, -13), headGroup)
+	ellipsoid(b, "BeakBottom", Vector3.new(1.9, 1.1, 5.4), CFrame.new(0, 3.8, -15.7), tint(beak, 0.12))
 
 	for _, side in ipairs(SIDES) do
 		b.Group = nil
@@ -265,14 +290,19 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 		ellipsoid(b, "FlankBand", Vector3.new(1.2, 5, 9), CFrame.new(side * 5.9, -2.6, -3.5), grey)
 
 		-- Aile repliée : base + couvertures + rémiges superposées vers l'arrière.
-		b.Group = newGroup("Wing", side, 1, Vector3.new(side * 6, 3.5, -4))
+		-- Aile en deux segments : bras (couvertures, secondaires) + main (primaires) qui fouette en retard.
+		local wing = newGroup("Wing", side, 1, Vector3.new(side * 6, 3.5, -4))
+		local wingTip = newGroup("WingTip", side, 1, Vector3.new(side * 7.3, 1.5, 5), wing)
+		b.Group = wing
 		ellipsoid(b, "Wing", Vector3.new(2, 8.5, 12), CFrame.new(side * 6.3, 1.6, -0.5) * CFrame.Angles(0, 0, side * math.rad(-10)), wingDark)
 		for i = 1, 6 do
 			local t = (i - 1) / 5
 			local base = Vector3.new(side * (7.7 - 0.2 * t), 4.2 - 5.2 * t, -2 + 2 * t)
 			local tip = Vector3.new(side * (7 - 1.8 * t), 3.6 - 2.8 * t, 8 + 8 * t)
+			b.Group = if i <= 3 then wing else wingTip
 			strand(b, "Feather", base, tip, 3, 0.5, if i % 2 == 0 then wingDark else wingDarker, nil, Vector3.xAxis)
 		end
+		b.Group = wing
 		for j = 1, 4 do
 			local base = Vector3.new(side * 7.5, 3.6 - 1.4 * (j - 1), -3.5)
 			local tip = Vector3.new(side * 7.7, 3.2 - 1.3 * (j - 1), 3)
@@ -280,9 +310,12 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 		end
 
 		-- Patte : cuisse emplumée, tarse écailleux, 3 doigts avant + 1 arrière, griffes.
-		b.Group = newGroup("Leg", side, 1, Vector3.new(side * 3, -5, 1))
+		local leg = newGroup("Leg", side, 1, Vector3.new(side * 3, -5, 1))
+		b.Group = leg
 		ellipsoid(b, "Thigh", Vector3.new(3.6, 4.6, 4), CFrame.new(side * 3, -5.6, 1), belly)
 		local knee = Vector3.new(side * 3, -6.2, 1)
+		-- Tarse + doigts : se plient sous la cuisse (sautillement, pattes repliées en vol).
+		b.Group = newGroup("Knee", side, 1, knee, leg)
 		local foot = Vector3.new(side * 3, -10.6, 0.2)
 		local legAxis = (foot - knee).Unit
 		limb(b, "Leg", knee, foot, 0.8, skin)
@@ -316,7 +349,8 @@ end
 
 -- ============================================================
 -- 2. Caméléon
--- Membres : Head(0,1) | Eye(±1,1, parent Head) | Leg(±1, 1 = avant / 2 = arrière) | Tail(0,1).
+-- Membres : Head(0,1) > Eye(±1,1) & Jaw(0,1) | Leg(±1, 1 = avant / 2 = arrière) > Knee(±1, idem) |
+-- Tail(0, 1..12) en chaîne (chaque segment porté par le précédent).
 -- Bouche en (0,0,-16), pattes ~8.5 studs sous la Root.
 -- ============================================================
 function AnimalModels.BuildChameleon(maxHealth: number): Model
@@ -354,10 +388,12 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 	b.Group = head
 	ellipsoid(b, "Head", Vector3.new(7, 8, 9), CFrame.new(0, 1.5, -12), green)
 	ellipsoid(b, "Snout", Vector3.new(5, 4.4, 6), CFrame.new(0, 1.2, -14.6), green)
-	ellipsoid(b, "Jaw", Vector3.new(6, 3, 6.6), CFrame.new(0, -1.5, -13.9), pale)
 	local casqueCFrame = CFrame.new(0, 5.4, -9.8) * CFrame.Angles(math.rad(25), 0, 0)
 	ellipsoid(b, "Casque", Vector3.new(3.4, 7, 7.5), casqueCFrame, green)
 	ellipsoid(b, "CasqueRidge", Vector3.new(1, 7.8, 8.3), casqueCFrame, darker)
+	-- Mâchoire inférieure (et épines gulaires) articulée sous la tête.
+	b.Group = newGroup("Jaw", 0, 1, Vector3.new(0, -0.6, -11), head)
+	ellipsoid(b, "Jaw", Vector3.new(6, 3, 6.6), CFrame.new(0, -1.5, -13.9), pale)
 	for i = 0, 3 do
 		local z = -16 + i * 1.5
 		strand(b, "Spike", Vector3.new(0, -2.4, z), Vector3.new(0, -3.9, z + 0.4), 0.6, 1.1, darker, nil, -Vector3.zAxis)
@@ -379,9 +415,12 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 			local shoulder = Vector3.new(side * 3.3, -2, z)
 			local elbow = Vector3.new(side * 6.5, -3.6, z - 1)
 			local hand = Vector3.new(side * 6, -7.5, z - 2)
-			b.Group = newGroup("Leg", side, index, shoulder)
+			local leg = newGroup("Leg", side, index, shoulder)
+			b.Group = leg
 			ellipsoid(b, "Shoulder", Vector3.one * 2.6, CFrame.new(shoulder), green)
 			limb(b, "Leg", shoulder, elbow, 1.8, green)
+			-- Avant-bras + pied en pince : articulé au coude.
+			b.Group = newGroup("Knee", side, index, elbow, leg)
 			ellipsoid(b, "Elbow", Vector3.one * 2, CFrame.new(elbow), green)
 			limb(b, "Leg", elbow, hand, 1.5, green)
 			for _, grip in ipairs(SIDES) do
@@ -393,14 +432,17 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 	end
 
 	-- Queue préhensile enroulée en spirale (segments + rotules pour un enroulement lisse).
-	b.Group = newGroup("Tail", 0, 1, Vector3.new(0, -1, 9.5))
+	-- Chaque segment est articulé sur le précédent : la spirale se déroule et ondule.
 	local previous = Vector3.new(0, -1, 9)
+	local segment: Group? = nil
 	for i = 1, 12 do
 		local angle = i * 0.55
 		local radius = 5 - i * 0.3
 		local point = Vector3.new(0, -2 - math.sin(angle) * radius, 13 + math.cos(angle) * radius * 0.8 + i * 0.4)
 		local thickness = math.max(0.8, 2.8 - i * 0.16)
 		local color = if i % 3 == 0 then darker else green
+		segment = newGroup("Tail", 0, i, previous, segment)
+		b.Group = segment
 		limb(b, "Tail", previous, point, thickness, color)
 		ellipsoid(b, "TailJoint", Vector3.one * thickness, CFrame.new(point), color)
 		previous = point
@@ -419,7 +461,7 @@ end
 
 -- ============================================================
 -- 3. Poisson Rouge + alevins
--- Membres : Head(0,1) | Tail(0,1) | Fin(±1,1) pectorales | Fin(±1,2) pelviennes |
+-- Membres : Head(0,1) > Jaw(0,1) | Tail(0,1) pédoncule > Tail(0,2) caudale | Fin(±1,1) pectorales | Fin(±1,2) pelviennes |
 -- Fin(0,3) dorsale | Fin(0,4) anale. L'alevin (scale < 0.5) n'a que Head, Tail, Fin 1 et 3
 -- (~10 parts : ils sont nombreux).
 -- ============================================================
@@ -463,7 +505,8 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 
 	-- Tête.
 	local headCenter = P(0, 0.3, -8)
-	b.Group = newGroup("Head", 0, 1, P(0, 0, -6))
+	local fishHead = newGroup("Head", 0, 1, P(0, 0, -6))
+	b.Group = fishHead
 	ellipsoid(b, "Head", Vector3.new(6.4, 8.5, 7) * s, CFrame.new(headCenter), orange)
 	local lipColor = Color3.fromRGB(190, 80, 40)
 	if isFry then
@@ -473,7 +516,10 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 		end
 	else
 		ellipsoid(b, "Mouth", Vector3.new(2.6, 1.2, 1.6) * s, CFrame.new(P(0, -0.2, -11.2)), lipColor)
+		-- Lèvre inférieure : la bouche s'ouvre et se ferme (respiration).
+		b.Group = newGroup("Jaw", 0, 1, P(0, -0.7, -10.2), fishHead)
 		ellipsoid(b, "Lip", Vector3.new(2.3, 1.1, 1.4) * s, CFrame.new(P(0, -1.1, -11)), lipColor)
+		b.Group = fishHead
 		local barbel = tint(orange, 0.4)
 		for _, side in ipairs(SIDES) do
 			ringedEye(b, headCenter, Vector3.new(3.2, 4.25, 3.5) * s, Vector3.new(side * 3, 1.5, -1), 1.3 * s, Color3.fromRGB(255, 220, 120))
@@ -487,8 +533,11 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 	end
 
 	-- Queue : pédoncule + caudale fourchue en voile.
-	b.Group = newGroup("Tail", 0, 1, P(0, 0, 9))
+	local peduncle = newGroup("Tail", 0, 1, P(0, 0, 9))
+	b.Group = peduncle
 	ellipsoid(b, "Peduncle", Vector3.new(3.4, 5.5, 7) * s, CFrame.new(P(0, 0, 10.5)), orange)
+	-- Caudale portée par le pédoncule : la vague se propage jusqu'au bout de la queue.
+	b.Group = newGroup("Tail", 0, 2, P(0, 0, 12), peduncle)
 	for _, lobe in ipairs(SIDES) do
 		for ray = 1, if isFry then 1 else 4 do
 			local angle = math.rad(if isFry then 30 else 8 + ray * 13)
@@ -539,7 +588,7 @@ end
 -- ============================================================
 -- 4. Crabe de rivière
 -- Membres : Eye(±1,1) pédoncules | Claw(±1,1) bras + pince entière | Claw(±1,2) doigt mobile
--- (parent Claw 1) | Leg(±1, 1..4 d'avant en arrière). Pince droite (+X) broyeuse, plus grosse.
+-- (parent Claw 1) | Leg(±1, 1..4 d'avant en arrière) > Knee(±1, idem). Pince droite (+X) broyeuse, plus grosse.
 -- Pattes 5 studs sous la Root.
 -- ============================================================
 function AnimalModels.BuildCrab(maxHealth: number): Model
@@ -627,9 +676,12 @@ function AnimalModels.BuildCrab(maxHealth: number): Model
 			local knee = Vector3.new(side * (11 + 6 * reach), 4, z + 1 + fan)
 			local ankle = Vector3.new(side * (11 + 7.6 * reach), -1.2, z + 1.6 + fan * 1.4)
 			local foot = Vector3.new(side * (11 + 8 * reach), -5, z + 2 + fan * 1.6)
-			b.Group = newGroup("Leg", side, i, hip)
+			local leg = newGroup("Leg", side, i, hip)
+			b.Group = leg
 			limb(b, "Leg", hip, knee, 1.6, shell)
 			ellipsoid(b, "LegJoint", Vector3.one * 1.9, CFrame.new(knee), shellLight)
+			-- Segment bas + pointe : se relève pendant le pas, s'enfonce en appui.
+			b.Group = newGroup("Knee", side, i, knee, leg)
 			limb(b, "Leg", knee, ankle, 1.3, shell)
 			strand(b, "LegTip", ankle + Vector3.new(0, 0.6, 0), foot, 1.2, 1.2, fingerColor)
 		end
@@ -642,8 +694,9 @@ end
 
 -- ============================================================
 -- 5. Écureuil roux
--- Membres : Head(0,1) | Leg(±1, 1 = avant / 2 = arrière) | Tail(0,1). Assis, buste relevé,
--- noisette (statique) entre les pattes avant. Pattes 9 studs sous la Root.
+-- Membres : Head(0,1) > Jaw(0,1) & Ear(±1,1) | Leg(±1, 1 = avant / 2 = arrière) > Knee(±1, idem) |
+-- Tail(0, 1..6) panache en chaîne. Buste relevé (aux aguets), pattes avant au sol,
+-- prêt à bondir. Pattes 9 studs sous la Root.
 -- ============================================================
 local TUFT_SPREAD = {
 	Vector2.new(1, 0.1), Vector2.new(-1, 0.1), Vector2.new(0, 1),
@@ -669,18 +722,20 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 		local a = math.abs(k)
 		strand(b, "ChestTuft", Vector3.new(k * 1.3, 2.2 - a * 0.3, -9.6), Vector3.new(k * 1.6, -0.6 - a * 0.2, -11.4), 1.8, 1.2, tint(white, 0.3), fur)
 	end
-	ellipsoid(b, "Hazelnut", Vector3.new(2.6, 2.6, 2.6), CFrame.new(0, -3.2, -12.6), Color3.fromRGB(150, 100, 50))
-	ellipsoid(b, "HazelnutCap", Vector3.new(2.3, 1.1, 2.3), CFrame.new(0, -2.2, -12.6), Color3.fromRGB(95, 65, 35))
 
 	-- Tête : joues, museau, incisives, moustaches, oreilles à pinceaux.
 	local headCenter = Vector3.new(0, 7, -9)
-	b.Group = newGroup("Head", 0, 1, Vector3.new(0, 4.5, -7))
+	local headGroup = newGroup("Head", 0, 1, Vector3.new(0, 4.5, -7))
+	b.Group = headGroup
 	local head = ellipsoid(b, "Head", Vector3.new(9, 9, 10), CFrame.new(headCenter), red)
 	head.Name = "Head"
 	ellipsoid(b, "Muzzle", Vector3.new(5, 4.5, 4), CFrame.new(0, 5.6, -13.6), white)
 	ellipsoid(b, "Nose", Vector3.new(1.4, 1.2, 1), CFrame.new(0, 6.2, -15.6), black)
+	-- Menton + incisives : grignote.
+	b.Group = newGroup("Jaw", 0, 1, Vector3.new(0, 4.8, -11.5), headGroup)
 	ellipsoid(b, "Chin", Vector3.new(3.2, 2.2, 3), CFrame.new(0, 4, -13), white)
 	block(b, "Teeth", Vector3.new(0.9, 1.1, 0.4), CFrame.new(0, 3.9, -15), WHITE)
+	b.Group = headGroup
 	for _, side in ipairs(SIDES) do
 		ellipsoid(b, "Cheek", Vector3.new(4.2, 4, 4.6), CFrame.new(side * 2.9, 5.3, -11.3), light, fur)
 		ringedEye(b, headCenter, Vector3.new(4.5, 4.5, 5), Vector3.new(side * 3.3, 1.5, -3.5), 1.3, white)
@@ -688,20 +743,25 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 			limb(b, "Whisker", Vector3.new(side * 1.6, 5.3, -14.6), Vector3.new(side * 6.8, 5.3 + j * 1.3, -15.2 + math.abs(j) * 0.4), 0.14, WHITE)
 		end
 		local earTilt = CFrame.Angles(0, 0, side * math.rad(-12))
+		-- Oreille articulée à sa base : frémit.
+		b.Group = newGroup("Ear", side, 1, Vector3.new(side * 3, 10.2, -8), headGroup)
 		ellipsoid(b, "Ear", Vector3.new(3.2, 5, 1.3), CFrame.new(side * 3, 12.2, -8) * earTilt, red)
 		ellipsoid(b, "EarInner", Vector3.new(2, 3.6, 0.6), CFrame.new(side * 3, 12.3, -8.55) * earTilt, pink)
 		for d = -1, 1 do
 			strand(b, "EarTuft", Vector3.new(side * 3.4, 13.8, -8), Vector3.new(side * 3.7 + d * 0.9, 17.3 - math.abs(d) * 0.5, -7.7), 0.8, 0.8, dark, fur)
 		end
+		b.Group = headGroup
 	end
 
 	for _, side in ipairs(SIDES) do
-		-- Patte avant : bras, avant-bras, main à doigts griffus (tient la noisette).
+		-- Patte avant : bras, avant-bras, main à doigts griffus posée au sol (il marche à quatre pattes).
 		local shoulder = Vector3.new(side * 3.8, 1.5, -8)
-		local elbow = Vector3.new(side * 3.6, -2.2, -9.2)
-		local paw = Vector3.new(side * 1.7, -3, -12)
-		b.Group = newGroup("Leg", side, 1, shoulder)
+		local elbow = Vector3.new(side * 4, -4.2, -8.6)
+		local paw = Vector3.new(side * 3.4, -8.4, -10.4)
+		local front = newGroup("Leg", side, 1, shoulder)
+		b.Group = front
 		limb(b, "FrontLeg", shoulder, elbow, 2.2, red)
+		b.Group = newGroup("Knee", side, 1, elbow, front)
 		limb(b, "FrontLeg", elbow, paw, 1.7, red)
 		ellipsoid(b, "Paw", Vector3.new(1.7, 1.4, 2), CFrame.new(paw), dark)
 		for toe = -1, 1 do
@@ -709,8 +769,11 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 		end
 
 		-- Patte arrière : cuisse puissante, jarret, long pied à 4 doigts.
-		b.Group = newGroup("Leg", side, 2, Vector3.new(side * 4.8, -2, 5))
+		local hind = newGroup("Leg", side, 2, Vector3.new(side * 4.8, -2, 5))
+		b.Group = hind
 		ellipsoid(b, "Haunch", Vector3.new(5.5, 8.5, 9.5), CFrame.new(side * 4.6, -3, 4.5), red)
+		-- Jarret + long pied : se replie au bond.
+		b.Group = newGroup("Knee", side, 2, Vector3.new(side * 5, -5, 4), hind)
 		limb(b, "HindLeg", Vector3.new(side * 5, -5, 4), Vector3.new(side * 5.5, -8, 2.5), 3, red)
 		ellipsoid(b, "HindFoot", Vector3.new(2.8, 1.6, 6.5), CFrame.new(side * 5.5, -8.5, 0.3), dark)
 		for _, toe in ipairs({ -1.5, -0.5, 0.5, 1.5 }) do
@@ -719,7 +782,8 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 	end
 
 	-- Queue en panache : coeur volumineux + mèches ébouriffées tout du long.
-	b.Group = newGroup("Tail", 0, 1, Vector3.new(0, -3, 9.5))
+	local tailSegment: Group? = nil
+	local tailPivot = Vector3.new(0, -3, 9.5)
 	local tailPoints = {
 		Vector3.new(0, -3.5, 10.5), Vector3.new(0, 1.5, 14.5), Vector3.new(0, 8, 16),
 		Vector3.new(0, 14, 14.5), Vector3.new(0, 17.5, 10.5), Vector3.new(0, 18, 6),
@@ -728,6 +792,10 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 		local tangent = (tailPoints[math.min(i + 1, #tailPoints)] - tailPoints[math.max(i - 1, 1)]).Unit
 		local outer = Vector3.new(0, -tangent.Z, tangent.Y) -- côté opposé au dos
 		local radius = 3.4 + i * 0.3
+		-- Panache en chaîne : chaque touffe est articulée sur la précédente (ondulation souple).
+		tailSegment = newGroup("Tail", 0, i, tailPivot, tailSegment)
+		b.Group = tailSegment
+		tailPivot = point
 		ellipsoid(b, "Tail", Vector3.new(radius * 2, radius * 2, radius * 1.9), CFrame.new(point), if i % 2 == 0 then red else dark, fur)
 		for t, spread in ipairs(TUFT_SPREAD) do
 			local offset = Vector3.xAxis * spread.X + outer * spread.Y

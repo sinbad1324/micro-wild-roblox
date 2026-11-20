@@ -7,23 +7,44 @@ local SeasonConfig = require(ReplicatedStorage.shared.SeasonConfig)
 
 local SeasonService = {}
 
-function SeasonService.Start()
-	task.spawn(function()
-		local currentIndex = 1
+local currentIndex = 1
+local cycleThread: thread? = nil
+
+local function applySeason(index: number)
+	currentIndex = ((index - 1) % #SeasonConfig.Order) + 1
+	local seasonName = SeasonConfig.Order[currentIndex]
+	local info = SeasonConfig.Seasons[seasonName]
+
+	workspace:SetAttribute("CurrentSeason", seasonName)
+	workspace:SetAttribute("SeasonDisplayName", info.DisplayName)
+	workspace:SetAttribute("PondFrozen", info.PondFrozen)
+
+	print(string.format("[MicroWild] Saison : %s - %s", info.DisplayName, info.Description))
+end
+
+local function startCycle()
+	if cycleThread then
+		task.cancel(cycleThread)
+	end
+	cycleThread = task.spawn(function()
 		while true do
+			applySeason(currentIndex)
 			local seasonName = SeasonConfig.Order[currentIndex]
 			local info = SeasonConfig.Seasons[seasonName]
-
-			workspace:SetAttribute("CurrentSeason", seasonName)
-			workspace:SetAttribute("SeasonDisplayName", info.DisplayName)
-			workspace:SetAttribute("PondFrozen", info.PondFrozen)
-
-			print(string.format("[MicroWild] Saison : %s - %s", info.DisplayName, info.Description))
 			task.wait(info.DurationSeconds)
-
 			currentIndex = (currentIndex % #SeasonConfig.Order) + 1
 		end
 	end)
+end
+
+function SeasonService.NextSeason(): string
+	currentIndex = (currentIndex % #SeasonConfig.Order) + 1
+	startCycle()
+	return SeasonConfig.Order[currentIndex]
+end
+
+function SeasonService.Start()
+	startCycle()
 end
 
 return SeasonService

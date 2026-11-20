@@ -3,7 +3,8 @@
 -- Base de données partagée des 30 espèces d'insectes (Terrestres, Volants, Aquatiques)
 
 export type DietType = "Herbivore" | "Carnivore" | "Omnivore"
-export type CategoryType = "Terrestre" | "Volant" | "Aquatique"
+-- "Animal" : animal jouable (PlayableAnimals), naît directement adulte, sans oeuf ni mue.
+export type CategoryType = "Terrestre" | "Volant" | "Aquatique" | "Animal"
 export type GrowthStyle = "Metamorphose" | "Mue"
 
 export type InsectInfo = {
@@ -116,7 +117,7 @@ local InsectData: { [string]: InsectInfo } = {
 		Damage = 20,
 		IdealTempMin = 10,
 		IdealTempMax = 40,
-		Abilities = { "TisserToilePiege", "MorsureNeurotoxique", "FilDeRappel" },
+		Abilities = { "TisserToilePiege", "TirDeToile", "MorsureNeurotoxique", "FilDeRappel" },
 		Description = "Tisse des toiles collantes et injecte un venin mortel.",
 	},
 	AraigneeSauteuse = {
@@ -134,7 +135,7 @@ local InsectData: { [string]: InsectInfo } = {
 		Damage = 22,
 		IdealTempMin = 8,
 		IdealTempMax = 36,
-		Abilities = { "BondDePrecision", "Vision360" },
+		Abilities = { "BondDePrecision", "TirDeToile", "FilDeRappel", "Vision360" },
 		Description = "Très agile, bondit directement sur les insectes en plein vol bas.",
 	},
 	ScorpionEmpereur = {
@@ -577,6 +578,100 @@ local InsectData: { [string]: InsectInfo } = {
 		Abilities = { "ChasseurDePoisson", "EnzymesDigestives", "SaisieGeante" },
 		Description = "Le titan de la mare : assez puissant pour chasser les poissons et affronter les crabes.",
 	},
+	-- ==========================================
+	-- D. ANIMAUX JOUABLES (corps : PlayableAnimals / AnimalModels, naissance directe en adulte)
+	-- ==========================================
+	Oiseau = {
+		Id = "Oiseau",
+		Name = "Rouge-Gorge",
+		Category = "Animal",
+		Diet = "Carnivore",
+		GrowthType = "Mue",
+		CanClimbWalls = false,
+		CanFly = true,
+		CanSwim = false,
+		CanWalkOnWater = false,
+		MaxHealth = 320,
+		WalkSpeed = 15,
+		Damage = 34,
+		IdealTempMin = 0,
+		IdealTempMax = 40,
+		Abilities = { "PiqueDuCiel", "BourrasqueDAiles" },
+		Description = "Prédateur ailé : fond sur les insectes depuis le ciel.",
+	},
+	Cameleon = {
+		Id = "Cameleon",
+		Name = "Caméléon",
+		Category = "Animal",
+		Diet = "Carnivore",
+		GrowthType = "Mue",
+		CanClimbWalls = true,
+		CanFly = false,
+		CanSwim = false,
+		CanWalkOnWater = false,
+		MaxHealth = 300,
+		WalkSpeed = 12,
+		Damage = 30,
+		IdealTempMin = 12,
+		IdealTempMax = 42,
+		Abilities = { "LangueCollante", "CamouflageEcailles" },
+		Description = "Lent mais invisible sur l'écorce, sa langue attrape les proies de loin.",
+	},
+	PoissonRouge = {
+		Id = "PoissonRouge",
+		Name = "Poisson Rouge",
+		Category = "Animal",
+		Diet = "Omnivore",
+		GrowthType = "Mue",
+		CanClimbWalls = false,
+		CanFly = false,
+		CanSwim = true,
+		CanWalkOnWater = false,
+		MaxHealth = 260,
+		WalkSpeed = 22,
+		Damage = 28,
+		IdealTempMin = 4,
+		IdealTempMax = 32,
+		Abilities = { "AspirationEau", "SautHorsDeLEau", "BranchiesAquatiques" },
+		Description = "Roi de la mare : aspire les insectes et jaillit hors de l'eau.",
+	},
+	Crabe = {
+		Id = "Crabe",
+		Name = "Crabe de Rivière",
+		Category = "Animal",
+		Diet = "Omnivore",
+		GrowthType = "Mue",
+		CanClimbWalls = false,
+		CanFly = false,
+		CanSwim = true,
+		CanWalkOnWater = false,
+		MaxHealth = 380,
+		WalkSpeed = 13,
+		Damage = 36,
+		IdealTempMin = 4,
+		IdealTempMax = 34,
+		Abilities = { "PinceBroyeuse", "CarapaceCrabe", "BranchiesAquatiques" },
+		Description = "Blindé et redoutable au contact : ses pinces font saigner.",
+	},
+	Ecureuil = {
+		Id = "Ecureuil",
+		Name = "Écureuil Roux",
+		Category = "Animal",
+		Diet = "Omnivore",
+		GrowthType = "Mue",
+		CanClimbWalls = true,
+		CanFly = false,
+		CanSwim = false,
+		CanWalkOnWater = false,
+		MaxHealth = 340,
+		WalkSpeed = 24,
+		Damage = 30,
+		IdealTempMin = -5,
+		IdealTempMax = 34,
+		Abilities = { "BondEcureuil", "SecousseBranches" },
+		Description = "Agile et rapide, grimpe partout et fait trembler les branches.",
+	},
+
 }
 
 return InsectData

@@ -14,6 +14,8 @@ local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
 local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
+local SeasonService = require(ServerScriptService.services.SeasonService)
+local SeasonVisualService = require(ServerScriptService.services.SeasonVisualService)
 
 local AdminService = {}
 
@@ -90,6 +92,12 @@ local function onCommand(player: Player, command: unknown, amount: unknown)
 		grow(player, 100)
 	elseif command == "Fill" then
 		fill(player)
+	elseif command == "NextSeason" then
+		local nextSeason = SeasonService.NextSeason()
+		notify(player, "[Admin] Saison changée : " .. nextSeason, "info")
+	elseif command == "Rain" then
+		local label = SeasonVisualService.CycleRainOverride()
+		notify(player, "[Admin] " .. label, "info")
 	end
 end
 

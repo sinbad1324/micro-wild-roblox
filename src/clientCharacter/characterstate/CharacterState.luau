@@ -5,8 +5,11 @@
 -- déplacement brut, saut maintenu, bouton "Descendre" (clavier / manette / tactile).
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
+
+local InsectData = require(ReplicatedStorage.shared.InsectData)
 
 local DESCEND_ACTION = "MW_Descend"
 local ASCEND_ACTION = "MW_Ascend"
@@ -19,6 +22,7 @@ local CharacterState = {
 	IsFlying = false,
 	IsSwimming = false,
 	IsGrabbingPrey = false,
+	IsSwinging = false, -- araignée suspendue à son fil (WebSwingController)
 	-- Fin de la fenêtre d'un saut mural (os.clock) : l'appui qui détache du mur ne fait pas décoller.
 	WallJumpUntil = 0,
 }
@@ -166,5 +170,128 @@ script.Destroying:Connect(function()
 		unbindVerticalControls()
 	end
 end)
+
+-- Marche franchissable : jusqu'à STEP_FACTOR fois la hauteur du corps (pattes + root), au moins MIN_STEP.
+-- Le relief rocheux (facettes du Terrain, voxels de 4 studs) fait des marches énormes pour un insecte.
+local STEP_FACTOR = 1.6
+local MIN_STEP = 1.2
+local MAX_STEP = 4
+
+-- Autre insecte / animal : jamais une marche (sinon on bondit sur son dos au lieu de le mordre).
+local function isCharacterPart(instance: Instance): boolean
+	local model = instance:FindFirstAncestorWhichIsA("Model")
+	return model ~= nil and model:FindFirstChildOfClass("Humanoid") ~= nil
+end
+
+-- Hauteur (au-dessus des pieds) de la marche juste devant, si elle est franchissable d'un petit bond ;
+-- nil s'il n'y a rien devant, une pente douce (le Humanoid la gère) ou un vrai mur (trop haut).
+function CharacterState.StepHeight(rootPart: BasePart, humanoid: Humanoid, direction: Vector3, params: RaycastParams): number?
+	local flat = Vector3.new(direction.X, 0, direction.Z)
+	if flat.Magnitude < 0.05 then
+		return nil
+	end
+	flat = flat.Unit
+	local size = rootPart.Size
+	local bodyHeight = humanoid.HipHeight + size.Y
+	local feet = rootPart.Position - Vector3.yAxis * (humanoid.HipHeight + size.Y * 0.5)
+	local maxStep = math.clamp(bodyHeight * STEP_FACTOR, MIN_STEP, MAX_STEP)
+	-- Demi-longueur de la boîte du root dans la direction de marche (corps allongé).
+	local l = rootPart.CFrame:VectorToObjectSpace(flat)
+	local extent = math.abs(l.X) * size.X * 0.5 + math.abs(l.Y) * size.Y * 0.5 + math.abs(l.Z) * size.Z * 0.5
+	local low = workspace:Raycast(feet + Vector3.yAxis * math.min(0.15, bodyHeight * 0.2), flat * (extent + 0.5), params)
+	-- Seule une contremarche quasi verticale compte : une pente (même raide) reste au Humanoid / à l'escalade.
+	if not low or low.Distance < 0.01 or low.Normal.Y > 0.35 or isCharacterPart(low.Instance) then
+		return nil
+	end
+	-- Dessus de l'obstacle : rayon vers le bas depuis la hauteur max de marche, juste après le contact.
+	local over = low.Position + flat * 0.3
+	local origin = Vector3.new(over.X, feet.Y + maxStep + 0.1, over.Z)
+	local top = workspace:Raycast(origin, Vector3.yAxis * -(maxStep + 0.1), params)
+	-- Rien / départ dans la matière (mur plus haut que la marche) / dessus trop raide : pas une marche.
+	if not top or top.Distance < 0.01 or top.Normal.Y < 0.6 or isCharacterPart(top.Instance) then
+		return nil
+	end
+	local rise = top.Position.Y - feet.Y
+	if rise <= 0.05 then
+		return nil
+	end
+	-- Place au-dessus de la marche (tunnel, surplomb) : sinon on bondirait dans le plafond en boucle.
+	if workspace:Raycast(top.Position + Vector3.yAxis * 0.05, Vector3.yAxis * (bodyHeight + 0.2), params) then
+		return nil
+	end
+	return rise
+end
+
+-- ============================================================
+-- Vent ressenti par l'insecte (exposition, abri, poids de l'espèce, turbulences)
+-- ============================================================
+
+local windExposure = 1
+local nextWindCheckAt = 0
+local windSeed = (player.UserId % 991) + 0.37
+
+-- Renvoie le vecteur de vent réellement ressenti par le personnage (nul sous terre, dans un abri,
+-- sous l'eau ou en Œuf/Cocon ; atténué derrière un tronc/rocher ; amplifié pour les espèces légères).
+function CharacterState.GetEffectiveWind(rootPart: BasePart, params: RaycastParams): Vector3
+	local stage = player:GetAttribute("Stage")
+	if
+		stage == "Oeuf"
+		or stage == "Cocon"
+		or player:GetAttribute("InShelterOrColony") == true
+		or CharacterState.IsSwimming
+	then
+		return Vector3.zero
+	end
+
+	local rawWind = workspace:GetAttribute("WindVector")
+	if typeof(rawWind) ~= "Vector3" or rawWind.Magnitude < 0.4 then
+		return Vector3.zero
+	end
+
+	local now = os.clock()
+	if now >= nextWindCheckAt then
+		nextWindCheckAt = now + 0.25
+		local pos = rootPart.Position
+		-- 1) Plafond solide (galerie souterraine, dessous de rocher) : coupe le vent.
+		local roofHit = workspace:Raycast(pos, Vector3.new(0, 26, 0), params)
+		if roofHit and roofHit.Instance == workspace.Terrain then
+			windExposure = 0
+		else
+			-- 2) Obstacle face au vent (tronc du Grand Chêne, pierre, feuille) : abri aérodynamique.
+			local windDir = rawWind.Unit
+			local upwindHit = workspace:Raycast(pos, -windDir * 14, params)
+			windExposure = if upwindHit then 0.2 else 1
+		end
+	end
+	if windExposure <= 0.01 then
+		return Vector3.zero
+	end
+
+	-- Sensibilité selon la masse / robustesse de l'espèce (un moustique ou papillon dérive plus qu'un scarabée Hercule).
+	local speciesId = (player:GetAttribute("Species") :: string?) or "FourmiRousse"
+	local species = InsectData[speciesId]
+	local susceptibility = 1
+	if species then
+		-- 45 PV (Moustique) -> ~1.35 ; 120 PV -> ~1.0 ; 280 PV (Hercule) -> ~0.55
+		susceptibility = math.clamp(1.42 - (species.MaxHealth / 320), 0.52, 1.38)
+		if
+			table.find(species.Abilities, "CarapaceBlindee")
+			or table.find(species.Abilities, "BouclierChitine")
+			or table.find(species.Abilities, "FourreauArmureCailloux")
+			or table.find(species.Abilities, "ForceHerculeenne")
+		then
+			susceptibility *= 0.75
+		end
+	end
+	if stage == "Larve" or stage == "Mue" then
+		susceptibility *= 1.1
+	end
+
+	-- Micro-turbulences organiques (bruit de Perlin) : le vent vit et fluctue légèrement.
+	local gustWave = 1 + math.noise(now * 1.15, windSeed) * 0.24
+	local crossSwirl = math.noise(windSeed, now * 1.4) * 0.18
+	local perp = Vector3.new(-rawWind.Z, 0, rawWind.X)
+	return (rawWind * gustWave + perp * crossSwirl) * (windExposure * susceptibility)
+end
 
 return CharacterState

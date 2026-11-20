@@ -1,34 +1,35 @@
 --!strict
 -- LoadingScreen.client.luau
--- Écran de chargement (ReplicatedFirst.startFirst) : remplace celui de Roblox et reste affiché
--- jusqu'à ce que le jeu soit chargé ET que le serveur ait fini de générer la carte
--- (attribut workspace "WorldGenerated"). Ne requiert aucun module (ReplicatedFirst tourne avant
--- la réplication du reste) : uniquement des services. Aucun travail par frame : animations en
--- tweens bouclés créés une seule fois.
+-- Écran de chargement (ReplicatedFirst.startFirst) au thème organique « Micro Wild : Survival » :
+-- vitrine 3D d'un œuf posé sur sa feuille moussue, halo bioluminescent, barre de progression
+-- organique et astuces en fondu. Ne requiert aucun module externe (ReplicatedFirst tourne avant
+-- la réplication du reste).
 
 local Players = game:GetService("Players")
 local ReplicatedFirst = game:GetService("ReplicatedFirst")
 local TweenService = game:GetService("TweenService")
 
--- Repli : une erreur de génération ne doit jamais bloquer le joueur derrière l'écran.
 local WORLD_TIMEOUT = 45
--- Évite un simple flash quand tout est déjà prêt.
 local MIN_DISPLAY = 1.5
 
 local TIPS = {
-	"Restez au chaud : un œuf qui gèle ne grandit pas.",
-	"[G] pour manger ou boire, [T] pour transporter de la nourriture au nid.",
-	"Sous 20 de Faim ou de Soif, votre croissance se met en pause.",
-	"Les animaux géants ne pardonnent pas : cachez-vous dans les abris.",
-	"À 100% de croissance, un adulte peut fonder une colonie.",
-	"[H] affiche l'aide des commandes à tout moment.",
+	"🥚 Restez au chaud : un œuf qui gèle ne grandit pas.",
+	"🍃 [G] pour manger ou boire, [T] pour rapporter de la nourriture au nid.",
+	"🍖 Sous 20% de Faim ou de Soif, votre croissance se met en pause.",
+	"🦎 Les 5 animaux géants ne pardonnent pas : réfugiez-vous dans les abris.",
+	"👑 À 100% de croissance, un adulte peut fonder une colonie et devenir Maman.",
+	"🌿 [H] affiche l'aide des commandes de survie à tout moment.",
 }
 
-local PANEL = Color3.fromRGB(16, 18, 22)
-local TRACK = Color3.fromRGB(38, 41, 48)
-local ACCENT = Color3.fromRGB(95, 215, 120)
-local TEXT = Color3.fromRGB(238, 240, 242)
-local MUTED = Color3.fromRGB(150, 155, 165)
+local PANEL_TOP = Color3.fromRGB(24, 38, 28)
+local PANEL_DEEP = Color3.fromRGB(10, 16, 12)
+local CARD_BG = Color3.fromRGB(22, 34, 25)
+local TRACK = Color3.fromRGB(16, 25, 19)
+local BORDER = Color3.fromRGB(78, 122, 86)
+local ACCENT = Color3.fromRGB(108, 224, 118)
+local GOLD = Color3.fromRGB(245, 192, 68)
+local TEXT = Color3.fromRGB(242, 240, 228)
+local MUTED = Color3.fromRGB(154, 172, 156)
 
 local startTime = os.clock()
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
@@ -40,28 +41,40 @@ screenGui.IgnoreGuiInset = true
 screenGui.DisplayOrder = 100
 screenGui.Parent = playerGui
 
--- Le nôtre est en place : on peut retirer celui de Roblox sans écran vide entre les deux.
 ReplicatedFirst:RemoveDefaultLoadingScreen()
 
 local root = Instance.new("CanvasGroup")
 root.Name = "Root"
 root.Size = UDim2.fromScale(1, 1)
-root.BackgroundColor3 = PANEL
+root.BackgroundColor3 = Color3.new(1, 1, 1)
 root.BorderSizePixel = 0
 root.Parent = screenGui
 
 local gradient = Instance.new("UIGradient")
-gradient.Rotation = 90
-gradient.Color = ColorSequence.new(Color3.fromRGB(24, 40, 28), PANEL)
+gradient.Rotation = 105
+gradient.Color = ColorSequence.new(PANEL_TOP, PANEL_DEEP)
 gradient.Parent = root
 
 local content = Instance.new("Frame")
 content.Name = "Content"
 content.AnchorPoint = Vector2.new(0.5, 0.5)
 content.Position = UDim2.fromScale(0.5, 0.5)
-content.Size = UDim2.fromOffset(420, 200)
-content.BackgroundTransparency = 1
+content.Size = UDim2.fromOffset(440, 256)
+content.BackgroundColor3 = CARD_BG
+content.BackgroundTransparency = 0.15
+content.BorderSizePixel = 0
 content.Parent = root
+
+local contentCorner = Instance.new("UICorner")
+contentCorner.CornerRadius = UDim.new(0, 18)
+contentCorner.Parent = content
+
+local contentStroke = Instance.new("UIStroke")
+contentStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+contentStroke.Color = BORDER
+contentStroke.Thickness = 1.5
+contentStroke.Transparency = 0.4
+contentStroke.Parent = content
 
 local contentScale = Instance.new("UIScale")
 contentScale.Parent = content
@@ -73,50 +86,107 @@ local function label(parent: Instance, font: Enum.Font, size: number, color: Col
 	text.TextSize = size
 	text.TextColor3 = color
 	text.TextWrapped = true
-	text.Position = UDim2.fromOffset(0, y)
-	text.Size = UDim2.new(1, 0, 0, height)
+	text.Position = UDim2.fromOffset(16, y)
+	text.Size = UDim2.new(1, -32, 0, height)
 	text.Text = ""
 	text.Parent = parent
 	return text
 end
 
--- Œuf stylisé qui "respire" (un seul tween en boucle).
-local egg = Instance.new("Frame")
-egg.Name = "Egg"
-egg.AnchorPoint = Vector2.new(0.5, 0)
-egg.Position = UDim2.new(0.5, 0, 0, 0)
-egg.Size = UDim2.fromOffset(34, 44)
-egg.BackgroundColor3 = Color3.fromRGB(245, 238, 215)
-egg.BorderSizePixel = 0
-egg.Parent = content
-local eggCorner = Instance.new("UICorner")
-eggCorner.CornerRadius = UDim.new(0.5, 0)
-eggCorner.Parent = egg
+-- ---------- Vitrine 3D de l'œuf sur sa feuille moussue ----------
+local eggBox = Instance.new("Frame")
+eggBox.Name = "EggBox3D"
+eggBox.AnchorPoint = Vector2.new(0.5, 0)
+eggBox.Position = UDim2.new(0.5, 0, 0, 14)
+eggBox.Size = UDim2.fromOffset(76, 76)
+eggBox.BackgroundColor3 = PANEL_DEEP
+eggBox.BorderSizePixel = 0
+eggBox.Parent = content
+
+local eggBoxCorner = Instance.new("UICorner")
+eggBoxCorner.CornerRadius = UDim.new(0, 38)
+eggBoxCorner.Parent = eggBox
+
+local eggBoxStroke = Instance.new("UIStroke")
+eggBoxStroke.Color = ACCENT
+eggBoxStroke.Thickness = 1.5
+eggBoxStroke.Transparency = 0.35
+eggBoxStroke.Parent = eggBox
+
+local eggViewport = Instance.new("ViewportFrame")
+eggViewport.Size = UDim2.fromScale(1, 1)
+eggViewport.BackgroundTransparency = 1
+eggViewport.Ambient = Color3.fromRGB(165, 185, 168)
+eggViewport.LightColor = Color3.fromRGB(255, 245, 215)
+eggViewport.LightDirection = Vector3.new(-0.5, -1, -0.5)
+eggViewport.Parent = eggBox
+
+local eggCam = Instance.new("Camera")
+eggCam.FieldOfView = 34
+eggCam.CFrame = CFrame.lookAt(Vector3.new(2.1, 1.5, 2.1), Vector3.new(0, 0.45, 0))
+eggCam.Parent = eggViewport
+eggViewport.CurrentCamera = eggCam
+
+local eggModel = Instance.new("Model")
+eggModel.Parent = eggViewport
+
+local function makeSpherePart(size: Vector3, cf: CFrame, color: Color3, transparency: number?): Part
+	local p = Instance.new("Part")
+	p.Size = size
+	p.CFrame = cf
+	p.Color = color
+	p.Material = Enum.Material.SmoothPlastic
+	p.Transparency = transparency or 0
+	p.Anchored = true
+	p.CanCollide = false
+	local m = Instance.new("SpecialMesh")
+	m.MeshType = Enum.MeshType.Sphere
+	m.Parent = p
+	p.Parent = eggModel
+	return p
+end
+
+makeSpherePart(Vector3.new(1.45, 0.12, 1.65), CFrame.new(0, 0.04, 0), Color3.fromRGB(95, 155, 68))
+local eggPart = makeSpherePart(Vector3.new(0.82, 1.12, 0.82), CFrame.new(0, 0.58, 0), Color3.fromRGB(246, 240, 220))
+makeSpherePart(Vector3.new(0.16, 0.26, 0.12), CFrame.new(0.16, 0.82, 0.22), Color3.new(1, 1, 1), 0.35)
+
 local eggScale = Instance.new("UIScale")
-eggScale.Parent = egg
+eggScale.Parent = eggBox
 local eggPulse = TweenService:Create(
 	eggScale,
-	TweenInfo.new(0.9, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
-	{ Scale = 1.12 }
+	TweenInfo.new(0.95, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ Scale = 1.07 }
 )
 eggPulse:Play()
 
-local title = label(content, Enum.Font.GothamBlack, 30, TEXT, 54, 36)
-title.Text = "Micro Wild : Survival"
+local eggBreathe = TweenService:Create(
+	eggPart,
+	TweenInfo.new(0.95, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+	{ Size = Vector3.new(0.88, 1.18, 0.88) }
+)
+eggBreathe:Play()
 
-local status = label(content, Enum.Font.GothamMedium, 14, ACCENT, 96, 20)
-status.Text = "Chargement du jeu…"
+local title = label(content, Enum.Font.GothamBlack, 26, TEXT, 96, 32)
+title.Text = "MICRO WILD : SURVIVAL"
+
+local status = label(content, Enum.Font.GothamBold, 14, ACCENT, 130, 20)
+status.Text = "Éveil de l'écosystème…"
 
 local track = Instance.new("Frame")
 track.Name = "Track"
-track.Position = UDim2.fromOffset(40, 124)
-track.Size = UDim2.new(1, -80, 0, 8)
+track.Position = UDim2.fromOffset(36, 158)
+track.Size = UDim2.new(1, -72, 0, 10)
 track.BackgroundColor3 = TRACK
 track.BorderSizePixel = 0
 track.Parent = content
 local trackCorner = Instance.new("UICorner")
-trackCorner.CornerRadius = UDim.new(0, 4)
+trackCorner.CornerRadius = UDim.new(0, 5)
 trackCorner.Parent = track
+local trackStroke = Instance.new("UIStroke")
+trackStroke.Color = BORDER
+trackStroke.Thickness = 1
+trackStroke.Transparency = 0.65
+trackStroke.Parent = track
 
 local fill = Instance.new("Frame")
 fill.Name = "Fill"
@@ -125,22 +195,20 @@ fill.BackgroundColor3 = ACCENT
 fill.BorderSizePixel = 0
 fill.Parent = track
 local fillCorner = Instance.new("UICorner")
-fillCorner.CornerRadius = UDim.new(0, 4)
+fillCorner.CornerRadius = UDim.new(0, 5)
 fillCorner.Parent = fill
 
-local tip = label(content, Enum.Font.Gotham, 13, MUTED, 146, 40)
+local tip = label(content, Enum.Font.GothamMedium, 12, MUTED, 178, 60)
 tip.Text = TIPS[math.random(1, #TIPS)]
 
--- Mise à l'échelle (téléphone -> écran large), recalculée seulement au redimensionnement.
 local function fitToScreen()
 	local camera = workspace.CurrentCamera
 	if camera and camera.ViewportSize.X > 1 then
 		local size = camera.ViewportSize
-		contentScale.Scale = math.clamp(math.min(size.X / 480, size.Y / 320), 0.6, 1.4)
+		contentScale.Scale = math.clamp(math.min(size.X / 480, size.Y / 340), 0.6, 1.35)
 	end
 end
 local viewportConnection: RBXScriptConnection? = nil
--- La caméra peut ne pas exister encore aussi tôt (ReplicatedFirst) : on se raccroche à chaque changement.
 local function hookCamera()
 	if viewportConnection then
 		viewportConnection:Disconnect()
@@ -155,7 +223,6 @@ end
 hookCamera()
 local cameraConnection = workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(hookCamera)
 
--- Progression "ressentie" : la barre avance doucement (sans jamais finir) tant qu'on attend.
 local function progressTo(ratio: number, seconds: number)
 	TweenService:Create(fill, TweenInfo.new(seconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 		Size = UDim2.fromScale(ratio, 1),
@@ -167,33 +234,38 @@ if not game:IsLoaded() then
 	game.Loaded:Wait()
 end
 
-status.Text = "Génération du monde…"
+status.Text = "Génération de la forêt et de la mare…"
 progressTo(0.9, 12)
 local deadline = os.clock() + WORLD_TIMEOUT
 local tipClock = os.clock()
 while workspace:GetAttribute("WorldGenerated") ~= true and os.clock() < deadline do
 	task.wait(0.25)
-	-- Change d'astuce toutes les 5 s pendant une longue attente.
 	if os.clock() - tipClock > 5 then
 		tipClock = os.clock()
-		tip.Text = TIPS[math.random(1, #TIPS)]
+		TweenService:Create(tip, TweenInfo.new(0.2), { TextTransparency = 1 }):Play()
+		task.delay(0.2, function()
+			tip.Text = TIPS[math.random(1, #TIPS)]
+			TweenService:Create(tip, TweenInfo.new(0.25), { TextTransparency = 0 }):Play()
+		end)
 	end
 end
 if workspace:GetAttribute("WorldGenerated") ~= true then
 	warn("[LoadingScreen] WorldGenerated toujours absent après " .. tostring(WORLD_TIMEOUT) .. " s : on continue quand même.")
 end
 
-status.Text = "Prêt !"
+status.Text = "Éclosion prête !"
+status.TextColor3 = GOLD
 progressTo(1, 0.3)
 local remaining = MIN_DISPLAY - (os.clock() - startTime)
 task.wait(math.max(remaining, 0.4))
 
-local fadeOut = TweenService:Create(root, TweenInfo.new(0.6, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+local fadeOut = TweenService:Create(root, TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
 	GroupTransparency = 1,
 })
 fadeOut:Play()
 fadeOut.Completed:Wait()
 eggPulse:Cancel()
+eggBreathe:Cancel()
 cameraConnection:Disconnect()
 if viewportConnection then
 	viewportConnection:Disconnect()

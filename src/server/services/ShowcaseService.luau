@@ -21,7 +21,7 @@ local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
 local AnimalData = require(ReplicatedStorage.shared.AnimalData)
 local InsectVisualService = require(ServerScriptService.services.InsectVisualService)
-local AnimalModels = require(ServerScriptService.services.AnimalModels)
+local AnimalModels = require(ReplicatedStorage.shared.AnimalModels)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
 
 local ShowcaseService = {}
@@ -108,7 +108,9 @@ end
 local function sortedSpecies(): { InsectData.InsectInfo }
 	local list: { InsectData.InsectInfo } = {}
 	for _, info in pairs(InsectData) do
-		table.insert(list, info)
+		if info.Category ~= "Animal" then -- galerie d'insectes (les animaux ont leur propre vitrine)
+			table.insert(list, info)
+		end
 	end
 	table.sort(list, function(a, b)
 		local orderA = CATEGORY_ORDER[a.Category] or 99

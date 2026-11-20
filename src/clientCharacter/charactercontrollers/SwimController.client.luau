@@ -31,6 +31,7 @@ local SURFACE_SPRING = 4
 local SURFACE_BOB_AMPLITUDE = 0.35
 local SURFACE_BOB_FREQUENCY = 2
 local SURFACE_EXIT_MARGIN = 0.6 -- hystérésis : pas d'aller-retour nage/chute à la surface
+local SURFACE_DIVE_MARGIN = 0.5 -- pieds à moins de ça au-dessus de l'eau : Ctrl fait plonger
 local BREACH_DEPTH = 1 -- Saut maintenu à moins de cette profondeur = on jaillit hors de l'eau
 local BREACH_GRACE = 0.4 -- pas de recapture juste après le jaillissement (sinon collé à la berge)
 local GLIDE_SPEED_FACTOR = 1.15
@@ -114,6 +115,7 @@ end
 local function stopAll()
 	stopSwimming()
 	stopWalkingOnWater()
+	CharacterState.SetVerticalControls("SwimSurface", false)
 end
 
 local function stageAllowsWater(): boolean
@@ -146,7 +148,12 @@ local function updateWaterWalker(deltaTime: number, waterLevel: number)
 
 	local horizontal = CharacterState.GetWorldMove(humanoid)
 	-- WalkSpeed serveur : statuts (étourdi, glu, ralenti) déjà inclus par MovementService.
-	local desired = horizontal * humanoid.WalkSpeed * GLIDE_SPEED_FACTOR
+	-- Le vent en surface de la mare fait légèrement dériver les patineurs d'eau (Gerris, Éphémère...).
+	local rawWind = workspace:GetAttribute("WindVector")
+	local surfaceWind = if typeof(rawWind) == "Vector3" and player:GetAttribute("InShelterOrColony") ~= true
+		then Vector3.new(rawWind.X, 0, rawWind.Z) * 0.42
+		else Vector3.zero
+	local desired = horizontal * humanoid.WalkSpeed * GLIDE_SPEED_FACTOR + surfaceWind
 	local sharpness = if horizontal.Magnitude > 0.05 then GLIDE_ACCEL_SHARPNESS else GLIDE_DECEL_SHARPNESS
 	if not glideVelocity.Enabled then
 		local velocity = rootPart.AssemblyLinearVelocity
@@ -179,6 +186,7 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	if canWalkOnWater and isInZone then
 		-- Glisse à la surface : on ne plonge pas, le flotteur ancré colle au joueur.
 		stopSwimming()
+		CharacterState.SetVerticalControls("SwimSurface", false)
 		updateWaterWalker(deltaTime, waterLevel)
 		return
 	end
@@ -186,15 +194,23 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	stopWalkingOnWater()
 
 	local y = rootPart.Position.Y
+	-- Posé / flottant À la surface (le Humanoid garde le corps hors de l'eau) : "Bas" (Ctrl, Q...)
+	-- est déjà disponible et fait plonger, sans attendre d'être immergé.
+	local feetY = y - humanoid.HipHeight - rootPart.Size.Y * 0.5
+	local atSurface = canSwim and isInZone and feetY < waterLevel + SURFACE_DIVE_MARGIN and os.clock() >= breachUntil
+	CharacterState.SetVerticalControls("SwimSurface", atSurface and not CharacterState.IsSwimming)
+	local diving = atSurface and CharacterState.IsDescendHeld()
 	local limit = if CharacterState.IsSwimming then waterLevel + SURFACE_EXIT_MARGIN else waterLevel
-	if not (canSwim and isInZone and y < limit) or os.clock() < breachUntil then
+	if not (canSwim and isInZone and (y < limit or diving)) or os.clock() < breachUntil then
 		stopSwimming()
 		return
 	end
 
 	if not CharacterState.IsSwimming then
 		CharacterState.IsSwimming = true
+		-- "Swim" avant de retirer "SwimSurface" : les boutons restent liés, l'appui sur Bas n'est pas perdu.
 		CharacterState.SetVerticalControls("Swim", true)
+		CharacterState.SetVerticalControls("SwimSurface", false)
 		swimVelocity = rootPart.AssemblyLinearVelocity * ENTRY_MOMENTUM
 	end
 

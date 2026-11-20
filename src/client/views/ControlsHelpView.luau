@@ -1,9 +1,7 @@
 --!strict
 -- ControlsHelpView.luau
--- Petit panneau d'aide des commandes, basculé par [H] (annoncé par la ligne d'infos du hotbar)
--- ou par un bouton "?" (indispensable en tactile, sans clavier). Glissement + fondu, aucun
--- travail par frame. Les lignes de vol/nage restent volontairement génériques : les contrôles de
--- mouvement fins appartiennent aux contrôleurs de personnage.
+-- Panneau d'aide des commandes au style organique « Micro Wild », basculé par [H] ou par le
+-- bouton "?" en haut à droite. Glissement élastique + fondu, aucun travail par frame.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -22,17 +20,20 @@ local ROWS: { { string } } = {
 	{ "Q / Ctrl", "Descendre (vol, nage)" },
 	{ "Contre un mur", "Grimper (espèces grimpeuses)" },
 	{ "Clic", "Mordre" },
-	{ "E · R · F", "Pouvoirs de l'espèce (adulte)" },
-	{ "C (maintenir)", "Creuser" },
-	{ "G", "Manger / boire" },
+	{ "E · R · F", "Pouvoirs de l'espèce (adulte), visés à la souris" },
+	{ "F (maintenir)", "Araignées : fil de soie, se balancer (Espace = remonter)" },
+	{ "C (maintenir)", "Creuser (vise avec la souris)" },
+	{ "V", "Force du creusement (1 · 2 · 3)" },
+	{ "G", "Manger / boire / ramasser feuilles, brindilles, cailloux" },
 	{ "T", "Transporter la nourriture au nid" },
+	{ "B (près du nid)", "Construire son nid : R tourner, clic poser, X supprimer" },
 	{ "H", "Afficher / masquer cette aide" },
 }
 
-local PANEL_WIDTH = 330
-local ROW_HEIGHT = 22
+local PANEL_WIDTH = 342
+local ROW_HEIGHT = 24
 local PANEL_SHOWN = UDim2.new(1, -16, 0.5, 0)
-local PANEL_HIDDEN = UDim2.new(1, 24, 0.5, 0)
+local PANEL_HIDDEN = UDim2.new(1, 28, 0.5, 0)
 
 function ControlsHelpView.Mount()
 	if mounted then
@@ -54,45 +55,50 @@ function ControlsHelpView.Mount()
 	panel.Name = "Panel"
 	panel.AnchorPoint = Vector2.new(1, 0.5)
 	panel.Position = PANEL_HIDDEN
-	panel.Size = UDim2.fromOffset(PANEL_WIDTH, 52 + #ROWS * ROW_HEIGHT)
-	panel.BackgroundColor3 = Colors.Panel
-	panel.BackgroundTransparency = 0.1
-	panel.BorderSizePixel = 0
+	panel.Size = UDim2.fromOffset(PANEL_WIDTH, 56 + #ROWS * ROW_HEIGHT)
+	panel.BackgroundTransparency = 0.06
 	panel.GroupTransparency = 1
 	panel.Visible = false
 	panel.Parent = screenGui
-	UiTheme.Corner(panel, 12)
+	UiTheme.StylePanel(panel, 14, Colors.Border, 0.4)
 	UiTheme.Padding(panel, 14, 12)
 	UiTheme.BindScale(panel, 760, 520, 0.6, 1.15)
 
-	local title = UiTheme.Label(panel, Enum.Font.GothamBlack, 16, Colors.Text)
-	title.Size = UDim2.new(1, 0, 0, 20)
-	title.Text = "Commandes"
+	local title = UiTheme.Label(panel, Enum.Font.GothamBlack, 16, Colors.Accent)
+	title.Size = UDim2.new(1, 0, 0, 22)
+	title.Text = "🌿 Commandes de survie"
 
 	local list = Instance.new("Frame")
 	list.Name = "Rows"
 	list.BackgroundTransparency = 1
-	list.Position = UDim2.fromOffset(0, 28)
-	list.Size = UDim2.new(1, 0, 1, -28)
+	list.Position = UDim2.fromOffset(0, 30)
+	list.Size = UDim2.new(1, 0, 1, -30)
 	list.Parent = panel
 
 	local listLayout = Instance.new("UIListLayout")
 	listLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	listLayout.Padding = UDim.new(0, 2)
 	listLayout.Parent = list
 
 	for index, row in ipairs(ROWS) do
 		local rowFrame = Instance.new("Frame")
 		rowFrame.BackgroundTransparency = 1
 		rowFrame.LayoutOrder = index
-		rowFrame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT)
+		rowFrame.Size = UDim2.new(1, 0, 0, ROW_HEIGHT - 2)
 		rowFrame.Parent = list
 
-		local key = UiTheme.Label(rowFrame, Enum.Font.GothamBold, 12, Colors.Accent)
-		key.Size = UDim2.new(0.38, 0, 1, 0)
-		key.TextTruncate = Enum.TextTruncate.AtEnd
-		key.Text = row[1]
+		local keyBadge = UiTheme.Label(rowFrame, Enum.Font.GothamBold, 11, Colors.Accent)
+		keyBadge.Size = UDim2.new(0.36, -6, 1, -2)
+		keyBadge.Position = UDim2.fromOffset(0, 1)
+		keyBadge.BackgroundTransparency = 0
+		keyBadge.BackgroundColor3 = Colors.Card
+		keyBadge.TextXAlignment = Enum.TextXAlignment.Center
+		keyBadge.TextTruncate = Enum.TextTruncate.AtEnd
+		keyBadge.Text = row[1]
+		UiTheme.Corner(keyBadge, 6)
+		UiTheme.Stroke(keyBadge, Colors.Border, 1, 0.72)
 
-		local action = UiTheme.Label(rowFrame, Enum.Font.Gotham, 12, Colors.Text)
+		local action = UiTheme.Label(rowFrame, Enum.Font.GothamMedium, 12, Colors.Text)
 		action.Position = UDim2.fromScale(0.38, 0)
 		action.Size = UDim2.new(0.62, 0, 1, 0)
 		action.TextTruncate = Enum.TextTruncate.AtEnd
@@ -103,19 +109,20 @@ function ControlsHelpView.Mount()
 	local helpButton = Instance.new("TextButton")
 	helpButton.Name = "HelpButton"
 	helpButton.AnchorPoint = Vector2.new(1, 0)
-	helpButton.Position = UDim2.new(1, -12, 0, 120)
-	helpButton.Size = UDim2.fromOffset(34, 34)
-	helpButton.BackgroundColor3 = Colors.Panel
-	helpButton.BackgroundTransparency = 0.2
+	helpButton.Position = UDim2.new(1, -12, 0, 116)
+	helpButton.Size = UDim2.fromOffset(36, 36)
+	helpButton.BackgroundColor3 = Colors.Card
+	helpButton.BackgroundTransparency = 0.12
 	helpButton.BorderSizePixel = 0
-	helpButton.AutoButtonColor = true
+	helpButton.AutoButtonColor = false
 	helpButton.Font = Enum.Font.GothamBlack
 	helpButton.TextSize = 18
-	helpButton.TextColor3 = Colors.Text
+	helpButton.TextColor3 = Colors.Accent
 	helpButton.Text = "?"
 	helpButton.Parent = screenGui
-	UiTheme.Corner(helpButton, 17)
-	local buttonStroke = UiTheme.Stroke(helpButton, Colors.Accent, 1.5, 0.7)
+	UiTheme.Corner(helpButton, 18)
+	local buttonStroke = UiTheme.Stroke(helpButton, Colors.Accent, 1.5, 0.55)
+	UiTheme.BindButtonFX(helpButton, 1.08, 0.92)
 
 	-- ---------- Bascule ----------
 	local open = false
@@ -127,12 +134,16 @@ function ControlsHelpView.Mount()
 		open = value
 		sequence += 1
 		local mySequence = sequence
-		UiTheme.Tween(buttonStroke, 0.2, { Transparency = if open then 0 else 0.7 })
+		UiTheme.Tween(buttonStroke, 0.2, { Transparency = if open then 0 else 0.55 })
+		UiTheme.Tween(helpButton, 0.2, {
+			BackgroundColor3 = if open then Colors.Accent else Colors.Card,
+			TextColor3 = if open then Colors.AccentDark else Colors.Accent,
+		})
 		if open then
 			panel.Visible = true
-			UiTheme.Tween(panel, 0.3, { GroupTransparency = 0, Position = PANEL_SHOWN }, Enum.EasingStyle.Back)
+			UiTheme.Tween(panel, 0.32, { GroupTransparency = 0, Position = PANEL_SHOWN }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		else
-			local fade = UiTheme.Tween(panel, 0.2, { GroupTransparency = 1, Position = PANEL_HIDDEN })
+			local fade = UiTheme.Tween(panel, 0.22, { GroupTransparency = 1, Position = PANEL_HIDDEN })
 			fade.Completed:Once(function()
 				if sequence == mySequence then
 					panel.Visible = false
@@ -146,7 +157,6 @@ function ControlsHelpView.Mount()
 	end)
 
 	UserInputService.InputBegan:Connect(function(input: InputObject, gameProcessed: boolean)
-		-- Ignore la saisie de texte (chat, recherche du menu de spawn).
 		if input.KeyCode ~= Enum.KeyCode.H or gameProcessed or UserInputService:GetFocusedTextBox() ~= nil then
 			return
 		end

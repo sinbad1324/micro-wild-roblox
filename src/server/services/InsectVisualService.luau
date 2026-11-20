@@ -27,10 +27,12 @@
 -- Le conteneur porte "AnimScale" (number) : échelle du personnage à la construction. Après un
 -- ScaleTo, utiliser RestC0.Position * (character:GetScale() / AnimScale).
 
+local CollectionService = game:GetService("CollectionService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
+local PlayableAnimals = require(ReplicatedStorage.shared.PlayableAnimals)
 
 type BodyPlan = InsectBodyPlans.BodyPlan
 type MutationInfo = InsectBodyPlans.MutationInfo
@@ -1052,8 +1054,15 @@ local function buildCentipedeBody(ctx: Ctx, L: Layout)
 			local knee = at(ctx, wave + side * 0.6, 0.4, z + 0.05)
 			local foot = at(ctx, wave + side * 0.88, 0.02, z + 0.12)
 			setAnim(ctx, "Leg", side, i, hip)
-			limb(ctx, "LegFemur", hip, knee, 0.06, "Accent")
-			limb(ctx, "LegTibia", knee, foot, 0.045, "Accent")
+			local femur = limb(ctx, "LegFemur", hip, knee, 0.06, "Accent")
+			local tibia = limb(ctx, "LegTibia", knee, foot, 0.045, "Accent")
+			-- Pattes à IK (InsectAnimationController), comme buildLegPair ; chaque paire suit son anneau.
+			if femur and tibia then
+				femur:SetAttribute("IKKnee", knee - hip)
+				femur:SetAttribute("IKToe", foot - hip)
+				femur:SetAttribute("LegSeg", "Upper")
+				tibia:SetAttribute("LegSeg", "Lower")
+			end
 		end
 	end
 	-- Dernière paire de pattes, traînante, tournée vers l'arrière.
@@ -1479,7 +1488,11 @@ local function hookLateAvatarPieces(character: Model, rootPart: BasePart)
 end
 
 -- Parts qui ne comptent pas dans la "boîte" physique du corps (pattes écartées, ailes, antennes).
-local NON_BODY_ANIM: { [string]: boolean } = { Leg = true, Wing = true, Antenna = true }
+local NON_BODY_ANIM: { [string]: boolean } = {
+	Leg = true, Wing = true, Antenna = true,
+	-- Animaux jouables : bas des pattes, queue, plumes, oreilles, nageoires hors de la boîte du corps.
+	Knee = true, Tail = true, WingTip = true, Ear = true, Fin = true,
+}
 local MIN_ROOT_SIZE = 0.25
 
 -- Adapte le HumanoidRootPart (collision, cible des attaques, caméra) au corps de l'insecte : sans
@@ -1603,6 +1616,55 @@ end
 -- API publique
 -- ============================================================
 
+-- Corps d'animal jouable : le modèle de l'IA (réduit) est gardé TEL QUEL (Root + AnimWelds + membres
+-- articulés en chaînes) et sa Root est soudée au root du joueur. Tag "PlayerAnimal" : il est animé
+-- par AnimalAnimationController comme les animaux de l'IA, sans être une cible "Animal".
+local function buildAnimalBody(character: Model, root: BasePart, container: Model, speciesId: string, groundY: number): boolean
+	local model = PlayableAnimals.BuildScaled(speciesId, character:GetScale())
+	local modelRoot = model and model.PrimaryPart
+	if not model or not modelRoot then
+		return false
+	end
+	-- Pattes au sol : le point le plus bas du modèle est posé à la hauteur du sol sous le root.
+	local minY = math.huge
+	for _, descendant in ipairs(model:GetDescendants()) do
+		if descendant:IsA("BasePart") and descendant ~= modelRoot then
+			local cf = modelRoot.CFrame:ToObjectSpace(descendant.CFrame)
+			local half = descendant.Size * 0.5
+			for _, sy in ipairs({ -1, 1 }) do
+				for _, sx in ipairs({ -1, 1 }) do
+					for _, sz in ipairs({ -1, 1 }) do
+						minY = math.min(minY, (cf * Vector3.new(half.X * sx, half.Y * sy, half.Z * sz)).Y)
+					end
+				end
+			end
+			descendant:SetAttribute(BASE_TRANSPARENCY_ATTRIBUTE, descendant.Transparency)
+			descendant.CanCollide = false
+			descendant.CanQuery = false
+			descendant.CanTouch = false
+			descendant.Massless = true
+		end
+	end
+	local shift = CFrame.new(0, groundY - minY, 0)
+	model:PivotTo(root.CFrame * shift * modelRoot.CFrame:Inverse() * model:GetPivot())
+	modelRoot.Anchored = false
+	modelRoot.Massless = true
+	modelRoot.CanCollide = false
+	modelRoot.CanQuery = false
+	modelRoot.CanTouch = false
+	-- Soudure du modèle entier : fitRootToBody la décale avec le reste (Part0 = root du joueur).
+	local mount = Instance.new("Weld")
+	mount.Name = "AnimalMount"
+	mount.Part0 = root
+	mount.Part1 = modelRoot
+	mount.C0 = shift
+	mount.C1 = CFrame.identity
+	mount.Parent = modelRoot
+	CollectionService:AddTag(model, "PlayerAnimal")
+	model.Parent = container
+	return true
+end
+
 function InsectVisualService.ApplyVisual(character: Model, speciesId: string, stage: string, mutationId: string?)
 	local rootPart = character:WaitForChild("HumanoidRootPart", 5)
 	if not rootPart or not rootPart:IsA("BasePart") then
@@ -1643,7 +1705,10 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 		rounded = stage == "Oeuf" or stage == "Cocon",
 	}
 
-	if stage == "Oeuf" then
+	if PlayableAnimals.Get(speciesId) and buildAnimalBody(character, root, container, speciesId, ctx.groundY) then
+		-- Animal jouable : toujours son corps adulte (pas d'oeuf ni de larve).
+		container:SetAttribute("Stage", "Adulte")
+	elseif stage == "Oeuf" then
 		ctx.s = character:GetScale() * 1.6
 		buildEgg(ctx)
 	elseif stage == "Cocon" then

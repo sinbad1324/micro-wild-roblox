@@ -17,6 +17,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local UserInputService = game:GetService("UserInputService")
 
 local AbilityCatalog = require(ReplicatedStorage.shared.AbilityCatalog)
+local AimUtil = require(ReplicatedStorage.shared.AimUtil)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 
@@ -27,7 +28,10 @@ AbilityController.CooldownStarted = Instance.new("BindableEvent")
 -- () : morsure locale prédite, émise à l'appui (avant la réponse du serveur) pour l'animation.
 AbilityController.LocalBite = Instance.new("BindableEvent")
 
-local DIG_REPEAT_SECONDS = 0.5
+-- Creusement : petites demandes rapprochées (galerie continue), force 1..3 choisie avec V.
+local DIG_REPEAT_SECONDS = 0.12
+local DIG_REACH = 8 -- doit rester sous MAX_REACH (DigService)
+local DIG_STRENGTH_COUNT = 3
 local MAX_MOTION_SPEED = 140
 -- Doivent rester alignés sur GameConstants.BITE_RANGE / BITE_COOLDOWN (serveur, non répliqué).
 local BITE_RANGE = 7
@@ -53,6 +57,31 @@ local PREDICTED_PRIMITIVES: { [string]: boolean } = {
 local player = Players.LocalPlayer
 local started = false
 local digging = false
+local digStrength = 2
+-- Visée du creusement : uniquement le Terrain (ni l'insecte, ni les plantes, ni les autres joueurs).
+local digRayParams = RaycastParams.new()
+digRayParams.FilterType = Enum.RaycastFilterType.Include
+digRayParams.FilterDescendantsInstances = { workspace.Terrain }
+-- Visée des pouvoirs (tirs de toile...) : tout le décor, sauf les personnages.
+local AIM_DISTANCE = 300
+local abilityAimParams = RaycastParams.new()
+abilityAimParams.FilterType = Enum.RaycastFilterType.Exclude
+abilityAimParams.RespectCanCollide = true
+
+local function abilityAim(root: BasePart): Vector3?
+	local camera = workspace.CurrentCamera
+	if not camera then
+		return nil
+	end
+	local ignore: { Instance } = {}
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other.Character then
+			table.insert(ignore, other.Character)
+		end
+	end
+	abilityAimParams.FilterDescendantsInstances = ignore
+	return (AimUtil.Point(camera, root.Position, AIM_DISTANCE, abilityAimParams))
+end
 
 local cooldownEnds: { [string]: number } = {} -- par slot, horloge locale
 local buffered: { [string]: boolean } = {}
@@ -185,6 +214,11 @@ local function findBiteTarget(root: BasePart, scale: number): (Model?, BasePart?
 			consider(animal, animal.PrimaryPart, (animal:GetAttribute("HitRadius") :: number?) or 4)
 		end
 	end
+	for _, wild in ipairs(CollectionService:GetTagged("WildInsect")) do
+		if wild:IsA("Model") and wild.PrimaryPart then
+			consider(wild, wild.PrimaryPart, (wild:GetAttribute("HitRadius") :: number?) or 2)
+		end
+	end
 	return bestModel, bestRoot, bestDistance
 end
 
@@ -246,7 +280,8 @@ local function useAbility(slot: string)
 			applyLunge(root.CFrame.LookVector, definition.Range * math.max(character:GetScale(), 0.6))
 		end
 	end
-	Remotes.Get("RequestUseAbility"):FireServer(slot)
+	-- Point visé envoyé avec la demande (tirs de toile...) ; le serveur le borne à la portée.
+	Remotes.Get("RequestUseAbility"):FireServer(slot, if root then abilityAim(root) else nil)
 end
 
 -- Surligne la cible que la morsure toucherait (aide à la visée).
@@ -283,9 +318,19 @@ local function digOnce()
 	if not root or not camera then
 		return
 	end
-	-- On creuse là où regarde la caméra (vers le bas = on s'enfonce sous terre).
-	local target = root.Position + camera.CFrame.LookVector * 4
-	Remotes.Get("RequestDig"):FireServer(target)
+	-- On creuse là où vise la souris (centre de l'écran en manette / sur mobile) : point exact du Terrain.
+	local start, direction = AimUtil.Ray(camera, root.Position)
+	local hit = workspace:Raycast(start, direction * (DIG_REACH * 1.5), digRayParams)
+	local target = if hit and (hit.Position - root.Position).Magnitude <= DIG_REACH
+		then hit.Position
+		else root.Position + direction * (DIG_REACH * 0.5)
+	Remotes.Get("RequestDig"):FireServer(target, digStrength)
+end
+
+local function cycleDigStrength()
+	digStrength = digStrength % DIG_STRENGTH_COUNT + 1
+	-- Attribut local (non répliqué) : lu par le hotbar pour afficher la force.
+	player:SetAttribute("DigStrength", digStrength)
 end
 
 local function startDigging()
@@ -341,6 +386,21 @@ local function onAbilityCast(slot: unknown, primitive: unknown, cooldown: unknow
 end
 
 local function handleAction(actionName: string, inputState: Enum.UserInputState, _input: InputObject): Enum.ContextActionResult
+	if actionName == "MW_Boost" then
+		-- Boost maintenu : envoyé seulement au début et à la fin de l'appui.
+		if inputState == Enum.UserInputState.Begin then
+			Remotes.Get("RequestBoost"):FireServer(true)
+		elseif inputState == Enum.UserInputState.End or inputState == Enum.UserInputState.Cancel then
+			Remotes.Get("RequestBoost"):FireServer(false)
+		end
+		return Enum.ContextActionResult.Sink
+	end
+	if actionName == "MW_DigStrength" then
+		if inputState == Enum.UserInputState.Begin then
+			cycleDigStrength()
+		end
+		return Enum.ContextActionResult.Sink
+	end
 	if actionName == "MW_Dig" then
 		if inputState == Enum.UserInputState.Begin then
 			startDigging()
@@ -353,7 +413,9 @@ local function handleAction(actionName: string, inputState: Enum.UserInputState,
 		return Enum.ContextActionResult.Pass
 	end
 	if actionName == "MW_Bite" then
-		bite()
+		if player:GetAttribute("BuildMode") ~= true then
+			bite()
+		end
 	elseif actionName == "MW_E" then
 		useAbility("E")
 	elseif actionName == "MW_R" then
@@ -381,7 +443,8 @@ function AbilityController.Start()
 		if gameProcessed then
 			return
 		end
-		if input.UserInputType == Enum.UserInputType.MouseButton1 then
+		-- Mode construction du nid : le clic pose une pièce, il ne mord pas.
+		if input.UserInputType == Enum.UserInputType.MouseButton1 and player:GetAttribute("BuildMode") ~= true then
 			bite()
 		end
 	end)
@@ -391,6 +454,11 @@ function AbilityController.Start()
 	bindTouchFriendly("MW_R", "R", { Enum.KeyCode.R, Enum.KeyCode.ButtonY }, UDim2.new(1, -230, 1, -230))
 	bindTouchFriendly("MW_F", "F", { Enum.KeyCode.F, Enum.KeyCode.ButtonB }, UDim2.new(1, -110, 1, -230))
 	bindTouchFriendly("MW_Dig", "C", { Enum.KeyCode.C, Enum.KeyCode.ButtonL2 }, UDim2.new(1, -290, 1, -170))
+	-- DPadUp / (1,-350,1,-170) sont pris par "monter" (CharacterState, nage / vol).
+	-- Shift : le shift lock est désactivé (default.project.json), la touche sert au boost.
+	bindTouchFriendly("MW_Boost", "Boost", { Enum.KeyCode.LeftShift, Enum.KeyCode.DPadLeft }, UDim2.new(1, -350, 1, -230))
+	bindTouchFriendly("MW_DigStrength", "Force", { Enum.KeyCode.V, Enum.KeyCode.DPadRight }, UDim2.new(1, -290, 1, -230))
+	player:SetAttribute("DigStrength", digStrength)
 
 	Remotes.Get("AbilityCast").OnClientEvent:Connect(onAbilityCast)
 	player.CharacterRemoving:Connect(function()

@@ -206,7 +206,15 @@ local function survivalTick(player: Player, seasonInfo: SeasonConfig.SeasonInfo,
 
 	local inShelter = isPlayerSheltered(player, rootPart)
 	player:SetAttribute("InShelterOrColony", inShelter)
-	local targetTemp = if inShelter then math.max(GameConstants.SHELTER_TEMPERATURE, ambientTemp) else ambientTemp
+	local rainIntensity = if not inShelter and workspace:GetAttribute("Precipitation") == "Rain"
+		then math.clamp((workspace:GetAttribute("RainIntensity") :: number?) or 0.6, 0, 1)
+		else 0
+	if rainIntensity > 0 then
+		-- Sous la pluie à découvert : les gouttelettes réhydratent doucement l'insecte et rafraîchissent l'air.
+		thirst = math.clamp(thirst + 0.35 * rainIntensity * TICK_SECONDS, 0, 100)
+	end
+	local outdoorTemp = ambientTemp - 2.5 * rainIntensity
+	local targetTemp = if inShelter then math.max(GameConstants.SHELTER_TEMPERATURE, ambientTemp) else outdoorTemp
 	targetTemp += getWarmthBonus(player, rootPart)
 	local bodyTemp = (player:GetAttribute("BodyTemperature") :: number) or 20
 	local tempRate = if inShelter then TEMP_RATE_SHELTER else TEMP_RATE_OUTSIDE

@@ -9,6 +9,7 @@
 -- par TweenService (aucune boucle par frame), effets lointains ignorés, chiffres et surbrillances
 -- plafonnés. Aucun son : aucun asset importé.
 
+local CollectionService = game:GetService("CollectionService")
 local Debris = game:GetService("Debris")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -407,6 +408,167 @@ local function onWeb(web: unknown)
 	flash(part.Position, WHITE, 4, 0)
 end
 
+-- ============================================================
+-- Toiles d'araignée : tissage local (rayons + spirale) sur le volume serveur invisible
+-- ============================================================
+
+local SILK = Color3.fromRGB(242, 242, 248)
+local WEB_APPEAR_SECONDS = 0.6
+
+-- Fil de soie fin entre deux points (repère de la toile).
+local function thread(parent: Instance, a: Vector3, b: Vector3, width: number): Part
+	local delta = b - a
+	local part = Instance.new("Part")
+	part.Name = "Silk"
+	part.Anchored = true
+	part.CanCollide = false
+	part.CanQuery = false
+	part.CanTouch = false
+	part.CastShadow = false
+	part.Material = Enum.Material.SmoothPlastic
+	part.Color = SILK
+	part.Size = Vector3.new(width, width, math.max(delta.Magnitude, 0.01))
+	part.CFrame = CFrame.lookAt(a:Lerp(b, 0.5), b)
+	part.Transparency = 0.15
+	part.Parent = parent
+	return part
+end
+
+-- Toile orbiculaire : rayons irréguliers, spirale de capture (anneaux reliant les rayons), légère
+-- poche vers l'intérieur au centre. Déterministe (même toile pour tous) : graine = position.
+local function weaveWeb(web: BasePart)
+	if not fxFolder or not web:IsDescendantOf(workspace) then
+		return
+	end
+	local trap = web:GetAttribute("WebKind") ~= "Patch"
+	local radius = math.min(web.Size.X, web.Size.Z) * 0.5
+	local spokes = if trap then 11 else 7
+	local rings = if trap then 6 else 2
+	local width = math.clamp(radius * 0.012, 0.025, 0.08)
+	local seed = math.floor(web.Position.X * 7 + web.Position.Z * 13 + web.Position.Y * 3)
+	local rng = Random.new(seed)
+	local frame = web.CFrame
+	local model = Instance.new("Model")
+	model.Name = "SpiderWebVisual"
+
+	-- Angles et longueurs des rayons légèrement irréguliers (toile tissée, pas un dessin parfait).
+	local angles: { number } = {}
+	local reach: { number } = {}
+	for i = 1, spokes do
+		angles[i] = (i - 1) / spokes * math.pi * 2 + rng:NextNumber(-0.18, 0.18)
+		reach[i] = radius * rng:NextNumber(0.82, 1)
+	end
+	-- Point sur le rayon i à la fraction f, en monde (petite poche : le centre est un peu plus bas).
+	local function at(i: number, f: number): Vector3
+		local angle = angles[i]
+		local sag = (1 - f) * radius * 0.06
+		return frame * Vector3.new(math.cos(angle) * reach[i] * f, 0.05 - sag, math.sin(angle) * reach[i] * f)
+	end
+
+	local parts: { { Part: Part, Delay: number } } = {}
+	for i = 1, spokes do
+		local spoke = thread(model, at(i, 0), at(i, 1), width)
+		table.insert(parts, { Part = spoke, Delay = (i - 1) / spokes * 0.18 })
+	end
+	for r = 1, rings do
+		local f = 0.18 + (r - 1) / math.max(rings - 1, 1) * 0.8
+		for i = 1, spokes do
+			local j = i % spokes + 1
+			local wobble = rng:NextNumber(-0.03, 0.03)
+			local ring = thread(model, at(i, f + wobble), at(j, f - wobble), width * 0.8)
+			table.insert(parts, { Part = ring, Delay = 0.18 + (r - 1) / rings * 0.35 + (i - 1) / spokes * 0.06 })
+		end
+	end
+	-- Moyeu dense au centre.
+	local hub = thread(model, at(1, 0.06), at(math.floor(spokes / 2) + 1, 0.06), width * 2.2)
+	table.insert(parts, { Part = hub, Delay = 0 })
+	model.Parent = fxFolder
+
+	-- Toile qui vient d'être posée : elle se tisse sous les yeux (rayons puis spirale).
+	local born = web:GetAttribute("BornAt")
+	local fresh = type(born) == "number" and workspace:GetServerTimeNow() - born < WEB_APPEAR_SECONDS
+	if fresh and nearCamera(web.Position) then
+		for _, entry in ipairs(parts) do
+			entry.Part.Transparency = 1
+			tween(entry.Part, 0.18, { Transparency = 0.15 }, Enum.EasingStyle.Quad, entry.Delay)
+		end
+		flash(web.Position, WHITE, radius * 0.6, 0)
+	end
+
+	-- La toile serveur disparaît (durée, remplacement) : le tissage local aussi.
+	local connection: RBXScriptConnection? = nil
+	connection = web.AncestryChanged:Connect(function(_, parent)
+		if parent == nil then
+			if connection then
+				connection:Disconnect()
+			end
+			for _, entry in ipairs(parts) do
+				tween(entry.Part, 0.3, { Transparency = 1 })
+			end
+			Debris:AddItem(model, 0.35)
+		end
+	end)
+end
+
+-- Fil de soie lancé : petite boule de soie + fil tendu derrière elle depuis le lanceur.
+local function onSilk(from: unknown, to: unknown, travel: unknown, caster: unknown)
+	if typeof(from) ~= "Vector3" or typeof(to) ~= "Vector3" or typeof(travel) ~= "number" then
+		return
+	end
+	local startPosition = from :: Vector3
+	local endPosition = to :: Vector3
+	if not nearCamera(startPosition) and not nearCamera(endPosition) then
+		return
+	end
+	local seconds = math.clamp(travel :: number, 0.03, 2)
+	local blob = makePart(Enum.PartType.Ball, SILK, Vector3.one * 0.35, CFrame.new(startPosition), 0)
+	blob.Material = Enum.Material.SmoothPlastic
+	local tip = Instance.new("Attachment")
+	tip.Parent = blob
+
+	-- Le fil part de l'abdomen du lanceur s'il est visible, sinon du point de départ.
+	local origin: Attachment
+	local casterModel = asModel(caster)
+	local casterRoot = if casterModel then modelRoot(casterModel) else nil
+	local holder: BasePart? = nil
+	if casterRoot then
+		origin = Instance.new("Attachment")
+		origin.Parent = casterRoot
+	else
+		local fixed = makePart(Enum.PartType.Ball, SILK, Vector3.one * 0.05, CFrame.new(startPosition), 1)
+		holder = fixed
+		origin = Instance.new("Attachment")
+		origin.Parent = fixed
+	end
+	local strandBeam = Instance.new("Beam")
+	strandBeam.Attachment0 = origin
+	strandBeam.Attachment1 = tip
+	strandBeam.Width0 = 0.06
+	strandBeam.Width1 = 0.04
+	strandBeam.Color = ColorSequence.new(SILK)
+	strandBeam.Transparency = NumberSequence.new(0.1)
+	strandBeam.FaceCamera = true
+	strandBeam.Segments = 1
+	strandBeam.Parent = blob
+
+	tween(blob, seconds, { CFrame = CFrame.new(endPosition) }, Enum.EasingStyle.Linear)
+	task.delay(seconds, function()
+		flash(endPosition, SILK, 1.6, 0)
+		-- Le fil reste tendu un instant après l'impact puis s'efface.
+		tween(blob, 0.25, { Transparency = 1 })
+		task.delay(0.15, function()
+			strandBeam.Transparency = NumberSequence.new(0.6)
+		end)
+		task.delay(0.3, function()
+			blob:Destroy()
+			origin:Destroy()
+			if holder then
+				holder:Destroy()
+			end
+		end)
+	end)
+end
+
 local function endAura(model: Model, status: string)
 	local list = auras[model]
 	local aura = list and list[status]
@@ -545,6 +707,8 @@ local function dispatch(kind: unknown, a: unknown, b: unknown, c: unknown, d: un
 		onTelegraph(a, b, c, d)
 	elseif kind == "Web" then
 		onWeb(a)
+	elseif kind == "Silk" then
+		onSilk(a, b, c, d)
 	elseif kind == "Status" then
 		onStatus(a, b, c)
 	end
@@ -582,6 +746,18 @@ function CombatFxController.Start()
 		end
 	end)
 	AbilityController.LocalBite.Event:Connect(onLocalBite)
+
+	-- Toiles d'araignée (posées avant ou après notre arrivée) : tissées localement.
+	CollectionService:GetInstanceAddedSignal("SpiderWeb"):Connect(function(instance)
+		if instance:IsA("BasePart") then
+			weaveWeb(instance)
+		end
+	end)
+	for _, instance in ipairs(CollectionService:GetTagged("SpiderWeb")) do
+		if instance:IsA("BasePart") then
+			weaveWeb(instance)
+		end
+	end
 end
 
 return CombatFxController

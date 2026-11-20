@@ -2,3 +2,12 @@ build_check.rbxlx
 *.rbxlx
 *.rbxl
 graphify-out/
+.mcp.json
+.agentsroom/handoff-transcript-*.txt
+.agentsroom/handoff-summary-*.md
+.agentsroom/fork-context-*.txt
+.agentsroom/transfer-context-*.txt
+.agentsroom/handoff-context-*.txt
+.agents/mcp_config.json
+.agents/hooks.json
+.agents/agentsroom-hook.cmd

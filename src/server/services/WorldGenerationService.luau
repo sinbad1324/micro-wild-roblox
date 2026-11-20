@@ -316,7 +316,7 @@ end
 
 -- Sol : grande plaine herbeuse, remplie par dalles pour ne jamais demander un bloc géant d'un coup.
 local function generateGround(root: Folder)
-	local tiles = 3
+	local tiles = 5
 	local tileSize = MAP_SIZE / tiles
 	for ix = 0, tiles - 1 do
 		for iz = 0, tiles - 1 do
@@ -348,28 +348,67 @@ local function generateGround(root: Folder)
 	end
 end
 
--- Relief doux entre les biomes (GDD : le voyage doit rester intéressant). Positions choisies à
--- la main, loin de l'eau, des galeries, du spawn et du bord ouest (galerie 3D).
+-- Montagne praticable : empilement de calottes (herbe -> roche -> sommet) avec radius >= height
+-- pour rester 100% ancré dans le sol et compatible avec groundHeightAt().
+local function addMountain(x: number, z: number, radius: number, height: number, peakMaterial: Enum.Material?)
+	addHill(x, z, radius + 35, math.max(18, math.floor(height * 0.42)), Enum.Material.Grass)
+	addHill(x, z, radius + 12, math.max(28, math.floor(height * 0.72)), Enum.Material.Rock)
+	addHill(x, z, radius, height, peakMaterial or Enum.Material.Slate)
+end
+
+-- Relief doux entre les biomes + chaînes de montagnes en bordure (carte 4000x4000).
+-- Positions choisies loin de l'eau, des galeries, du spawn et du bord ouest (galerie 3D).
 local function generateRelief()
 	local grass = Enum.Material.Grass
-	-- x, z, rayon de la sphère, hauteur de la calotte
-	addHill(-250, 250, 80, 12, grass)
-	addHill(250, 250, 90, 14, grass)
-	addHill(-260, -230, 70, 10, grass)
-	addHill(0, 420, 85, 12, grass)
-	addHill(-30, -480, 80, 11, grass)
-	addHill(420, 60, 75, 10, grass)
-	addHill(-450, 20, 85, 13, grass)
-	addHill(600, -150, 70, 9, grass)
-	addHill(-150, 620, 70, 9, grass)
-	addHill(150, -620, 80, 10, grass)
-	addHill(-620, -200, 70, 9, grass)
-	addHill(640, 180, 60, 8, grass)
+	-- Collines douces entre les biomes et sur les plaines intermédiaires (x, z, rayon, hauteur)
+	addHill(-540, 480, 120, 20, grass)
+	addHill(540, 520, 130, 22, grass)
+	addHill(-580, -520, 115, 18, grass)
+	addHill(0, 880, 125, 22, grass)
+	addHill(-60, -960, 120, 20, grass)
+	addHill(880, 120, 120, 20, grass)
+	addHill(-900, 120, 125, 22, grass)
+	addHill(1460, -640, 110, 18, grass)
+	addHill(-360, 1460, 115, 18, grass)
+	addHill(360, -1460, 120, 20, grass)
+	addHill(-1500, -540, 110, 18, grass)
+	addHill(1520, 420, 105, 18, grass)
+	addHill(-760, 220, 120, 26, grass)
+	addHill(720, 260, 130, 28, grass)
+	addHill(440, -260, 110, 22, grass)
+	addHill(-420, -720, 110, 22, grass)
+	addHill(880, -860, 115, 21, grass)
+	addHill(-120, 560, 110, 20, grass)
+	addHill(620, 860, 115, 22, grass)
+	addHill(-1040, 380, 120, 24, grass)
+	addHill(240, -1200, 115, 22, grass)
+	addHill(-840, -1400, 110, 20, grass)
+
+	-- Massifs montagneux (bordures Nord, Est, Sud, Nord-Ouest) : pics jusqu'à 104 studs de haut.
+	-- Massif Est (alimente la Cascade vers (1320, -260))
+	addMountain(1570, -260, 145, 104, Enum.Material.Rock)
+	addMountain(1550, 60, 130, 84, Enum.Material.Slate)
+	addMountain(1530, -560, 125, 78, Enum.Material.Rock)
+	addMountain(1640, 340, 120, 74, Enum.Material.Slate)
+	-- Massif Nord
+	addMountain(60, -1620, 140, 96, Enum.Material.Slate)
+	addMountain(-240, -1660, 125, 80, Enum.Material.Rock)
+	addMountain(360, -1600, 130, 82, Enum.Material.Rock)
+	addMountain(-540, -1600, 115, 68, Enum.Material.Slate)
+	-- Massif Sud
+	addMountain(-60, 1620, 140, 94, Enum.Material.Slate)
+	addMountain(-380, 1650, 125, 78, Enum.Material.Rock)
+	addMountain(540, 1600, 130, 82, Enum.Material.Rock)
+	-- Massif Nord-Ouest (derrière la Souche, loin du passage Showcase)
+	addMountain(-1620, -1600, 130, 84, Enum.Material.Rock)
+
 	-- Cuvettes (les flaques de pluie s'y forment naturellement).
-	addDip(-120, 250, 70, 7)
-	addDip(330, -130, 70, 7)
-	addDip(-300, -620, 60, 6)
-	addDip(100, 150, 60, 6)
+	addDip(-280, 560, 85, 8)
+	addDip(760, -280, 85, 8)
+	addDip(-720, -1420, 75, 7)
+	addDip(220, 340, 75, 7)
+	addDip(-840, -180, 80, 8)
+	addDip(420, 820, 80, 8)
 end
 
 -- ============================================================
@@ -472,12 +511,12 @@ local function generateRockyCorner(root: Folder)
 		buildCairn(folder, site)
 	end
 
-	for i = 1, 40 do
+	for i = 1, 48 do
 		local x, z = randomInDisc(ROCKY_CORNER, 0, WorldLayout.ROCKS_RADIUS)
 		if nearFixedSite(x, z, 16) then
 			continue
 		end
-		local size = rng:NextInteger(4, 11)
+		local size = rng:NextInteger(4, 12)
 		-- S'enfonce légèrement dans le relief plutôt que de flotter dessus.
 		newPart(
 			folder,
@@ -488,6 +527,26 @@ local function generateRockyCorner(root: Folder)
 			Color3.fromRGB(108 + rng:NextInteger(0, 20), 100 + rng:NextInteger(0, 16), 90 + rng:NextInteger(0, 12)),
 			{ Shape = Enum.PartType.Ball }
 		)
+	end
+
+	-- Cactus / plantes grasses géantes : colonnes escaladables et perchoirs dans les Rochers Arides.
+	local cactusColor = Color3.fromRGB(72, 130, 62)
+	for _ = 1, 14 do
+		local x, z = randomInDisc(ROCKY_CORNER, 30, WorldLayout.ROCKS_RADIUS * 0.95)
+		if nearFixedSite(x, z, 18) then
+			continue
+		end
+		local h = rng:NextInteger(18, 34)
+		local baseY = groundHeightAt(x, z)
+		newCylinder(folder, "CactusTronc", Vector3.new(x, baseY - 1, z), h + 1, 3.6, Enum.Material.Grass, cactusColor)
+		for side = -1, 1, 2 do
+			if rng:NextNumber() < 0.7 then
+				local armY = baseY + h * rng:NextNumber(0.4, 0.7)
+				local armLen = rng:NextInteger(6, 11)
+				newPart(folder, "CactusBras", Vector3.new(armLen, 2.6, 2.6), CFrame.new(x + side * (1.8 + armLen / 2), armY, z), Enum.Material.Grass, cactusColor)
+				newCylinder(folder, "CactusBrasHaut", Vector3.new(x + side * (1.8 + armLen - 1.2), armY, z), rng:NextInteger(7, 13), 2.5, Enum.Material.Grass, cactusColor)
+			end
+		end
 	end
 end
 
@@ -507,7 +566,8 @@ local function generatePond(root: Folder)
 	local pondMinZ, pondMaxZ = POND_CENTER.Z - pondHalf.Z, POND_CENTER.Z + pondHalf.Z
 	local basinBottom = WATER_TOP - WorldLayout.POND_DEPTH
 
-	-- Un bassin = une boîte d'eau non tournée. La mare d'abord, puis chaque tronçon du ruisseau.
+	-- Un bassin = une boîte d'eau non tournée. La mare d'abord, puis chaque tronçon du ruisseau,
+	-- l'étang de la prairie, le bassin de la cascade et la rivière de l'Est.
 	type Basin = { Name: string, Box: WorldLayout.Box, Depth: number, Bank: number, Floor: Enum.Material }
 	local basins: { Basin } = {
 		{
@@ -518,6 +578,23 @@ local function generatePond(root: Folder)
 			Floor = Enum.Material.Mud,
 		},
 	}
+
+	local function addLakeBasin(name: string, center: Vector3, size: Vector3, depth: number, floor: Enum.Material)
+		local half = size / 2
+		table.insert(basins, {
+			Name = name,
+			Box = { MinX = center.X - half.X, MaxX = center.X + half.X, MinZ = center.Z - half.Z, MaxZ = center.Z + half.Z },
+			Depth = depth,
+			Bank = pondBank,
+			Floor = floor,
+		})
+	end
+
+	addLakeBasin("PondZone_EtangPrairie", WorldLayout.PRAIRIE_POND_CENTER, WorldLayout.PRAIRIE_POND_SIZE, WorldLayout.PRAIRIE_POND_DEPTH, Enum.Material.Mud)
+	addLakeBasin("PondZone_BassinCascade", WorldLayout.WATERFALL_POOL_CENTER, WorldLayout.WATERFALL_POOL_SIZE, WorldLayout.WATERFALL_POOL_DEPTH, Enum.Material.Sand)
+	addLakeBasin("PondZone_OasisSud", WorldLayout.SOUTH_OASIS_CENTER, WorldLayout.SOUTH_OASIS_SIZE, WorldLayout.SOUTH_OASIS_DEPTH, Enum.Material.Sand)
+	addLakeBasin("PondZone_BassinOuest", WorldLayout.WEST_POND_CENTER, WorldLayout.WEST_POND_SIZE, WorldLayout.WEST_POND_DEPTH, Enum.Material.Mud)
+
 	for i, segment in ipairs(WorldLayout.STREAM_SEGMENTS) do
 		table.insert(basins, {
 			Name = "PondZone_Ruisseau" .. i,
@@ -527,26 +604,51 @@ local function generatePond(root: Folder)
 			Floor = Enum.Material.Sand,
 		})
 	end
+	for i, segment in ipairs(WorldLayout.PRAIRIE_STREAM_SEGMENTS) do
+		table.insert(basins, {
+			Name = "PondZone_RuisseauPrairie" .. i,
+			Box = segment,
+			Depth = WorldLayout.STREAM_DEPTH,
+			Bank = WorldLayout.STREAM_BANK_WIDTH,
+			Floor = Enum.Material.Sand,
+		})
+	end
+	for i, segment in ipairs(WorldLayout.EAST_RIVER_SEGMENTS) do
+		table.insert(basins, {
+			Name = "PondZone_RiviereEst" .. i,
+			Box = segment,
+			Depth = WorldLayout.STREAM_DEPTH,
+			Bank = WorldLayout.STREAM_BANK_WIDTH,
+			Floor = Enum.Material.Sand,
+		})
+	end
 
-	-- Quatre passes sur TOUS les bassins (et pas bassin par bassin) : là où deux boîtes se
+	-- Cinq passes sur TOUS les bassins (et pas bassin par bassin) : là où deux boîtes se
 	-- chevauchent (coudes du ruisseau, embouchure), l'eau doit toujours être écrite en dernier.
-	-- 1) Air au-dessus du niveau d'eau, empreinte élargie d'une berge : ça dessine la rive.
+	-- 1) Air au-dessus du niveau d'eau (jusqu'à GROUND_TOP_Y + 48 pour dégager d'éventuelles collines).
 	for _, basin in ipairs(basins) do
 		local box, bank = basin.Box, basin.Bank
-		fillBox(box.MinX - bank, box.MaxX + bank, WATER_TOP, GROUND_TOP_Y, box.MinZ - bank, box.MaxZ + bank, Enum.Material.Air)
+		fillBox(box.MinX - bank, box.MaxX + bank, WATER_TOP, GROUND_TOP_Y + 48, box.MinZ - bank, box.MaxZ + bank, Enum.Material.Air)
 	end
 	-- 2) Berge de sable au niveau de l'eau.
 	for _, basin in ipairs(basins) do
 		local box, bank = basin.Box, basin.Bank
 		fillBox(box.MinX - bank, box.MaxX + bank, WATER_TOP - 4, WATER_TOP, box.MinZ - bank, box.MaxZ + bank, Enum.Material.Sand)
 	end
-	-- 3) Fond (vase de la mare, sable du ruisseau), juste sous l'eau.
+	-- 3) Creusement du lit en Air : efface le sable de l'étape 2 et l'herbe du sol avant de poser l'eau
+	--    (sinon FillBlock(Water) ne remplace pas les voxels solides déjà pleins).
+	for _, basin in ipairs(basins) do
+		local box = basin.Box
+		local bottom = WATER_TOP - basin.Depth
+		fillBox(box.MinX, box.MaxX, bottom, WATER_TOP, box.MinZ, box.MaxZ, Enum.Material.Air)
+	end
+	-- 4) Fond (vase de la mare, sable du ruisseau), juste sous l'eau.
 	for _, basin in ipairs(basins) do
 		local box = basin.Box
 		local bottom = WATER_TOP - basin.Depth
 		fillBox(box.MinX, box.MaxX, bottom - 4, bottom, box.MinZ, box.MaxZ, basin.Floor)
 	end
-	-- 4) Eau, posée directement sur le fond non creusé : jamais d'eau en lévitation.
+	-- 5) Eau, posée dans le lit creusé : pleine jusqu'à WATER_TOP.
 	for _, basin in ipairs(basins) do
 		local box = basin.Box
 		fillBox(box.MinX, box.MaxX, WATER_TOP - basin.Depth, WATER_TOP, box.MinZ, box.MaxZ, Enum.Material.Water)
@@ -586,25 +688,81 @@ local function generatePond(root: Folder)
 		)
 	end
 
-	-- Rampes du ruisseau : une de chaque côté, au milieu de chaque tronçon. Le lit forme une
-	-- tranchée de 8 studs ; personne ne doit y rester coincé.
+	-- Rampes des ruisseaux et rivières : une de chaque côté, au milieu de chaque tronçon. Le lit
+	-- forme une tranchée de 8 studs ; personne ne doit y rester coincé.
 	local streamBank = WorldLayout.STREAM_BANK_WIDTH
-	for _, segment in ipairs(WorldLayout.STREAM_SEGMENTS) do
-		local midX = (segment.MinX + segment.MaxX) / 2
-		local midZ = (segment.MinZ + segment.MaxZ) / 2
-		local alongX = (segment.MaxX - segment.MinX) > (segment.MaxZ - segment.MinZ)
-		for _, side in ipairs({ -1, 1 }) do
-			if alongX then
-				local edge = (if side > 0 then segment.MaxZ else segment.MinZ) + side * streamBank
-				carveRamp(terrain, Vector3.new(midX, GROUND_TOP_Y, edge + side * 16), Vector3.new(midX, WATER_TOP, edge - side), 12, 10)
-			else
-				local edge = (if side > 0 then segment.MaxX else segment.MinX) + side * streamBank
-				carveRamp(terrain, Vector3.new(edge + side * 16, GROUND_TOP_Y, midZ), Vector3.new(edge - side, WATER_TOP, midZ), 12, 10)
+	local allStreams = {
+		WorldLayout.STREAM_SEGMENTS,
+		WorldLayout.PRAIRIE_STREAM_SEGMENTS,
+		WorldLayout.EAST_RIVER_SEGMENTS,
+	}
+	for _, streamList in ipairs(allStreams) do
+		for _, segment in ipairs(streamList) do
+			local midX = (segment.MinX + segment.MaxX) / 2
+			local midZ = (segment.MinZ + segment.MaxZ) / 2
+			local alongX = (segment.MaxX - segment.MinX) > (segment.MaxZ - segment.MinZ)
+			for _, side in ipairs({ -1, 1 }) do
+				if alongX then
+					local edge = (if side > 0 then segment.MaxZ else segment.MinZ) + side * streamBank
+					carveRamp(terrain, Vector3.new(midX, GROUND_TOP_Y, edge + side * 16), Vector3.new(midX, WATER_TOP, edge - side), 12, 10)
+				else
+					local edge = (if side > 0 then segment.MaxX else segment.MinX) + side * streamBank
+					carveRamp(terrain, Vector3.new(edge + side * 16, GROUND_TOP_Y, midZ), Vector3.new(edge - side, WATER_TOP, midZ), 12, 10)
+				end
 			end
+			-- Rien n'est semé dans la tranchée ni sur ses rampes.
+			blockBox(segment.MinX - 26, segment.MaxX + 26, segment.MinZ - 26, segment.MaxZ + 26)
 		end
-		-- Rien n'est semé dans la tranchée ni sur ses rampes.
-		blockBox(segment.MinX - 26, segment.MaxX + 26, segment.MinZ - 26, segment.MaxZ + 26)
 	end
+
+	-- Rampes d'accès + blocage pour l'Étang de la Prairie, le Bassin de la Cascade, l'Oasis Sud et le Bassin Ouest.
+	for _, lake in ipairs({
+		{ Center = WorldLayout.PRAIRIE_POND_CENTER, Size = WorldLayout.PRAIRIE_POND_SIZE },
+		{ Center = WorldLayout.WATERFALL_POOL_CENTER, Size = WorldLayout.WATERFALL_POOL_SIZE },
+		{ Center = WorldLayout.SOUTH_OASIS_CENTER, Size = WorldLayout.SOUTH_OASIS_SIZE },
+		{ Center = WorldLayout.WEST_POND_CENTER, Size = WorldLayout.WEST_POND_SIZE },
+	}) do
+		local half = lake.Size / 2
+		local minX, maxX = lake.Center.X - half.X, lake.Center.X + half.X
+		local minZ, maxZ = lake.Center.Z - half.Z, lake.Center.Z + half.Z
+		local sEdge = maxZ + pondBank
+		local nEdge = minZ - pondBank
+		carveRamp(terrain, Vector3.new(lake.Center.X, GROUND_TOP_Y, sEdge + 16), Vector3.new(lake.Center.X, WATER_TOP, sEdge - 1), 16, 12)
+		carveRamp(terrain, Vector3.new(lake.Center.X, GROUND_TOP_Y, nEdge - 16), Vector3.new(lake.Center.X, WATER_TOP, nEdge + 1), 16, 12)
+		blockBox(minX - pondBank - 18, maxX + pondBank + 18, minZ - pondBank - 22, maxZ + pondBank + 22)
+	end
+
+	-- Cascade visuelle dévalant le massif montagneux Est jusque dans le Bassin de la Cascade.
+	do
+		local top = WorldLayout.WATERFALL_ORIGIN
+		local poolEdge = Vector3.new(WorldLayout.WATERFALL_POOL_CENTER.X + WorldLayout.WATERFALL_POOL_SIZE.X / 2 - 4, WATER_TOP, WorldLayout.WATERFALL_POOL_CENTER.Z)
+		local length = (poolEdge - top).Magnitude
+		local fallPart = newPart(
+			zonesFolder, "CascadeEau", Vector3.new(18, 2, length),
+			CFrame.lookAt(top:Lerp(poolEdge, 0.5), poolEdge),
+			Enum.Material.Glass, Color3.fromRGB(115, 195, 240),
+			{ CanCollide = false, CanQuery = false, CanTouch = false, Transparency = 0.25 }
+		)
+		fallPart.Reflectance = 0.25
+		-- Écume/brume en bas de la cascade.
+		local mistAnchor = newPart(
+			zonesFolder, "CascadeEcume", Vector3.new(18, 2, 10),
+			CFrame.new(poolEdge + Vector3.new(0, 1, 0)),
+			Enum.Material.SmoothPlastic, Color3.new(1, 1, 1),
+			{ CanCollide = false, CanQuery = false, CanTouch = false, Transparency = 1 }
+		)
+		local mist = Instance.new("ParticleEmitter")
+		mist.Name = "Mist"
+		mist.Rate = 28
+		mist.Lifetime = NumberRange.new(1.2, 2.0)
+		mist.Speed = NumberRange.new(4, 9)
+		mist.SpreadAngle = Vector2.new(45, 45)
+		mist.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 2.5), NumberSequenceKeypoint.new(1, 7) })
+		mist.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.35), NumberSequenceKeypoint.new(1, 1) })
+		mist.Color = ColorSequence.new(Color3.fromRGB(225, 245, 255))
+		mist.Parent = mistAnchor
+	end
+
 	-- Mare + berges + rampes + terrier du Crabe (creusé par AnimalService dans la berge est).
 	blockBox(pondMinX - pondBank - 6, pondMaxX + pondBank + 44, pondMinZ - pondBank - 22, pondMaxZ + pondBank + 22)
 
@@ -751,6 +909,43 @@ local function generatePondDecor(root: Folder)
 		end
 		breathe()
 	end
+
+	-- Décor pour l'Étang de la Prairie (nénuphars, roseaux, galets) et le Bassin de la Cascade (galets).
+	do
+		local pCenter = WorldLayout.PRAIRIE_POND_CENTER
+		local pHalf = WorldLayout.PRAIRIE_POND_SIZE / 2
+		for i = 1, 9 do
+			local x = pCenter.X + rng:NextNumber(-pHalf.X + 10, pHalf.X - 10)
+			local z = pCenter.Z + rng:NextNumber(-pHalf.Z + 10, pHalf.Z - 10)
+			local diameter = rng:NextInteger(9, 14)
+			newCylinder(folder, "Nenuphar", Vector3.new(x, WATER_TOP - 0.15, z), 0.4, diameter, Enum.Material.Grass, Color3.fromRGB(65, 145, 75))
+			if i % 3 == 0 then
+				newPart(folder, "FleurNenuphar", Vector3.new(2.4, 2.4, 2.4), CFrame.new(x, WATER_TOP + 1.3, z), Enum.Material.Neon, Color3.fromRGB(255, 190, 220), { Shape = Enum.PartType.Ball, CanCollide = false })
+				spawnFoodNode(foodFolder, Vector3.new(x + 2.2, WATER_TOP + 1.1, z), "Nectar", Color3.fromRGB(240, 190, 40))
+			end
+		end
+		for _ = 1, 18 do
+			local angle = rng:NextNumber() * math.pi * 2
+			local x = pCenter.X + math.cos(angle) * (pHalf.X + rng:NextNumber(-2, 4))
+			local z = pCenter.Z + math.sin(angle) * (pHalf.Z + rng:NextNumber(-2, 4))
+			if math.abs(x - pCenter.X) > 12 then
+				local h = rng:NextInteger(12, 22)
+				newCylinder(folder, "Roseau", Vector3.new(x, WATER_TOP - 3, z), h + 3, 0.75, Enum.Material.Grass, Color3.fromRGB(100, 150, 75)).CastShadow = false
+			end
+		end
+
+		local wCenter = WorldLayout.WATERFALL_POOL_CENTER
+		local wHalf = WorldLayout.WATERFALL_POOL_SIZE / 2
+		for _ = 1, 16 do
+			local side = if rng:NextNumber() < 0.5 then -1 else 1
+			local x = wCenter.X + rng:NextNumber(-wHalf.X + 4, wHalf.X - 4)
+			local z = wCenter.Z + side * (wHalf.Z + rng:NextNumber(1, 5))
+			if math.abs(x - wCenter.X) > 12 then
+				local size = rng:NextNumber(2.5, 6)
+				newPart(folder, "Galet", Vector3.new(size, size, size), CFrame.new(x, WATER_TOP + size * 0.25, z), Enum.Material.Pebble, Color3.fromRGB(120, 125, 125), { Shape = Enum.PartType.Ball }).CastShadow = false
+			end
+		end
+	end
 end
 
 -- ============================================================
@@ -787,8 +982,8 @@ local function generateGrandChene(root: Folder)
 	local function addFoliage(center: Vector3, size: number)
 		leafCount += 1
 		-- Solide et escaladable comme le reste de l'arbre (sinon WallClimbController "accroche"
-		-- dessus sans vrai support physique). Nom "FeuillageN" : recoloré par SeasonVisualService.
-		newPart(
+		-- dessus sans vrai support physique). Tag "SeasonalLeaf" : recoloré par SeasonVisualService.
+		local leaf = newPart(
 			model,
 			"Feuillage" .. leafCount,
 			Vector3.new(size, size, size),
@@ -797,6 +992,7 @@ local function generateGrandChene(root: Folder)
 			Color3.fromRGB(50 + rng:NextInteger(0, 40), 110 + rng:NextInteger(0, 50), 40 + rng:NextInteger(0, 30)),
 			{ Shape = Enum.PartType.Ball }
 		)
+		CollectionService:AddTag(leaf, "SeasonalLeaf")
 	end
 
 	-- Branches sur 4 étages. Parts "BrancheN" construites le long de Z, pointe côté -Z :
@@ -937,6 +1133,48 @@ end
 -- "La Prairie Fleurie"
 -- ============================================================
 
+-- Fleur style BLOCK : tige carrée, feuille carrée, corolle en croix de blocs et cœur cubique.
+local function buildBlockFlower(
+	folder: Instance,
+	foodFolder: Folder,
+	groundPos: Vector3,
+	stemHeight: number,
+	petalColor: Color3,
+	scale: number,
+	withFood: boolean,
+	foodType: FoodData.FoodTypeId?
+)
+	local stemW = 1.1 * scale
+	local x, y, z = groundPos.X, groundPos.Y, groundPos.Z
+	-- Tige en bloc
+	newPart(
+		folder, "FleurTige", Vector3.new(stemW, stemHeight + 1, stemW),
+		CFrame.new(x, y + stemHeight / 2 - 0.5, z),
+		Enum.Material.Grass, Color3.fromRGB(68, 138, 56)
+	)
+	-- Feuille latérale en bloc (palier d'escalade)
+	newPart(
+		folder, "FleurFeuille", Vector3.new(3.6 * scale, 0.7 * scale, 2.2 * scale),
+		CFrame.new(x + 2.0 * scale, y + stemHeight * 0.48, z),
+		Enum.Material.Grass, Color3.fromRGB(82, 156, 65)
+	)
+	-- Corolle en croix de 2 blocs croisés + cœur cubique
+	local headY = y + stemHeight + 0.4 * scale
+	local petalLen = 6.2 * scale
+	local petalThick = 1.0 * scale
+	local petalW = 2.4 * scale
+	newPart(folder, "FleurPetale", Vector3.new(petalLen, petalThick, petalW), CFrame.new(x, headY, z), Enum.Material.SmoothPlastic, petalColor)
+	newPart(folder, "FleurPetale", Vector3.new(petalW, petalThick, petalLen), CFrame.new(x, headY, z), Enum.Material.SmoothPlastic, petalColor)
+	newPart(
+		folder, "FleurBouton", Vector3.one * (2.6 * scale),
+		CFrame.new(x, headY + 0.5 * scale, z),
+		Enum.Material.Neon, Color3.fromRGB(255, 215, 55)
+	)
+	if withFood then
+		spawnFoodNode(foodFolder, Vector3.new(x, headY + 2.0 * scale, z), foodType or "Nectar", Color3.fromRGB(250, 210, 60))
+	end
+end
+
 -- Herbes/fleurs solides et escaladables (GDD : "hautes herbes géantes") : en CanCollide=false
 -- elles agiraient comme des surfaces fantômes pour WallClimbController.
 local function generatePrairieFleurie(root: Folder)
@@ -947,15 +1185,16 @@ local function generatePrairieFleurie(root: Folder)
 	local radius = WorldLayout.PRAIRIE_RADIUS
 	local foodFolder = getFoodFolder(root)
 
-	for _ = 1, 300 do
+	for _ = 1, 420 do
 		local x, z = randomInDisc(PRAIRIE_CENTER, 0, radius)
+		local groundY = groundHeightAt(x, z)
 		local height = rng:NextInteger(20, 48)
-		local width = 0.6 + rng:NextNumber() * 0.8
+		local width = 0.7 + rng:NextNumber() * 0.8
 		newPart(
 			folder,
 			"HerbeHaute",
 			Vector3.new(width, height, width),
-			CFrame.new(x, GROUND_TOP_Y + height / 2 - 1, z)
+			CFrame.new(x, groundY + height / 2 - 1, z)
 				* CFrame.Angles(0, math.rad(rng:NextInteger(0, 359)), math.rad(rng:NextInteger(-7, 7))),
 			Enum.Material.Grass,
 			Color3.fromRGB(60 + rng:NextInteger(0, 40), 120 + rng:NextInteger(0, 60), 40 + rng:NextInteger(0, 30))
@@ -964,28 +1203,44 @@ local function generatePrairieFleurie(root: Folder)
 	end
 
 	local flowerColors = {
-		Color3.fromRGB(230, 60, 90),
-		Color3.fromRGB(250, 210, 40),
-		Color3.fromRGB(180, 80, 230),
+		Color3.fromRGB(235, 65, 95),
+		Color3.fromRGB(250, 215, 45),
+		Color3.fromRGB(185, 85, 235),
 		Color3.fromRGB(250, 250, 250),
-		Color3.fromRGB(255, 140, 60),
+		Color3.fromRGB(255, 145, 65),
+		Color3.fromRGB(105, 170, 255),
+		Color3.fromRGB(255, 130, 195),
 	}
-	for _ = 1, 40 do
+	-- Immense tapis de 260 fleurs style block + nectar/pollen.
+	for i = 1, 260 do
 		local x, z = randomInDisc(PRAIRIE_CENTER, 0, radius)
-		local stemHeight = rng:NextInteger(20, 38)
-		local base = Vector3.new(x, GROUND_TOP_Y, z)
-		newCylinder(folder, "FleurTige", base, stemHeight, 1, Enum.Material.Grass, Color3.fromRGB(70, 130, 60))
-		-- Feuille à mi-hauteur : un palier pour se reposer pendant l'escalade.
-		newCylinder(folder, "FleurFeuille", base + Vector3.new(2.5, stemHeight * 0.5, 0), 0.5, 7, Enum.Material.Grass, Color3.fromRGB(80, 150, 65))
-		newPart(
-			folder,
-			"FleurBouton",
-			Vector3.new(5, 5, 5),
-			CFrame.new(x, GROUND_TOP_Y + stemHeight + 1.5, z),
-			Enum.Material.Neon,
-			flowerColors[rng:NextInteger(1, #flowerColors)],
-			{ Shape = Enum.PartType.Ball }
+		local groundY = groundHeightAt(x, z)
+		local stemHeight = rng:NextInteger(16, 36)
+		local petalColor = flowerColors[rng:NextInteger(1, #flowerColors)]
+		buildBlockFlower(
+			folder, foodFolder, Vector3.new(x, groundY, z), stemHeight, petalColor,
+			rng:NextNumber(0.85, 1.35), i % 8 == 0, if i % 16 == 0 then "Pollen" else "Nectar"
 		)
+		breathe()
+	end
+
+	-- 24 Tournesols géants style BLOCK escaladables.
+	for i = 1, 24 do
+		local x, z = randomInDisc(PRAIRIE_CENTER, 20, radius * 0.92)
+		local groundY = groundHeightAt(x, z)
+		local stemHeight = rng:NextInteger(42, 64)
+		newPart(folder, "TournesolTige", Vector3.new(2.4, stemHeight + 1, 2.4), CFrame.new(x, groundY + stemHeight / 2 - 0.5, z), Enum.Material.Grass, Color3.fromRGB(62, 130, 48))
+		newPart(folder, "TournesolFeuille", Vector3.new(7, 1.0, 4), CFrame.new(x + 4.2, groundY + stemHeight * 0.45, z), Enum.Material.Grass, Color3.fromRGB(75, 148, 55))
+		newPart(folder, "TournesolFeuille", Vector3.new(6.5, 1.0, 3.8), CFrame.new(x - 4.0, groundY + stemHeight * 0.72, z), Enum.Material.Grass, Color3.fromRGB(75, 148, 55))
+		local topY = groundY + stemHeight
+		local yellow = Color3.fromRGB(250, 205, 35)
+		newPart(folder, "TournesolPetale", Vector3.new(13, 1.2, 5.5), CFrame.new(x, topY, z), Enum.Material.SmoothPlastic, yellow)
+		newPart(folder, "TournesolPetale", Vector3.new(5.5, 1.2, 13), CFrame.new(x, topY, z), Enum.Material.SmoothPlastic, yellow)
+		newPart(folder, "TournesolPetale", Vector3.new(10.5, 1.1, 10.5), CFrame.new(x, topY - 0.2, z) * CFrame.Angles(0, math.rad(45), 0), Enum.Material.SmoothPlastic, Color3.fromRGB(240, 185, 30))
+		newPart(folder, "TournesolCoeur", Vector3.new(5.6, 1.8, 5.6), CFrame.new(x, topY + 0.6, z), Enum.Material.Ground, Color3.fromRGB(75, 48, 25))
+		if i % 3 == 0 then
+			spawnFoodNode(foodFolder, Vector3.new(x, topY + 2.2, z), "Pollen", Color3.fromRGB(250, 220, 80))
+		end
 		breathe()
 	end
 
@@ -1176,24 +1431,81 @@ local function buildHollowLog(folder: Instance, center: Vector3, direction: Vect
 	blockCircle(center.X - direction.X * reach * 0.5, center.Z - direction.Z * reach * 0.5, reach * 0.5 + 6)
 end
 
+-- Grotte / Arche rocheuse : abri d'hiver et plafond escaladable à 360° loin de la Souche.
+local function buildMountainCave(folder: Instance, center: Vector3, yawDeg: number)
+	local baseY = groundHeightAt(center.X, center.Z)
+	local cf = CFrame.new(center.X, baseY, center.Z) * CFrame.Angles(0, math.rad(yawDeg), 0)
+	local rockColor = Color3.fromRGB(96, 92, 88)
+	newPart(folder, "ArchePilierG", Vector3.new(6, 16, 18), cf * CFrame.new(-10, 7, 0), Enum.Material.Rock, rockColor)
+	newPart(folder, "ArchePilierD", Vector3.new(6, 16, 18), cf * CFrame.new(10, 7, 0), Enum.Material.Rock, rockColor)
+	newPart(folder, "ArcheVoute", Vector3.new(26, 5, 18), cf * CFrame.new(0, 16, 0), Enum.Material.Slate, Color3.fromRGB(82, 80, 78))
+	shelterMarker(folder, "ArcheAbri", (cf * CFrame.new(0, 1, 0)).Position)
+
+	local glow = newPart(
+		folder, "ChampignonLumineux", Vector3.new(1.8, 1.8, 1.8),
+		cf * CFrame.new(-6, 1.5, 0), Enum.Material.Neon, Color3.fromRGB(120, 225, 205),
+		{ Shape = Enum.PartType.Ball, CanCollide = false }
+	)
+	local light = Instance.new("PointLight")
+	light.Color = glow.Color
+	light.Range = 20
+	light.Brightness = 1.2
+	light.Shadows = false
+	light.Parent = glow
+	blockCircle(center.X, center.Z, 16)
+end
+
 local function generateLandmarks(root: Folder)
 	local folder = Instance.new("Folder")
 	folder.Name = "Decor"
 	folder.Parent = root
 
-	local trenchWidth = 16 + WorldLayout.STREAM_BANK_WIDTH * 2
+	local trenchWidth = 24 + WorldLayout.STREAM_BANK_WIDTH * 2
+	local foodFolder = getFoodFolder(root)
 
-	-- Grande bûche creuse entre la Souche, la Prairie et le Chêne : abri à mi-chemin.
-	buildHollowLog(folder, Vector3.new(-250, GROUND_TOP_Y, 40), Vector3.new(math.cos(math.rad(15)), 0, math.sin(math.rad(15))), 110)
+	-- Grandes bûches creuses : abris intermédiaires entre les biomes.
+	buildHollowLog(folder, Vector3.new(-460, GROUND_TOP_Y, 90), Vector3.new(math.cos(math.rad(15)), 0, math.sin(math.rad(15))), 120)
+	buildHollowLog(folder, Vector3.new(-520, GROUND_TOP_Y, -380), Vector3.new(math.cos(math.rad(-35)), 0, math.sin(math.rad(-35))), 100)
+	buildHollowLog(folder, Vector3.new(520, GROUND_TOP_Y, 380), Vector3.new(math.cos(math.rad(50)), 0, math.sin(math.rad(50))), 100)
 
-	-- Ponts de bois mort en travers du ruisseau (hors des rampes, au milieu des tronçons).
+	-- Grottes / arches rocheuses (abris stratégiques aux pieds des montagnes et plaines).
+	buildMountainCave(folder, Vector3.new(60, GROUND_TOP_Y, -1400), 0)
+	buildMountainCave(folder, Vector3.new(1340, GROUND_TOP_Y, 60), 90)
+	buildMountainCave(folder, Vector3.new(-60, GROUND_TOP_Y, 1400), 180)
+
+	-- Clairière des Champignons Géants (Sud-Ouest du Chêne) : plateformes d'escalade à étages + abris.
+	local shroomGlade = Vector3.new(-440, GROUND_TOP_Y, 240)
+	for i = 1, 10 do
+		local angle = (i / 10) * math.pi * 2
+		local r = if i % 2 == 0 then 32 else 54
+		local sx = shroomGlade.X + math.cos(angle) * r
+		local sz = shroomGlade.Z + math.sin(angle) * r
+		if isFree(sx, sz, 10) then
+			local sy = groundHeightAt(sx, sz)
+			local h = rng:NextInteger(18, 34)
+			local cap = rng:NextInteger(18, 28)
+			local capColor = if i % 2 == 0 then Color3.fromRGB(195, 65, 50) else Color3.fromRGB(145, 110, 185)
+			local stem = newCylinder(folder, "ChampignonGeantPied", Vector3.new(sx, sy - 1, sz), h + 1, 5, Enum.Material.SmoothPlastic, Color3.fromRGB(235, 228, 212))
+			newCylinder(folder, "ChampignonGeantChapeau", Vector3.new(sx, sy + h, sz), 3, cap, Enum.Material.SmoothPlastic, capColor)
+			newCylinder(folder, "ChampignonGeantChapeau", Vector3.new(sx, sy + h + 3, sz), 2.2, cap * 0.62, Enum.Material.SmoothPlastic, capColor)
+			tagShelter(stem)
+			spawnFoodNode(foodFolder, Vector3.new(sx + 4, sy + 1.2, sz), "Champignon", Color3.fromRGB(220, 200, 170))
+		end
+	end
+
+	-- Ponts de bois mort en travers des ruisseaux et rivières (hors des rampes, au milieu des tronçons).
 	-- x, z = centre du pont ; alongZ = le tronc est couché le long de Z (tronçon orienté X).
 	local bridges = {
-		{ X = 290, Z = -500, AlongZ = true },
-		{ X = 248, Z = -450, AlongZ = false },
-		{ X = 208, Z = -332, AlongZ = true },
-		{ X = 88, Z = -216, AlongZ = false },
-		{ X = -44, Z = -180, AlongZ = true },
+		{ X = 740, Z = -1200, AlongZ = true },
+		{ X = 632, Z = -1050, AlongZ = false },
+		{ X = 510, Z = -692, AlongZ = true },
+		{ X = 212, Z = -360, AlongZ = false },
+		{ X = -40, Z = -232, AlongZ = true },
+		-- Ruisseau de la Prairie & Rivière de l'Est
+		{ X = -450, Z = 760, AlongZ = true },
+		{ X = -392, Z = 640, AlongZ = false },
+		{ X = 1320, Z = -420, AlongZ = false },
+		{ X = 1200, Z = -760, AlongZ = false },
 	}
 	for _, bridge in ipairs(bridges) do
 		newPart(
@@ -1296,6 +1608,186 @@ local function generateLandmarks(root: Folder)
 				Enum.Material.Grass, Color3.fromRGB(70 + rng:NextInteger(0, 30), 130 + rng:NextInteger(0, 40), 50),
 				{ CanCollide = false, CanQuery = false, CanTouch = false }
 			).CastShadow = false
+		end
+		breathe()
+	end
+end
+
+-- ============================================================
+-- Immenses Forêts style BLOCK & Flore sauvage style BLOCK
+-- ============================================================
+
+local function buildBlockTree(folder: Instance, foodFolder: Folder, base: Vector3, style: string, scale: number)
+	local baseHeight = if style == "Geant" then 78 elseif style == "Sapin" then 66 else 48
+	local trunkHeight = math.round(baseHeight * scale)
+	local trunkW = (if style == "Geant" then 8.5 elseif style == "Sapin" then 5.5 else 6.2) * scale
+	local barkColor = if style == "Bouleau"
+		then Color3.fromRGB(222, 218, 208)
+		elseif style == "Sapin" then Color3.fromRGB(60, 42, 30)
+		else Color3.fromRGB(84, 58, 38)
+
+	local x, y, z = base.X, base.Y, base.Z
+	-- Tronc carré massif + empattement en blocs au sol (enfoncé de 3 studs pour les pentes).
+	newPart(
+		folder, "ArbreTronc_" .. style, Vector3.new(trunkW, trunkHeight + 3, trunkW),
+		CFrame.new(x, y + (trunkHeight - 3) / 2, z),
+		Enum.Material.Wood, barkColor
+	)
+	newPart(
+		folder, "ArbreRacines_" .. style, Vector3.new(trunkW * 1.7, 5 * scale, trunkW * 1.7),
+		CFrame.new(x, y + 1.5 * scale, z),
+		Enum.Material.Wood, barkColor
+	)
+	blockCircle(x, z, trunkW * 0.9 + 3)
+
+	if style == "Sapin" then
+		-- Conifère style BLOCK en 4 étages carrés décroissants (persistant en hiver).
+		local tiers = 4
+		for t = 1, tiers do
+			local frac = (t - 1) / (tiers - 1)
+			local tierY = y + trunkHeight * (0.36 + 0.62 * frac)
+			local w = (30 - t * 5.2) * scale
+			local h = (11 - t * 1.2) * scale
+			local leaf = newPart(
+				folder, "FeuillageSapin", Vector3.new(w, h, w),
+				CFrame.new(x, tierY, z),
+				Enum.Material.Grass, Color3.fromRGB(34, 84 + t * 8, 42)
+			)
+			CollectionService:AddTag(leaf, "EvergreenLeaf")
+		end
+		return
+	end
+
+	-- Feuillus style BLOCK (Chêne, Bouleau, Cerisier, Géant) : blocs cubiques étagés + tag "SeasonalLeaf".
+	local baseLeafColor = if style == "Cerisier"
+		then Color3.fromRGB(242, 155, 195)
+		elseif style == "Bouleau" then Color3.fromRGB(115, 178, 72)
+		elseif style == "Geant" then Color3.fromRGB(52, 118, 44)
+		else Color3.fromRGB(68, 136, 52)
+
+	local topY = y + trunkHeight
+	local layers = if style == "Geant"
+		then {
+			{ Ox = 0, Oy = -4, Oz = 0, S = Vector3.new(38, 12, 38) },
+			{ Ox = 10, Oy = 6, Oz = -8, S = Vector3.new(26, 11, 26) },
+			{ Ox = -10, Oy = 7, Oz = 8, S = Vector3.new(24, 11, 24) },
+			{ Ox = 0, Oy = 15, Oz = 0, S = Vector3.new(20, 9, 20) },
+		}
+		else {
+			{ Ox = 0, Oy = -2, Oz = 0, S = Vector3.new(26, 10, 26) },
+			{ Ox = 6, Oy = 6, Oz = 4, S = Vector3.new(18, 8, 18) },
+			{ Ox = -5, Oy = 7, Oz = -4, S = Vector3.new(16, 8, 16) },
+			{ Ox = 0, Oy = 13, Oz = 0, S = Vector3.new(12, 6, 12) },
+		}
+
+	for _, layer in ipairs(layers) do
+		local leaf = newPart(
+			folder, "Feuillage_" .. style, layer.S * scale,
+			CFrame.new(x + layer.Ox * scale, topY + layer.Oy * scale, z + layer.Oz * scale),
+			Enum.Material.Grass, baseLeafColor
+		)
+		CollectionService:AddTag(leaf, "SeasonalLeaf")
+		if style == "Cerisier" then
+			leaf:SetAttribute("SpringColor", "Blossom")
+		end
+	end
+
+	if (style == "Chene" or style == "Geant") and rng:NextNumber() < 0.35 then
+		spawnFoodNode(foodFolder, Vector3.new(x + rng:NextNumber(-9, 9), y + 1.5, z + rng:NextNumber(-9, 9)), "Fruit", Color3.fromRGB(220, 60, 50))
+	end
+end
+
+local function generateSecondaryTrees(root: Folder)
+	local folder = Instance.new("Folder")
+	folder.Name = "Bosquets"
+	folder.Parent = root
+	local foodFolder = getFoodFolder(root)
+
+	local function plantForest(center: Vector3, minR: number, maxR: number, count: number, styles: { string }, minScale: number, maxScale: number)
+		for i = 1, count do
+			local spot = pickSpot(center, minR, maxR, 18)
+			if spot and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS * 0.95 then
+				local style = styles[(i - 1) % #styles + 1]
+				buildBlockTree(folder, foodFolder, spot, style, rng:NextNumber(minScale, maxScale))
+			end
+			breathe()
+		end
+	end
+
+	-- 1) Immense Forêt du Nord & du Centre (entre le Chêne, la Souche et la Mare)
+	plantForest(Vector3.new(0, GROUND_TOP_Y, -680), 40, 520, 48, { "Chene", "Geant", "Bouleau", "Cerisier" }, 0.9, 1.35)
+	-- 2) Grande Forêt de l'Ouest (entre la Souche, le Bassin Ouest et la Clairière aux Champignons)
+	plantForest(Vector3.new(-820, GROUND_TOP_Y, 40), 40, 480, 42, { "Chene", "Bouleau", "Geant", "Chene" }, 0.85, 1.3)
+	-- 3) Forêt de l'Est & des Plaines centrales (entre le Chêne, le Bassin Cascade et les Rochers)
+	plantForest(Vector3.new(680, GROUND_TOP_Y, 120), 40, 460, 38, { "Chene", "Cerisier", "Bouleau", "Geant" }, 0.85, 1.25)
+	-- 4) Forêt de Conifères sur les hauteurs et piémonts des massifs Nord, Est et Sud
+	local mountainZones = {
+		Vector3.new(60, GROUND_TOP_Y, -1380),
+		Vector3.new(-260, GROUND_TOP_Y, -1400),
+		Vector3.new(380, GROUND_TOP_Y, -1360),
+		Vector3.new(1340, GROUND_TOP_Y, 60),
+		Vector3.new(1320, GROUND_TOP_Y, -540),
+		Vector3.new(-60, GROUND_TOP_Y, 1380),
+		Vector3.new(-380, GROUND_TOP_Y, 1400),
+		Vector3.new(540, GROUND_TOP_Y, 1360),
+	}
+	for _, zoneCenter in ipairs(mountainZones) do
+		plantForest(zoneCenter, 15, 180, 5, { "Sapin" }, 0.95, 1.45)
+	end
+end
+
+local function generateWildFlora(root: Folder)
+	local folder = Instance.new("Folder")
+	folder.Name = "FloreSauvage"
+	folder.Parent = root
+	local foodFolder = getFoodFolder(root)
+	local mapCenter = Vector3.new(0, GROUND_TOP_Y, 0)
+
+	local wildColors = {
+		Color3.fromRGB(245, 245, 250),
+		Color3.fromRGB(240, 195, 50),
+		Color3.fromRGB(220, 85, 120),
+		Color3.fromRGB(130, 150, 245),
+		Color3.fromRGB(190, 110, 230),
+		Color3.fromRGB(255, 145, 70),
+	}
+
+	-- 220 Fleurs sauvages style BLOCK disséminées dans les forêts, clairières et bords d'eau.
+	for i = 1, 220 do
+		local spot = pickSpot(mapCenter, 45, MAP_HALF - 40, 4)
+		if spot
+			and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS * 0.85
+			and (spot - STUMP_CENTER).Magnitude > 100
+			and (spot - PRAIRIE_CENTER).Magnitude > WorldLayout.PRAIRIE_RADIUS * 0.9
+		then
+			local stemH = rng:NextInteger(14, 28)
+			local pColor = wildColors[rng:NextInteger(1, #wildColors)]
+			buildBlockFlower(folder, foodFolder, spot, stemH, pColor, rng:NextNumber(0.8, 1.25), i % 9 == 0, "Nectar")
+		end
+		breathe()
+	end
+
+	-- 65 Buissons style BLOCK escaladables (abris bas + relief végétal en forêt).
+	for i = 1, 65 do
+		local spot = pickSpot(mapCenter, 55, MAP_HALF - 40, 8)
+		if spot and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS * 0.9 then
+			local w = rng:NextNumber(9, 15)
+			local h = rng:NextNumber(7, 11)
+			local bushColor = Color3.fromRGB(52 + rng:NextInteger(0, 26), 116 + rng:NextInteger(0, 34), 45)
+			local bush = newPart(
+				folder, "Buisson", Vector3.new(w, h, w),
+				CFrame.new(spot + Vector3.new(0, h * 0.42, 0)),
+				Enum.Material.Grass, bushColor
+			)
+			newPart(
+				folder, "BuissonHaut", Vector3.new(w * 0.65, h * 0.55, w * 0.65),
+				CFrame.new(spot + Vector3.new(0, h * 0.95, 0)),
+				Enum.Material.Grass, bushColor
+			)
+			CollectionService:AddTag(bush, "SeasonalLeaf")
+			if i % 4 == 0 then
+				tagShelter(bush)
+			end
 		end
 		breathe()
 	end
@@ -1410,6 +1902,8 @@ function WorldGenerationService.Start()
 	-- sans jamais risquer de casser le contrat déjà posé ci-dessus.
 	generatePondDecor(root)
 	generatePrairieFleurie(root)
+	generateSecondaryTrees(root)
+	generateWildFlora(root)
 	generateLandmarks(root)
 	generateFoodNodes(root)
 

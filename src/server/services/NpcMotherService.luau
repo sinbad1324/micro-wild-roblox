@@ -389,6 +389,7 @@ onDeath = function(m: Mother, model: Model)
 		if not last or now - last >= GameConstants.NPC_MOTHER_RESPAWN_SECONDS * 3 then
 			perNest[m.NestId] = now
 			ProgressionService.AddEvolutionPoints(killer, GameConstants.KILL_EVOLUTION_POINTS)
+			ProgressionService.AddExperience(killer, 90)
 			notify(killer, "Vous avez vaincu " .. m.DisplayName .. " !", "info")
 		else
 			notify(killer, m.DisplayName .. " vaincue (pas de PE : déjà récompensé récemment).", "info")

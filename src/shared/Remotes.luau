@@ -8,17 +8,20 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 export type RemoteEventName =
 	-- Intentions client -> serveur
-	"RequestUseAbility" -- (slot: "E" | "R")
+	"RequestUseAbility" -- (slot: "E" | "R", aim: Vector3?)
+	| "RequestWebLine" -- (anchor: Vector3?): fil de balancier des araignées (nil = lâché), visuel serveur
+	| "RequestNestBuild" -- ("Place", pieceId: string, cframe: CFrame) | ("Remove", piece: Model): mode construction
 	| "RequestLeftClickBite" -- ()
 	| "RequestGrab" -- ()
 	| "RequestGrabEscape" -- (): QTE mash pendant qu'on est agrippé
-	| "RequestDig" -- (targetPosition: Vector3)
+	| "RequestDig" -- (targetPosition: Vector3, strength: number 1..3)
+	| "RequestBoost" -- (active: boolean): boost de vitesse maintenu (marche, vol, nage)
 	| "RequestCreateNest" -- ()
 	| "RequestJoinNest" -- (motherUserId: number)
 	| "RequestLeaveNest" -- ()
 	| "RequestSelectSpecies" -- (speciesId: string)
 	| "RequestSpawnAsMother" -- (speciesId: string): naître adulte à 100% et fonder sa colonie
-	| "AdminCommand" -- (command: "Grow" | "Adult" | "Fill", amount: number?): tests, admins seulement
+	| "AdminCommand" -- (command: "Grow" | "Adult" | "Fill" | "NextSeason", amount: number?): tests, admins seulement
 	-- Diffusions serveur -> client
 	| "NestListChanged" -- ({ NestSummary })
 	| "AbilityFeedback" -- (success: boolean, reason: string?)
@@ -33,7 +36,8 @@ export type RemoteEventName =
 	--   "Flash"  (position: Vector3, color: Color3, size: number)
 	--   "Cone"   (origin: Vector3, lookTimesRange: Vector3, color: Color3)
 	--   "Tele"   (caster: Model, primitive: "Lunge" | "Leap", lookTimesRange | landing: Vector3, windupSeconds: number)
-	--   "Web"    (web: BasePart)
+	--   "Web"    (web: BasePart)  -- obsolète : les toiles sont tissées via le tag "SpiderWeb"
+	--   "Silk"   (from: Vector3, to: Vector3, travelSeconds: number, caster: Model?): fil de soie lancé
 	--   "Status" (victim: Model, status: string, duration: number)
 	| "CombatFx"
 
@@ -47,6 +51,9 @@ Remotes.EventNames = {
 	"RequestGrab",
 	"RequestGrabEscape",
 	"RequestDig",
+	"RequestBoost",
+	"RequestWebLine",
+	"RequestNestBuild",
 	"RequestCreateNest",
 	"RequestJoinNest",
 	"RequestLeaveNest",

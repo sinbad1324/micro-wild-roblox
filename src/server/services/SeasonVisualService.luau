@@ -31,9 +31,8 @@ local MAP_HALF = WorldLayout.MAP_HALF - 10 -- marge : rien n'est semé au ras du
 local TREE_POSITION = WorldLayout.TREE_POSITION
 -- Au-dessus de la couronne du Chêne : départ des raycasts vers le sol.
 local SKY_HEIGHT = WorldLayout.TRUNK_HEIGHT + 80
--- La carte est 9x plus vaste qu'à l'origine (500 -> 1500 de côté) : on sème 4x plus d'effets
--- (pas 9x : le nombre de parts doit rester raisonnable sur mobile).
-local SCATTER_SCALE = 4
+-- La carte est immense (4000x4000) : on augmente l'échelle de semis tout en gardant un budget mobile raisonnable.
+local SCATTER_SCALE = 12
 -- Transition de saison : interpolation par pas grossiers (0.5 s) au lieu de tweens serveur à
 -- 60 Hz sur tout le feuillage du Chêne.
 local TRANSITION_SECONDS = 16
@@ -175,26 +174,59 @@ local function getOrCreate(className: string, name: string, parent: Instance): I
 	return instance
 end
 
-local function applyLook(look: SeasonLook, token: number)
+local function applyLook(look: SeasonLook, season: string, token: number)
 	local terrain = workspace.Terrain
 	local groundTarget = look.Grass:Lerp(Color3.fromRGB(110, 85, 60), 0.6)
+	local leafyTarget = if season == "Automne"
+		then Color3.fromRGB(185, 105, 45)
+		elseif season == "Hiver" then Color3.fromRGB(220, 230, 240)
+		else look.Grass:Lerp(Color3.fromRGB(80, 120, 45), 0.35)
 	local grassFrom = terrain:GetMaterialColor(Enum.Material.Grass)
 	local groundFrom = terrain:GetMaterialColor(Enum.Material.Ground)
+	local leafyFrom = terrain:GetMaterialColor(Enum.Material.LeafyGrass)
 
 	local leaves: { BasePart } = {}
 	local fromColors: { Color3 } = {}
 	local toColors: { Color3 } = {}
 	local fromTransparency: { number } = {}
+	local seenLeaves: { [Instance]: boolean } = {}
+
+	local autumnPalette = {
+		look.Leaves,
+		Color3.fromRGB(225, 90, 40),
+		Color3.fromRGB(230, 165, 45),
+		Color3.fromRGB(190, 65, 35),
+	}
+
+	local function registerLeaf(part: BasePart, indexSeed: number)
+		if seenLeaves[part] then
+			return
+		end
+		seenLeaves[part] = true
+		local variation = (indexSeed % 5) * 6
+		local targetColor = look.Leaves
+		if season == "Printemps" and part:GetAttribute("SpringColor") == "Blossom" then
+			targetColor = Color3.fromRGB(245, 160, 195)
+		elseif season == "Automne" then
+			targetColor = autumnPalette[(indexSeed % #autumnPalette) + 1]
+		end
+		table.insert(leaves, part)
+		table.insert(fromColors, part.Color)
+		table.insert(toColors, targetColor:Lerp(Color3.new(1, 1, 1), variation / 255))
+		table.insert(fromTransparency, part.Transparency)
+	end
+
+	for idx, tagged in ipairs(CollectionService:GetTagged("SeasonalLeaf")) do
+		if tagged:IsA("BasePart") then
+			registerLeaf(tagged, idx)
+		end
+	end
 	local generated = workspace:FindFirstChild("GeneratedWorld")
 	local tree = generated and generated:FindFirstChild("GrandChene")
 	if tree then
-		for _, part in ipairs(tree:GetChildren()) do
+		for idx, part in ipairs(tree:GetChildren()) do
 			if part:IsA("BasePart") and string.sub(part.Name, 1, 9) == "Feuillage" then
-				local variation = (string.byte(part.Name, -1) or 0) % 5 * 6
-				table.insert(leaves, part)
-				table.insert(fromColors, part.Color)
-				table.insert(toColors, look.Leaves:Lerp(Color3.new(1, 1, 1), variation / 255))
-				table.insert(fromTransparency, part.Transparency)
+				registerLeaf(part, (string.byte(part.Name, -1) or idx))
 			end
 		end
 	end
@@ -202,9 +234,11 @@ local function applyLook(look: SeasonLook, token: number)
 	-- Même boucle à 2 Hz que le feuillage (pas de tween serveur à 60 Hz répliqué à chaque image).
 	local correction = getOrCreate("ColorCorrectionEffect", "SeasonTint", Lighting) :: ColorCorrectionEffect
 	local atmosphere = getOrCreate("Atmosphere", "SeasonAtmosphere", Lighting) :: Atmosphere
-	atmosphere.Density = 0.3
+	atmosphere.Density = if season == "Hiver" then 0.36 else 0.3
 	local tintFrom, saturationFrom = correction.TintColor, correction.Saturation
-	local atmosphereFrom, hazeFrom = atmosphere.Color, atmosphere.Haze
+	local savedDayAtmo = atmosphere:GetAttribute("DayColor")
+	local atmosphereFrom = if typeof(savedDayAtmo) == "Color3" then savedDayAtmo else atmosphere.Color
+	local hazeFrom = atmosphere.Haze
 
 	task.spawn(function()
 		local steps = math.floor(TRANSITION_SECONDS / TRANSITION_STEP)
@@ -216,9 +250,12 @@ local function applyLook(look: SeasonLook, token: number)
 			local alpha = step / steps
 			terrain:SetMaterialColor(Enum.Material.Grass, grassFrom:Lerp(look.Grass, alpha))
 			terrain:SetMaterialColor(Enum.Material.Ground, groundFrom:Lerp(groundTarget, alpha))
+			terrain:SetMaterialColor(Enum.Material.LeafyGrass, leafyFrom:Lerp(leafyTarget, alpha))
 			correction.TintColor = tintFrom:Lerp(look.Tint, alpha)
 			correction.Saturation = saturationFrom + (look.Saturation - saturationFrom) * alpha
-			atmosphere.Color = atmosphereFrom:Lerp(look.AtmosphereColor, alpha)
+			local dayAtmoColor = atmosphereFrom:Lerp(look.AtmosphereColor, alpha)
+			atmosphere:SetAttribute("DayColor", dayAtmoColor)
+			atmosphere.Color = dayAtmoColor
 			atmosphere.Haze = hazeFrom + (look.Haze - hazeFrom) * alpha
 			for i, leaf in ipairs(leaves) do
 				if leaf.Parent then
@@ -322,10 +359,27 @@ local function spawnSeasonalFlowers(count: number)
 end
 
 -- ============================================================
--- Printemps : "bombes d'eau"
+-- Pluie : "bombes d'eau" (gouttes géantes à l'échelle d'un insecte)
 -- ============================================================
 
+local function countDewDrops(): number
+	local drops = 0
+	for _, child in ipairs(getFolder():GetChildren()) do
+		if child.Name == "GoutteDeRosee" then
+			drops += 1
+		end
+	end
+	return drops
+end
+
 local function dropWaterBomb()
+	if workspace:GetAttribute("Precipitation") ~= "Rain" then
+		return
+	end
+	local rainIntensity = (workspace:GetAttribute("RainIntensity") :: number?) or 0
+	if rainIntensity < 0.2 then
+		return
+	end
 	local candidates = Players:GetPlayers()
 	if #candidates == 0 then
 		return
@@ -349,6 +403,10 @@ local function dropWaterBomb()
 		end
 		drop:Destroy()
 		local ok, err = pcall(function()
+			-- Une goutte géante qui s'écrase peut laisser une goutte d'eau potable au sol.
+			if hit and hit.Material ~= Enum.Material.Water and not isPondPosition(ground, 4) and rng:NextNumber() < 0.4 and countDewDrops() < 50 * SCATTER_SCALE then
+				spawnDrinkDrop(ground, false)
+			end
 			for _, other in ipairs(Players:GetPlayers()) do
 				local otherRoot = other.Character and other.Character:FindFirstChild("HumanoidRootPart") :: BasePart?
 				if otherRoot and (otherRoot.Position - ground).Magnitude <= 7 and other.Character and not isImpactImmune(other) then
@@ -481,6 +539,363 @@ local function freezePond()
 	end
 end
 
+local function spawnSnowDrifts(count: number)
+	for _ = 1, count do
+		local x, z = randomMapPoint()
+		local hit = surfaceBelow(x, z)
+		if hit and hit.Instance == workspace.Terrain and hit.Material ~= Enum.Material.Water and not isPondPosition(hit.Position, 5) then
+			local w = rng:NextNumber(8, 18)
+			local drift = anchoredPart(
+				"Congere", Vector3.new(w, rng:NextNumber(2.2, 4.5), w * rng:NextNumber(0.7, 1.1)),
+				CFrame.new(hit.Position + Vector3.new(0, 0.8, 0)) * CFrame.Angles(0, rng:NextNumber() * math.pi * 2, 0),
+				Color3.fromRGB(238, 244, 252), Enum.Material.Snow, 0, true
+			)
+			drift.Shape = Enum.PartType.Ball
+		end
+	end
+end
+
+local function spawnSummerBlooms(count: number)
+	for _ = 1, count do
+		local x, z = randomMapPoint()
+		local hit = surfaceBelow(x, z)
+		if hit and hit.Instance == workspace.Terrain and hit.Material ~= Enum.Material.Water and not isPondPosition(hit.Position, 6) then
+			local base = hit.Position
+			anchoredPart("TigeFleurEte", Vector3.new(0.7, 7, 0.7), CFrame.new(base + Vector3.new(0, 3.5, 0)), Color3.fromRGB(85, 145, 50), Enum.Material.Grass)
+			local head = anchoredPart("FleurSoleil", Vector3.new(4.2, 1.2, 4.2), CFrame.new(base + Vector3.new(0, 7.2, 0)), Color3.fromRGB(255, 200, 35), Enum.Material.SmoothPlastic)
+			head.Shape = Enum.PartType.Cylinder
+			head.CFrame = CFrame.new(base + Vector3.new(0, 7.2, 0)) * CFrame.Angles(0, 0, math.rad(90))
+			local heart = anchoredPart("FoodNode_Pollen", Vector3.one * 1.5, CFrame.new(base + Vector3.new(0, 7.9, 0)), Color3.fromRGB(250, 220, 70), Enum.Material.Neon)
+			heart.Shape = Enum.PartType.Ball
+			heart:SetAttribute("FoodType", "Pollen")
+			heart:SetAttribute("Uses", 3)
+			heart:SetAttribute("NoRespawn", true)
+			CollectionService:AddTag(heart, "FoodNode")
+		end
+	end
+end
+
+-- ============================================================
+-- Vent dynamique & rafales (actif toute l'année, plus fort en Automne et Hiver)
+-- ============================================================
+
+type WindProfile = {
+	ForceMin: number,
+	ForceMax: number,
+	GustThreshold: number,
+	CalmMin: number,
+	CalmMax: number,
+	DurationMin: number,
+	DurationMax: number,
+}
+
+local MAX_WIND_SPEED = 34
+
+local WIND_PROFILES: { [string]: WindProfile } = {
+	Printemps = {
+		ForceMin = 4.5,
+		ForceMax = 22,
+		GustThreshold = 15.5,
+		CalmMin = 8,
+		CalmMax = 24,
+		DurationMin = 4,
+		DurationMax = 13,
+	},
+	Ete = {
+		ForceMin = 3.5,
+		ForceMax = 17,
+		GustThreshold = 13,
+		CalmMin = 12,
+		CalmMax = 30,
+		DurationMin = 3.5,
+		DurationMax = 10,
+	},
+	Automne = {
+		ForceMin = 7,
+		ForceMax = 34,
+		GustThreshold = 19,
+		CalmMin = 5,
+		CalmMax = 16,
+		DurationMin = 5,
+		DurationMax = 16,
+	},
+	Hiver = {
+		ForceMin = 6,
+		ForceMax = 28,
+		GustThreshold = 17.5,
+		CalmMin = 7,
+		CalmMax = 20,
+		DurationMin = 4.5,
+		DurationMax = 14,
+	},
+}
+
+local function setGlobalWind(vec: Vector3, gustThreshold: number)
+	local horizSpeed = Vector3.new(vec.X, 0, vec.Z).Magnitude
+	local strength = math.clamp(horizSpeed / MAX_WIND_SPEED, 0, 1)
+	local isGust = horizSpeed >= gustThreshold
+	workspace:SetAttribute("WindVector", vec)
+	workspace:SetAttribute("WindStrength", strength)
+	workspace:SetAttribute("WindGust", isGust)
+	pcall(function()
+		-- L'herbe 3D du Terrain Roblox s'incline proportionnellement à la force exacte du vent.
+		workspace.GlobalWind = vec * (1.2 + strength * 0.7)
+	end)
+end
+
+local function rampWind(token: number, from: Vector3, to: Vector3, steps: number, stepDelay: number, gustThreshold: number): boolean
+	for k = 1, steps do
+		task.wait(stepDelay)
+		if seasonToken ~= token then
+			return false
+		end
+		local alpha = k / steps
+		setGlobalWind(from:Lerp(to, alpha), gustThreshold)
+	end
+	return true
+end
+
+local function startWindCycle(token: number, season: string)
+	local profile = WIND_PROFILES[season] or WIND_PROFILES.Printemps
+	local currentAngle = rng:NextNumber() * math.pi * 2
+	-- Le vent n'est pas constant : on démarre au calme puis chaque épisode tire aléatoirement
+	-- son attente (CalmMin..CalmMax), sa durée (DurationMin..DurationMax) et sa force (ForceMin..ForceMax).
+	setGlobalWind(Vector3.zero, profile.GustThreshold)
+
+	task.spawn(function()
+		local firstCycle = true
+		while seasonToken == token do
+			local calmDuration = if firstCycle
+				then rng:NextNumber(3.5, 9)
+				else rng:NextNumber(profile.CalmMin, profile.CalmMax)
+			firstCycle = false
+
+			task.wait(calmDuration)
+			if seasonToken ~= token then
+				return
+			end
+
+			-- Force X aléatoire sur tout le spectre de la saison (de la petite brise à la grosse bourrasque).
+			local targetSpeed = rng:NextNumber(profile.ForceMin, profile.ForceMax)
+			local isStrong = targetSpeed >= profile.GustThreshold
+			currentAngle = (currentAngle + rng:NextNumber(-1.25, 1.25)) % (math.pi * 2)
+			local verticalLift = if isStrong
+				then rng:NextNumber(-0.9, 1.5) * (targetSpeed / MAX_WIND_SPEED)
+				else 0
+			local target = Vector3.new(math.cos(currentAngle) * targetSpeed, verticalLift, math.sin(currentAngle) * targetSpeed)
+
+			-- 1) Montée progressive jusqu'à la force X tirée
+			local rampUpSteps = if isStrong then 5 else 7
+			if not rampWind(token, Vector3.zero, target, rampUpSteps, 0.3, profile.GustThreshold) then
+				return
+			end
+
+			-- 2) Durée X aléatoire du vent, avec une légère respiration autour de la force tirée
+			local blowDuration = rng:NextNumber(profile.DurationMin, profile.DurationMax)
+			task.wait(blowDuration * 0.5)
+			if seasonToken ~= token then
+				return
+			end
+			local swayAngle = currentAngle + rng:NextNumber(-0.3, 0.3)
+			local swaySpeed = math.clamp(targetSpeed * rng:NextNumber(0.88, 1.12), profile.ForceMin, profile.ForceMax)
+			local swayTarget = Vector3.new(math.cos(swayAngle) * swaySpeed, verticalLift * 0.8, math.sin(swayAngle) * swaySpeed)
+			if not rampWind(token, target, swayTarget, 3, 0.25, profile.GustThreshold) then
+				return
+			end
+			task.wait(blowDuration * 0.5)
+			if seasonToken ~= token then
+				return
+			end
+
+			-- 3) Retombée progressive jusqu'au calme plat (0)
+			local rampDownSteps = if isStrong then 6 else 8
+			if not rampWind(token, swayTarget, Vector3.zero, rampDownSteps, 0.3, profile.GustThreshold) then
+				return
+			end
+			setGlobalWind(Vector3.zero, profile.GustThreshold)
+		end
+	end)
+end
+
+-- ============================================================
+-- Pluie dynamique & averses (bruine, averse, déluge / orage)
+-- ============================================================
+
+type RainProfile = {
+	StartImmediately: boolean,
+	IntensityMin: number,
+	IntensityMax: number,
+	HeavyThreshold: number,
+	CalmMin: number,
+	CalmMax: number,
+	DurationMin: number,
+	DurationMax: number,
+}
+
+local RAIN_PROFILES: { [string]: RainProfile } = {
+	Printemps = {
+		StartImmediately = true,
+		IntensityMin = 0.42,
+		IntensityMax = 1.0,
+		HeavyThreshold = 0.72,
+		CalmMin = 7,
+		CalmMax = 18,
+		DurationMin = 16,
+		DurationMax = 34,
+	},
+	Ete = {
+		StartImmediately = false,
+		IntensityMin = 0.30,
+		IntensityMax = 0.78,
+		HeavyThreshold = 0.62,
+		CalmMin = 24,
+		CalmMax = 48,
+		DurationMin = 8,
+		DurationMax = 16,
+	},
+	Automne = {
+		StartImmediately = true,
+		IntensityMin = 0.38,
+		IntensityMax = 0.95,
+		HeavyThreshold = 0.68,
+		CalmMin = 9,
+		CalmMax = 22,
+		DurationMin = 14,
+		DurationMax = 30,
+	},
+}
+
+local rainOverrideMode: string? = nil -- nil = cycle auto, "Averse", "Deluge", "Sec"
+local rainToken = 0
+
+local function setGlobalRain(intensity: number, heavyThreshold: number, season: string)
+	local clamped = math.clamp(intensity, 0, 1)
+	local isRaining = clamped > 0.02
+	local isHeavy = clamped >= heavyThreshold
+	if isRaining then
+		workspace:SetAttribute("Precipitation", "Rain")
+	else
+		workspace:SetAttribute("Precipitation", if season == "Hiver" then "Snow" else "None")
+	end
+	workspace:SetAttribute("RainIntensity", clamped)
+	workspace:SetAttribute("RainHeavy", isHeavy)
+end
+
+local function rampRain(myRainToken: number, from: number, to: number, steps: number, stepDelay: number, heavyThreshold: number, season: string): boolean
+	for k = 1, steps do
+		task.wait(stepDelay)
+		if rainToken ~= myRainToken or rainOverrideMode ~= nil then
+			return false
+		end
+		local alpha = k / steps
+		setGlobalRain(from + (to - from) * alpha, heavyThreshold, season)
+	end
+	return true
+end
+
+local function startRainCycle(season: string)
+	rainToken += 1
+	local myRainToken = rainToken
+
+	if rainOverrideMode == "Averse" then
+		setGlobalRain(0.65, 0.72, season)
+		return
+	elseif rainOverrideMode == "Deluge" then
+		setGlobalRain(1.0, 0.72, season)
+		return
+	elseif rainOverrideMode == "Sec" then
+		setGlobalRain(0, 0.72, season)
+		return
+	end
+
+	local profile = RAIN_PROFILES[season]
+	if not profile then
+		-- Hiver : neige par défaut, pas de pluie automatique.
+		setGlobalRain(0, 0.72, season)
+		return
+	end
+
+	task.spawn(function()
+		local firstEpisode = true
+		while rainToken == myRainToken and rainOverrideMode == nil do
+			if not (firstEpisode and profile.StartImmediately) then
+				local calmDuration = if firstEpisode
+					then rng:NextNumber(8, 16)
+					else rng:NextNumber(profile.CalmMin, profile.CalmMax)
+				setGlobalRain(0, profile.HeavyThreshold, season)
+				task.wait(calmDuration)
+				if rainToken ~= myRainToken or rainOverrideMode ~= nil then
+					return
+				end
+			end
+
+			local targetIntensity = if firstEpisode and profile.StartImmediately
+				then rng:NextNumber(math.max(0.62, profile.IntensityMin), profile.IntensityMax)
+				else rng:NextNumber(profile.IntensityMin, profile.IntensityMax)
+			local isHeavy = targetIntensity >= profile.HeavyThreshold
+
+			if firstEpisode and profile.StartImmediately then
+				-- Démarre directement sous la pluie dès l'entrée dans la saison pour un impact visuel immédiat.
+				setGlobalRain(targetIntensity, profile.HeavyThreshold, season)
+			else
+				local rampUpSteps = if isHeavy then 5 else 7
+				if not rampRain(myRainToken, 0, targetIntensity, rampUpSteps, 0.35, profile.HeavyThreshold, season) then
+					return
+				end
+			end
+			firstEpisode = false
+
+			local rainDuration = rng:NextNumber(profile.DurationMin, profile.DurationMax)
+			task.wait(rainDuration * 0.5)
+			if rainToken ~= myRainToken or rainOverrideMode ~= nil then
+				return
+			end
+
+			local pulseIntensity = math.clamp(targetIntensity * rng:NextNumber(0.85, 1.18), profile.IntensityMin, profile.IntensityMax)
+			if not rampRain(myRainToken, targetIntensity, pulseIntensity, 4, 0.3, profile.HeavyThreshold, season) then
+				return
+			end
+
+			task.wait(rainDuration * 0.5)
+			if rainToken ~= myRainToken or rainOverrideMode ~= nil then
+				return
+			end
+
+			local rampDownSteps = if isHeavy then 6 else 8
+			if not rampRain(myRainToken, pulseIntensity, 0, rampDownSteps, 0.35, profile.HeavyThreshold, season) then
+				return
+			end
+			setGlobalRain(0, profile.HeavyThreshold, season)
+		end
+	end)
+end
+
+function SeasonVisualService.CycleRainOverride(): string
+	local currentIntensity = (workspace:GetAttribute("RainIntensity") :: number?) or 0
+	if rainOverrideMode == nil then
+		rainOverrideMode = if currentIntensity >= 0.5 then "Deluge" else "Averse"
+	elseif rainOverrideMode == "Averse" then
+		rainOverrideMode = "Deluge"
+	elseif rainOverrideMode == "Deluge" then
+		rainOverrideMode = "Sec"
+	else
+		rainOverrideMode = nil
+	end
+
+	local season = if currentSeason ~= "" then currentSeason else ((workspace:GetAttribute("CurrentSeason") :: string?) or "Printemps")
+	startRainCycle(season)
+
+	if rainOverrideMode == "Averse" then
+		return "🌧️ Averse de pluie forcée"
+	elseif rainOverrideMode == "Deluge" then
+		return "⛈️ Déluge / Orage forcé !"
+	elseif rainOverrideMode == "Sec" then
+		return "☀️ Pluie coupée (ciel dégagé)"
+	else
+		return "🔄 Météo automatique (selon la saison)"
+	end
+end
+
 -- ============================================================
 -- Changement de saison
 -- ============================================================
@@ -509,63 +924,57 @@ local function onSeasonChanged()
 	seasonToken += 1
 	local token = seasonToken
 	clearSeasonal()
-	workspace:SetAttribute("WindVector", Vector3.zero)
 	workspace:SetAttribute("FlightSeasonBonus", if season == "Ete" then 1.15 else 1)
+	startWindCycle(token, season)
 
 	local look = LOOKS[season] or LOOKS.Printemps
-	applyLook(look, token)
-	workspace:SetAttribute("Precipitation", if season == "Printemps" then "Rain" elseif season == "Hiver" then "Snow" else "None")
+	applyLook(look, season, token)
+	startRainCycle(season)
+	workspace:SetAttribute(
+		"SeasonAmbientFx",
+		if season == "Printemps"
+			then "SpringPollen"
+			elseif season == "Ete" then "SummerFireflies"
+			elseif season == "Automne" then "AutumnLeaves"
+			else "WinterFrost"
+	)
+
+	-- Gouttes géantes ("bombes d'eau") dès qu'il pleut, avec cadence accélérée sous une forte averse.
+	startLoop(token, function()
+		local intensity = (workspace:GetAttribute("RainIntensity") :: number?) or 0
+		if workspace:GetAttribute("Precipitation") == "Rain" and intensity >= 0.72 then
+			return rng:NextNumber(3.5, 7)
+		end
+		return rng:NextNumber(6.5, 12)
+	end, dropWaterBomb)
 
 	if season == "Printemps" then
 		spawnDew(45 * SCATTER_SCALE)
 		spawnPuddles(18 * SCATTER_SCALE)
-		spawnSeasonalFlowers(10 * SCATTER_SCALE)
-		startLoop(token, function()
-			return rng:NextNumber(6, 12)
-		end, dropWaterBomb)
+		spawnSeasonalFlowers(16 * SCATTER_SCALE)
 		-- La rosée se reforme au fil de la saison.
 		startLoop(token, function()
 			return 90
 		end, function()
 			-- Plafond : la rosée non bue ne s'accumule pas sur toute la saison (budget mobile).
-			local drops = 0
-			for _, child in ipairs(getFolder():GetChildren()) do
-				if child.Name == "GoutteDeRosee" then
-					drops += 1
-				end
-			end
-			if drops < 45 * SCATTER_SCALE then
+			if countDewDrops() < 45 * SCATTER_SCALE then
 				spawnDew(12 * SCATTER_SCALE)
 			end
 		end)
 	elseif season == "Ete" then
 		-- Assèchement : rien à boire hors de la mare (zone PvP intense, GDD §4).
 		spawnDew(6 * SCATTER_SCALE)
+		spawnSummerBlooms(8 * SCATTER_SCALE)
 	elseif season == "Automne" then
-		spawnDeadLeaves(60 * SCATTER_SCALE)
+		spawnDeadLeaves(70 * SCATTER_SCALE)
 		spawnPuddles(8 * SCATTER_SCALE)
 		spawnDew(15 * SCATTER_SCALE)
 		startLoop(token, function()
 			return rng:NextNumber(15, 28)
 		end, dropFruit)
-		startLoop(token, function()
-			return 25
-		end, function()
-			local angle = rng:NextNumber() * math.pi * 2
-			local target = Vector3.new(math.cos(angle), 0, math.sin(angle)) * rng:NextNumber(10, 22)
-			local current = workspace:GetAttribute("WindVector")
-			local from = if typeof(current) == "Vector3" then current else Vector3.zero
-			-- Rafale progressive en 10 pas de 0.5 s : pas de secousse latérale pour les volants.
-			for k = 1, 10 do
-				task.wait(0.5)
-				if seasonToken ~= token then
-					return
-				end
-				workspace:SetAttribute("WindVector", from:Lerp(target, k / 10))
-			end
-		end)
 	elseif season == "Hiver" then
 		freezePond()
+		spawnSnowDrifts(18 * SCATTER_SCALE)
 		-- Un peu de neige fondue à boire près des abris.
 		spawnPuddles(6 * SCATTER_SCALE)
 	end

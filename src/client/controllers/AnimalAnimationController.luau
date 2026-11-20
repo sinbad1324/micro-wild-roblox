@@ -4,8 +4,11 @@
 -- (workspace.Galerie3D.Animaux), côté client (StarterPlayerScripts.controllers).
 -- Convention : voir l'en-tête de AnimalModels. Chaque part animable est soudée à "Root" par un Weld
 -- "AnimWeld" (enfant de Root) ; on écrit weld.C0 = RestC0 * rotation, toujours depuis le repos
--- (jamais d'accumulation). Un membre porté (oeil du caméléon, doigt de pince) suit son parent :
---   C0 = parentRest * parentDelta * parentRest:Inverse() * RestC0 * delta.
+-- (jamais d'accumulation). Les membres forment des CHAÎNES d'articulations de profondeur libre
+-- (cou -> tête -> mâchoire, cuisse -> genou, segments de queue...) : un membre porté suit son parent
+--   C0 = parentFrame * parentRest:Inverse() * RestC0 * delta   (parentFrame = C0 du parent ce frame).
+-- Aussi les animaux JOUÉS (tag "PlayerAnimal", corps posé par InsectVisualService) : leur Humanoid
+-- est celui du personnage (vol/chute = pieds hors du sol, mort = pose figée).
 -- Rien n'est répliqué : purement cosmétique.
 --
 -- Mouvements : battement d'ailes de l'oiseau (lié à la vitesse et à la montée/descente, ailes
@@ -25,6 +28,7 @@ local RunService = game:GetService("RunService")
 local AnimalAnimationController = {}
 
 local TAG = "Animal"
+local PLAYER_TAG = "PlayerAnimal"
 local GALLERY_FOLDER = "Galerie3D"
 local GALLERY_ANIMALS = "Animaux"
 local WELD_NAME = "AnimWeld"
@@ -42,6 +46,11 @@ local K_FIN = 4
 local K_CLAW = 5
 local K_HEAD = 6
 local K_EYE = 7
+local K_KNEE = 8 -- segment bas d'une patte (genou / coude / tarse), porté par Leg
+local K_NECK = 9
+local K_JAW = 10
+local K_EAR = 11
+local K_WINGTIP = 12 -- rémiges primaires, portées par Wing
 
 local KIND_CODES: { [string]: number } = {
 	Leg = K_LEG,
@@ -51,6 +60,11 @@ local KIND_CODES: { [string]: number } = {
 	Claw = K_CLAW,
 	Head = K_HEAD,
 	Eye = K_EYE,
+	Knee = K_KNEE,
+	Neck = K_NECK,
+	Jaw = K_JAW,
+	Ear = K_EAR,
+	WingTip = K_WINGTIP,
 }
 
 local S_OTHER = 0
@@ -74,6 +88,7 @@ type Record = {
 	model: Model,
 	root: BasePart?,
 	humanoid: Humanoid?,
+	owner: Humanoid?, -- animal joué : Humanoid du personnage (sol / vol / mort)
 	addConn: RBXScriptConnection?,
 	attackConn: RBXScriptConnection?,
 	dirty: boolean,
@@ -83,11 +98,12 @@ type Record = {
 	count: number,
 	welds: { Weld },
 	rests: { CFrame }, -- membre porté : parentRest:Inverse() * RestC0
+	absRests: { CFrame }, -- RestC0 (repère de Root)
+	frames: { CFrame }, -- C0 écrit ce frame (lu par les membres portés)
 	kinds: { number },
 	sides: { number },
 	indices: { number },
 	parents: { number }, -- indice de l'entrée parente (0 = aucune) ; toujours < à l'indice courant
-	deltas: { CFrame }, -- rotation appliquée cette frame (lue par les membres portés)
 	-- Réglages par espèce (posés au rebuild).
 	walkRef: number,
 	gaitBase: number,
@@ -116,6 +132,8 @@ type Record = {
 	eyeTargetYaw: { number },
 	eyeTargetPitch: { number },
 	eyeNext: { number },
+	earAt: number, -- frémissement d'oreille (écureuil)
+	earSide: number,
 	snapAt: number,
 	snapSide: number,
 	nextSnap: number,
@@ -131,11 +149,12 @@ local function clearCache(rec: Record)
 	rec.count = 0
 	table.clear(rec.welds)
 	table.clear(rec.rests)
+	table.clear(rec.absRests)
+	table.clear(rec.frames)
 	table.clear(rec.kinds)
 	table.clear(rec.sides)
 	table.clear(rec.indices)
 	table.clear(rec.parents)
-	table.clear(rec.deltas)
 end
 
 local function numberAttribute(part: BasePart, name: string): number
@@ -143,16 +162,17 @@ local function numberAttribute(part: BasePart, name: string): number
 	return if type(value) == "number" then value else 0
 end
 
-local function addEntry(rec: Record, weld: Weld, rest: CFrame, kind: number, side: number, index: number, parent: number)
+local function addEntry(rec: Record, weld: Weld, rest: CFrame, absRest: CFrame, kind: number, side: number, index: number, parent: number)
 	local count = rec.count + 1
 	rec.count = count
 	rec.welds[count] = weld
 	rec.rests[count] = rest
+	rec.absRests[count] = absRest
+	rec.frames[count] = absRest
 	rec.kinds[count] = kind
 	rec.sides[count] = side
 	rec.indices[count] = index
 	rec.parents[count] = parent
-	rec.deltas[count] = CFrame.identity
 end
 
 local function applySpecies(rec: Record)
@@ -183,8 +203,7 @@ end
 local function rebuild(rec: Record)
 	-- Remet au repos ce qu'on animait : une part qui sort du cache ne reste pas tordue.
 	for i = 1, rec.count do
-		local p = rec.parents[i]
-		rec.welds[i].C0 = if p > 0 then rec.rests[p] * rec.rests[i] else rec.rests[i]
+		rec.welds[i].C0 = rec.absRests[i]
 	end
 	clearCache(rec)
 	rec.dirty = false
@@ -194,6 +213,12 @@ local function rebuild(rec: Record)
 	rec.fry = model.Name == "Alevin"
 	applySpecies(rec)
 	rec.humanoid = model:FindFirstChildOfClass("Humanoid")
+	-- Animal joué : personnage > InsectVisual > modèle.
+	if CollectionService:HasTag(model, PLAYER_TAG) then
+		local container = model.Parent
+		local character = container and container.Parent
+		rec.owner = if character then character:FindFirstChildOfClass("Humanoid") else nil
+	end
 	local root = model.PrimaryPart -- = "Root" (posée par AnimalModels.newBuilder)
 	rec.root = root
 	if not root then
@@ -223,37 +248,43 @@ local function rebuild(rec: Record)
 			table.insert(scratchChildren, child)
 			continue
 		end
-		addEntry(rec, child, rest, kind, numberAttribute(part, "Side"), numberAttribute(part, "Index"), 0)
+		addEntry(rec, child, rest, rest, kind, numberAttribute(part, "Side"), numberAttribute(part, "Index"), 0)
 	end
 
-	for _, weld in ipairs(scratchChildren) do
-		local part = weld.Part1
-		if not part then
-			continue
-		end
-		local anim = part:GetAttribute("Anim")
-		local rest = part:GetAttribute("RestC0")
-		local parentAnim = part:GetAttribute("ParentAnim")
-		if type(anim) ~= "string" or typeof(rest) ~= "CFrame" or type(parentAnim) ~= "string" then
-			continue
-		end
-		local kind = KIND_CODES[anim]
-		local parentKind = KIND_CODES[parentAnim]
-		if not kind or not parentKind then
-			continue
-		end
-		local parentSide = numberAttribute(part, "ParentSide")
-		local parentIndex = numberAttribute(part, "ParentIndex")
-		local parent = 0
-		for j = 1, rec.count do
-			if rec.parents[j] == 0 and rec.kinds[j] == parentKind and rec.sides[j] == parentSide and rec.indices[j] == parentIndex then
-				parent = j
-				break
+	-- Membres portés, par passes successives : un membre n'est ajouté qu'après son parent (chaînes
+	-- de profondeur libre). Parent pas encore répliqué : DescendantAdded relancera un rebuild.
+	local progress = true
+	while progress and #scratchChildren > 0 do
+		progress = false
+		local k = 1
+		while k <= #scratchChildren do
+			local weld = scratchChildren[k]
+			local part = weld.Part1
+			local anim = part and part:GetAttribute("Anim")
+			local rest = part and part:GetAttribute("RestC0")
+			local parentAnim = part and part:GetAttribute("ParentAnim")
+			local kind = if type(anim) == "string" then KIND_CODES[anim] else nil
+			local parentKind = if type(parentAnim) == "string" then KIND_CODES[parentAnim] else nil
+			if not part or not kind or not parentKind or typeof(rest) ~= "CFrame" then
+				table.remove(scratchChildren, k)
+				continue
 			end
-		end
-		-- Parent pas encore répliqué : DescendantAdded relancera un rebuild à son arrivée.
-		if parent > 0 then
-			addEntry(rec, weld, rec.rests[parent]:Inverse() * rest, kind, numberAttribute(part, "Side"), numberAttribute(part, "Index"), parent)
+			local parentSide = numberAttribute(part, "ParentSide")
+			local parentIndex = numberAttribute(part, "ParentIndex")
+			local parent = 0
+			for j = 1, rec.count do
+				if rec.kinds[j] == parentKind and rec.sides[j] == parentSide and rec.indices[j] == parentIndex then
+					parent = j
+					break
+				end
+			end
+			if parent > 0 then
+				addEntry(rec, weld, rec.absRests[parent]:Inverse() * rest, rest, kind, numberAttribute(part, "Side"), numberAttribute(part, "Index"), parent)
+				table.remove(scratchChildren, k)
+				progress = true
+			else
+				k += 1
+			end
 		end
 	end
 	table.clear(scratchChildren)
@@ -283,11 +314,15 @@ local function animate(rec: Record, root: BasePart, now: number)
 	local speed, climb = rec.speed, rec.climb
 
 	local alpha = math.min(1, dt * 6)
-	-- Oiseau : au-delà d'une marche rapide, il vole (perché / picorant = immobile).
-	local airborne = species == S_BIRD and speed > 8
+	-- Oiseau : au-delà d'une marche rapide, il vole (perché / picorant = immobile). Animal joué :
+	-- en l'air = pieds hors du sol (saut, vol, chute) ; l'eau compte comme "sol" pour les nageurs.
+	local owner = rec.owner
+	local airborne = if owner
+		then owner.FloorMaterial == Enum.Material.Air and owner:GetState() ~= Enum.HumanoidStateType.Swimming and species ~= S_FISH
+		else species == S_BIRD and speed > 8
 	rec.air += ((if airborne then 1 else 0) - rec.air) * alpha
 	local air = rec.air
-	rec.move += ((if airborne then 0 else math.min(1, speed / rec.walkRef)) - rec.move) * alpha
+	rec.move += ((if airborne and species == S_BIRD then 0 else math.min(1, speed / rec.walkRef)) - rec.move) * alpha
 	local move = rec.move
 
 	rec.gait = (rec.gait + dt * math.min(rec.gaitBase + speed * rec.gaitGain, rec.gaitMax)) % TWO_PI
@@ -352,6 +387,19 @@ local function animate(rec: Record, root: BasePart, now: number)
 		end
 	end
 
+	-- Écureuil : oreille qui frémit de temps en temps.
+	local earFlick = 0
+	if species == S_SQUIRREL then
+		if now >= rec.earAt + 0.25 and math.random() < dt * 0.6 then
+			rec.earAt = now
+			rec.earSide = if math.random() < 0.5 then -1 else 1
+		end
+		local u = (now - rec.earAt) / 0.25
+		if u >= 0 and u < 1 then
+			earFlick = math.sin(u * math.pi)
+		end
+	end
+
 	-- Poisson : vague du corps (queue, tête en contre-phase, nageoires impaires en retard).
 	local tailAmp = 0.18 + 0.3 * math.min(1, speed / 12)
 	local wave = math.sin(gait)
@@ -363,7 +411,7 @@ local function animate(rec: Record, root: BasePart, now: number)
 	local sides = rec.sides
 	local indices = rec.indices
 	local parents = rec.parents
-	local deltas = rec.deltas
+	local frames = rec.frames
 	local lastKind, lastSide, lastIndex = 0, 0, 0
 	local rot = CFrame.identity
 	for i = 1, count do
@@ -371,7 +419,33 @@ local function animate(rec: Record, root: BasePart, now: number)
 		-- Les parts d'un même membre se suivent : rotation recalculée seulement au changement de membre.
 		if kind ~= lastKind or side ~= lastSide or index ~= lastIndex then
 			lastKind, lastSide, lastIndex = kind, side, index
-			if kind == K_LEG then
+			-- Phase de marche d'une patte (même calcul pour la cuisse et son genou).
+			local legPhase: number
+			if species == S_CRAB then
+				legPhase = gait + (if (index + (if side > 0 then 1 else 0)) % 2 == 0 then 0 else math.pi)
+			elseif species == S_SQUIRREL then
+				legPhase = gait + (if index == 2 then math.pi else 0)
+			elseif species == S_BIRD then
+				legPhase = gait -- sautille pieds joints
+			else
+				legPhase = gait + (if side > 0 then math.pi else 0) + (if index == 2 then math.pi else 0)
+			end
+			-- Levée de la patte (0..1) : le genou se plie pendant qu'elle avance.
+			local lift = math.max(0, math.cos(legPhase)) * move
+			if kind == K_KNEE then
+				if species == S_CRAB then
+					-- Pointe qui se relève vers l'extérieur pendant le pas, qui s'enfonce en appui.
+					rot = CFrame.Angles(0, 0, side * (0.45 * lift - 0.08 * math.max(0, -math.cos(legPhase)) * move + 0.02 * breath))
+				elseif species == S_BIRD then
+					-- Tarse replié sous le corps en vol, flexion au sautillement.
+					rot = CFrame.Angles(-0.5 * lift - 1.3 * air, 0, 0)
+				elseif species == S_SQUIRREL then
+					-- Bond : patte arrière qui se replie fort, avant qui amortit.
+					rot = CFrame.Angles((if index == 2 then -0.9 else -0.6) * lift - 0.5 * air, 0, 0)
+				else
+					rot = CFrame.Angles(-0.7 * lift, 0, 0)
+				end
+			elseif kind == K_LEG then
 				if species == S_CRAB then
 					-- Tétrapodes alternés ; patte vers l'extérieur : balayage Y, levée Z.
 					local phase = gait + (if (index + (if side > 0 then 1 else 0)) % 2 == 0 then 0 else math.pi)
@@ -394,8 +468,15 @@ local function animate(rec: Record, root: BasePart, now: number)
 				local flap = air * (0.2 + flapAmp * math.sin(wingPhase)) + (1 - air) * 0.03 * breath
 				rot = CFrame.Angles(0, 0, side * flap) * CFrame.Angles(0, side * 1.35 * air, 0)
 			elseif kind == K_TAIL then
+				-- Queues en chaîne (index = segment depuis la base) : la vague se propage vers la pointe.
+				local segment = math.max(index, 1)
 				if species == S_FISH then
-					rot = CFrame.Angles(0, wave * tailAmp, 0)
+					rot = CFrame.Angles(0, math.sin(gait - (segment - 1) * 1.1) * tailAmp * (if segment == 1 then 0.7 else 0.9), 0)
+				elseif species == S_CHAMELEON then
+					-- Spirale qui se déroule un peu en marchant, ondulation lente.
+					rot = CFrame.Angles(-0.05 * move + 0.035 * math.sin(t * 0.8 - segment * 0.45), 0.05 * math.sin(t * 0.6 - segment * 0.5) + 0.04 * math.sin(gait - segment * 0.4) * move, 0)
+				elseif species == S_SQUIRREL and segment > 1 then
+					rot = CFrame.Angles(0.07 * math.sin(t * 1.4 - segment * 0.7) + 0.1 * math.sin(gait - segment * 0.6) * move, 0.08 * math.sin(t * 0.9 - segment * 0.6), 0)
 				elseif species == S_BIRD then
 					rot = CFrame.Angles(math.sin(t * 2) * 0.06 - 0.15 * air + 0.12 * math.sin(gait) * move, math.sin(t * 1.1) * 0.04, 0)
 				elseif species == S_SQUIRREL then
@@ -420,9 +501,33 @@ local function animate(rec: Record, root: BasePart, now: number)
 					-- Doigt mobile : s'ouvre vers le haut puis claque.
 					rot = CFrame.Angles(0.06 + 0.03 * math.sin(t * 2.1 + side) + open, 0, 0)
 				end
+			elseif kind == K_NECK then
+				-- Oiseau : la tête "pompe" d'avant en arrière à chaque pas (stabilisation).
+				rot = CFrame.Angles(0.18 * math.sin(gait * 2) * move - 0.25 * air + 0.03 * breath, headYaw * 0.4, 0)
+			elseif kind == K_JAW then
+				local open: number
+				if species == S_FISH then
+					open = 0.12 + 0.12 * math.sin(t * 3.2) -- respiration bouche ouverte / fermée
+				elseif species == S_SQUIRREL then
+					open = 0.12 * math.max(0, math.sin(t * 16)) * (1 - move) -- grignote à l'arrêt
+				elseif species == S_BIRD then
+					open = 0.25 * math.max(0, math.sin(t * 0.7)) ^ 12 -- pépiement bref
+				else
+					open = 0.04 + 0.04 * breath
+				end
+				rot = CFrame.Angles(-open, 0, 0)
+			elseif kind == K_EAR then
+				local flick = if side == rec.earSide then earFlick else 0
+				rot = CFrame.Angles(0.05 * breath - 0.25 * flick, 0, side * (0.3 * flick + 0.04 * math.sin(t * 0.7 + side)))
+			elseif kind == K_WINGTIP then
+				-- Rémiges : battement en retard sur le bras (fouet), pointe repliée au perchoir.
+				rot = CFrame.Angles(0, side * 0.25 * air, side * air * 0.45 * math.sin(wingPhase - 0.9))
 			elseif kind == K_HEAD then
 				if species == S_FISH then
 					rot = CFrame.Angles(0.03 * breath, -wave * tailAmp * 0.25, 0)
+				elseif species == S_BIRD then
+					-- Le cou porte déjà le hochement : la tête ne fait que regarder.
+					rot = CFrame.Angles(0.02 * breath, headYaw * 0.6, 0)
 				else
 					rot = CFrame.Angles(0.04 * breath + 0.05 * math.sin(gait * 2) * move, headYaw, 0)
 				end
@@ -438,13 +543,10 @@ local function animate(rec: Record, root: BasePart, now: number)
 				rot = CFrame.identity
 			end
 		end
-		deltas[i] = rot
 		local p = parents[i]
-		if p > 0 then
-			welds[i].C0 = rests[p] * deltas[p] * rests[i] * rot
-		else
-			welds[i].C0 = rests[i] * rot
-		end
+		local frame = if p > 0 then frames[p] * rests[i] * rot else rests[i] * rot
+		frames[i] = frame
+		welds[i].C0 = frame
 	end
 end
 
@@ -471,6 +573,7 @@ local function track(instance: Instance)
 		model = instance :: Model,
 		root = nil,
 		humanoid = nil,
+		owner = nil,
 		addConn = nil,
 		attackConn = nil,
 		dirty = true,
@@ -479,11 +582,12 @@ local function track(instance: Instance)
 		count = 0,
 		welds = {},
 		rests = {},
+		absRests = {},
+		frames = {},
 		kinds = {},
 		sides = {},
 		indices = {},
 		parents = {},
-		deltas = {},
 		walkRef = 8,
 		gaitBase = 4,
 		gaitGain = 0.6,
@@ -510,6 +614,8 @@ local function track(instance: Instance)
 		eyeTargetYaw = { 0, 0 },
 		eyeTargetPitch = { 0, 0 },
 		eyeNext = { 0, 0 },
+		earAt = -10,
+		earSide = 1,
 		snapAt = -10,
 		snapSide = 1,
 		nextSnap = os.clock() + math.random() * 3,
@@ -559,6 +665,10 @@ local function onHeartbeat()
 		if humanoid and humanoid.Parent == model and humanoid.Health <= 0 then
 			continue
 		end
+		local owner = rec.owner
+		if owner and owner.Health <= 0 then
+			continue
+		end
 
 		local offset = root.Position - cameraPosition
 		local distanceSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
@@ -606,6 +716,12 @@ function AnimalAnimationController.Start()
 	CollectionService:GetInstanceAddedSignal(TAG):Connect(track)
 	CollectionService:GetInstanceRemovedSignal(TAG):Connect(untrack)
 	for _, instance in ipairs(CollectionService:GetTagged(TAG)) do
+		track(instance)
+	end
+	-- Animaux joués : même animation que les animaux de l'IA (sans être une cible "Animal").
+	CollectionService:GetInstanceAddedSignal(PLAYER_TAG):Connect(track)
+	CollectionService:GetInstanceRemovedSignal(PLAYER_TAG):Connect(untrack)
+	for _, instance in ipairs(CollectionService:GetTagged(PLAYER_TAG)) do
 		track(instance)
 	end
 

@@ -80,9 +80,23 @@ local AbilityCatalog: { [string]: AbilityDefinition } = {
 	ChargeCorne = Def("LungeCharge", "E", 7, 30, 12, 0, "Charge frontale avec la corne, repousse la cible."),
 	BouclierChitine = Def("ArmorBuff", "Passive", 0, 0.25, 0, 0, "Carapace la plus résistante du jeu (-25% dégâts)."),
 
-	TisserToilePiege = Def("Utility", "E", 10, 0, 10, 45, "Construit une toile piège qui immobilise les joueurs qui la touchent.", "Stun", 2, 1),
+	TisserToilePiege = Def("Utility", "E", 10, 0, 35, 45, "Lance une grande toile piège là où tu vises (sol, mur, branche) : immobilise qui la touche.", "Stun", 2, 1),
+	-- Animaux jouables (PlayableAnimals)
+	PiqueDuCiel = Def("Leap", "E", 6, 35, 30, 0, "Fond sur une proie depuis le ciel."),
+	BourrasqueDAiles = Def("ConeBurst", "R", 9, 14, 14, 0, "Bourrasque d'ailes : repousse et étourdit les insectes devant.", "Stun", 1, 1),
+	LangueCollante = Def("Projectile", "E", 5, 22, 35, 0, "Langue collante à longue portée : englue la proie.", "Glue", 3, 0.7),
+	CamouflageEcailles = Def("Camouflage", "R", 15, 0, 0, 8, "Change de couleur : presque invisible tant qu'il ne court pas."),
+	AspirationEau = Def("ConeBurst", "E", 7, 18, 12, 0, "Aspire l'eau devant lui : ralentit les petites proies.", "Slow", 3, 0.6),
+	SautHorsDeLEau = Def("Leap", "R", 8, 26, 20, 0, "Jaillit hors de l'eau sur une proie."),
+	PinceBroyeuse = Def("StatusBite", "LeftClick", 3, 34, 0, 0, "Pince qui broie : fait saigner.", "Bleed", 4, 0.5),
+	CarapaceCrabe = Def("ArmorBuff", "E", 14, 0.6, 0, 5, "Se replie dans sa carapace : -60% de dégâts, immobile."),
+	BondEcureuil = Def("Leap", "E", 5, 26, 24, 0, "Bond agile sur une proie."),
+	SecousseBranches = Def("ConeBurst", "R", 10, 14, 16, 0, "Secoue tout autour : étourdit les insectes proches.", "Stun", 1.5, 1),
+	-- Araignées : boule de soie visée (englue la proie touchée, sinon laisse une flaque collante).
+	TirDeToile = Def("Utility", "R", 2.5, 6, 45, 8, "Tir de toile visé : englue la proie touchée, ou laisse une flaque collante.", "Glue", 3, 0.65),
 	MorsureNeurotoxique = Def("StatusBite", "LeftClick", 4, 22, 0, 0, "Morsure venimeuse mortelle à petites doses.", "Poison", 8, 0.6),
-	FilDeRappel = Def("Utility", "Passive", 0, 0, 0, 0, "Pose un fil de sécurité, aucune chute mortelle."),
+	-- Maintenir F : fil de soie accroché là où tu vises, on se balance (Espace = remonter le fil).
+	FilDeRappel = Def("Utility", "F", 0.3, 0, 45, 0, "Fil de soie : maintiens F pour te balancer, Espace pour remonter le fil."),
 
 	BondDePrecision = Def("Leap", "E", 6, 20, 16, 0, "Bond ciblé précis, touche même les proies en vol bas."),
 	Vision360 = Def("Utility", "Passive", 0, 20, 0, 0, "Détecte les menaces dans toutes les directions (rayon)."),

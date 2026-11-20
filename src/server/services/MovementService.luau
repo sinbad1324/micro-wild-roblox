@@ -7,7 +7,10 @@
 -- la Veuve Noire effacée par le prochain tick de SurvivalService).
 
 local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+
+local Remotes = require(ReplicatedStorage.shared.Remotes)
 
 export type ModifierKind = "Multiplier" | "Override"
 
@@ -29,6 +32,18 @@ local EASE_RATE = 10 -- 1/s : ~0,5 s pour rejoindre la cible
 local targetWalkSpeed: { [Player]: number } = {}
 local easedHumanoid: { [Player]: Humanoid } = {}
 local easing: { [Player]: boolean } = {}
+
+-- Boost de vitesse (Shift maintenu) : multiplicateur de WalkSpeed, donc aussi le vol et la nage
+-- (Flight/SwimController dérivent leur vitesse de WalkSpeed). Jauge d'énergie qui se vide pendant
+-- qu'on bouge en boost et se recharge sinon ; répliquée en attribut "BoostEnergy" (0..1) pour le HUD.
+local BOOST_KEY = "Boost"
+local BOOST_MULTIPLIER = 1.6
+local BOOST_DRAIN = 1 / 3.5 -- jauge pleine = 3,5 s de boost
+local BOOST_REGEN = 1 / 7 -- recharge complète en 7 s
+local BOOST_RESTART = 0.25 -- vidée : il faut recharger un quart avant de re-booster
+local boostWanted: { [Player]: boolean } = {}
+local boostEnergy: { [Player]: number } = {}
+local boostExhausted: { [Player]: boolean } = {}
 
 local function getHumanoid(player: Player): Humanoid?
 	local character = player.Character
@@ -127,12 +142,73 @@ function MovementService.CleanupPlayer(player: Player)
 	targetWalkSpeed[player] = nil
 	easedHumanoid[player] = nil
 	easing[player] = nil
+	boostWanted[player] = nil
+	boostEnergy[player] = nil
+	boostExhausted[player] = nil
+end
+
+local function setBoost(player: Player, active: boolean)
+	if active ~= MovementService.HasModifier(player, BOOST_KEY) then
+		if active then
+			MovementService.AddModifier(player, BOOST_KEY, "Multiplier", BOOST_MULTIPLIER)
+		else
+			MovementService.RemoveModifier(player, BOOST_KEY)
+		end
+	end
+end
+
+local function canBoost(player: Player): boolean
+	return boostWanted[player] == true and not boostExhausted[player] and (boostEnergy[player] or 1) > 0
+end
+
+-- Jauge : vidée seulement en bougeant (Shift maintenu à l'arrêt ne coûte rien).
+local function tickBoost(player: Player, dt: number)
+	local energy = boostEnergy[player] or 1
+	local humanoid = getHumanoid(player)
+	local moving = humanoid ~= nil and humanoid.MoveDirection.Magnitude > 0.1
+	if MovementService.HasModifier(player, BOOST_KEY) and moving then
+		energy = math.max(0, energy - BOOST_DRAIN * dt)
+		if energy <= 0 then
+			boostExhausted[player] = true
+		end
+	else
+		energy = math.min(1, energy + BOOST_REGEN * dt)
+		if boostExhausted[player] and energy >= BOOST_RESTART then
+			boostExhausted[player] = nil
+		end
+	end
+	boostEnergy[player] = energy
+	setBoost(player, canBoost(player))
+	-- Réplication économe : seulement les pas de 2 %.
+	local shown = player:GetAttribute("BoostEnergy")
+	if type(shown) ~= "number" or math.abs(shown - energy) >= 0.02 or (energy >= 1 and shown < 1) then
+		player:SetAttribute("BoostEnergy", energy)
+	end
 end
 
 -- Balaye les modificateurs expirés même si rien d'autre n'appelle Recompute entre-temps
 -- (ex: un effet avec une durée qui se termine pendant que le joueur est immobile).
 function MovementService.Start()
 	Players.PlayerRemoving:Connect(MovementService.CleanupPlayer)
+
+	Remotes.Get("RequestBoost").OnServerEvent:Connect(function(player: Player, active: unknown)
+		if type(active) ~= "boolean" then
+			return
+		end
+		boostWanted[player] = active
+		setBoost(player, canBoost(player))
+	end)
+	-- Nouveau corps : le boost repart éteint (le client renvoie l'appui s'il maintient encore Shift).
+	local function watchCharacter(player: Player)
+		player.CharacterAdded:Connect(function()
+			boostWanted[player] = nil
+			setBoost(player, false)
+		end)
+	end
+	Players.PlayerAdded:Connect(watchCharacter)
+	for _, player in ipairs(Players:GetPlayers()) do
+		watchCharacter(player)
+	end
 
 	-- Ne tourne que pour les joueurs en transition (quelques frames par changement de vitesse).
 	-- 10 Hz au lieu de 60 : chaque écriture de WalkSpeed est répliquée, des paliers de 0,1 s sont invisibles.
@@ -144,6 +220,9 @@ function MovementService.Start()
 		end
 		local dt = easeAccum
 		easeAccum = 0
+		for player in pairs(boostWanted) do
+			tickBoost(player, dt)
+		end
 		local alpha = 1 - math.exp(-EASE_RATE * dt)
 		for player in pairs(easing) do
 			local humanoid = easedHumanoid[player]

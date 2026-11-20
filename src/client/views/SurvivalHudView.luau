@@ -1,9 +1,12 @@
 --!strict
 -- SurvivalHudView.luau
--- HUD de survie : Faim, Soif, Température (zone idéale de l'espèce), Oxygène (affiché seulement
--- quand il baisse), Croissance/Stade avec indice du prochain stade, Saison + Horloge, et bannière
--- de changement de saison. Tout est piloté par les signaux d'attributs + TweenService : aucun
--- travail par frame.
+-- HUD de survie au style organique « Micro Wild » :
+--   * Portrait 3D en temps réel de l'insecte du joueur (espèce, stade actuel Œuf/Larve/Mue/Cocon/Adulte et mutation)
+--     qui pivote avec un rebond fluide à chaque évolution ou changement d'espèce
+--   * Jauges animées (Faim, Soif, Température avec bande de zone idéale, Oxygène dynamique, Croissance)
+--   * Pied de panneau teinté selon la saison active + horloge jour/nuit
+--   * Bannière cinématique de changement de saison
+-- Aucun travail par frame hors des brèves transitions tweenées.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -13,6 +16,7 @@ local TweenService = game:GetService("TweenService")
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local SeasonConfig = require(ReplicatedStorage.shared.SeasonConfig)
 local UiTheme = require(script.Parent.UiTheme)
+local CreatureViewport = require(script.Parent.CreatureViewport)
 local ClientState = require(script.Parent.Parent.state.ClientState)
 
 local SurvivalHudView = {}
@@ -25,21 +29,19 @@ local Colors = UiTheme.Colors
 local STAGE_LARVE = 10
 local STAGE_COCON = 50
 local STAGE_ADULTE = 75
--- Doit rester aligné sur GrowthAndNestService : la croissance se fige sous 20 de Faim/Soif.
 local GROWTH_PAUSE_THRESHOLD = 20
--- Seuil d'alerte visuelle (pulsation rouge) des jauges Faim / Soif / Oxygène.
 local LOW_STAT_THRESHOLD = 25
 
 local STAGE_NAMES: { [string]: string } = {
-	Oeuf = "Œuf",
-	Larve = "Larve",
-	Mue = "Mue",
-	Cocon = "Cocon",
-	Adulte = "Adulte",
+	Oeuf = "🥚 Œuf",
+	Larve = "🐛 Larve",
+	Mue = "🦎 Mue",
+	Cocon = "🐚 Cocon",
+	Adulte = "🪲 Adulte",
 }
 
-local BANNER_HIDDEN = UDim2.new(0.5, 0, 0.15, 0)
-local BANNER_SHOWN = UDim2.new(0.5, 0, 0.2, 0)
+local BANNER_HIDDEN = UDim2.new(0.5, 0, 0.13, 0)
+local BANNER_SHOWN = UDim2.new(0.5, 0, 0.19, 0)
 local BANNER_SECONDS = 5
 
 type Bar = {
@@ -54,7 +56,6 @@ type Bar = {
 	Warn: boolean,
 }
 
--- Construit une jauge (titre à gauche, valeur à droite, piste + remplissage).
 local function createBar(parent: Instance, order: number, title: string): Bar
 	local container = Instance.new("Frame")
 	container.Name = title .. "Bar"
@@ -65,13 +66,13 @@ local function createBar(parent: Instance, order: number, title: string): Bar
 
 	local label = UiTheme.Label(container, Enum.Font.GothamBold, 12, Colors.Text)
 	label.Name = "Label"
-	label.Size = UDim2.new(0.5, 0, 0, 14)
+	label.Size = UDim2.new(0.52, 0, 0, 14)
 	label.Text = title
 
-	local value = UiTheme.Label(container, Enum.Font.GothamMedium, 12, Colors.Muted)
+	local value = UiTheme.Label(container, Enum.Font.GothamBold, 11, Colors.Muted)
 	value.Name = "Value"
-	value.Position = UDim2.new(0.4, 0, 0, 0)
-	value.Size = UDim2.new(0.6, 0, 0, 14)
+	value.Position = UDim2.new(0.42, 0, 0, 0)
+	value.Size = UDim2.new(0.58, 0, 0, 14)
 	value.TextXAlignment = Enum.TextXAlignment.Right
 
 	local track = Instance.new("Frame")
@@ -89,10 +90,20 @@ local function createBar(parent: Instance, order: number, title: string): Bar
 	fill.Size = UDim2.new(1, 0, 1, 0)
 	fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = Colors.Accent
+	fill.ZIndex = 2
 	fill.Parent = track
 	UiTheme.Corner(fill, 5)
 
-	-- Pulsation d'alerte : un seul tween en boucle, créé une fois, joué/annulé à la demande.
+	-- Léger reflet organique sur le haut de la barre.
+	local shine = Instance.new("Frame")
+	shine.Name = "Shine"
+	shine.Size = UDim2.new(1, 0, 0.45, 0)
+	shine.BackgroundColor3 = Color3.new(1, 1, 1)
+	shine.BackgroundTransparency = 0.82
+	shine.BorderSizePixel = 0
+	shine.Parent = fill
+	UiTheme.Corner(shine, 5)
+
 	local pulse = TweenService:Create(
 		stroke,
 		TweenInfo.new(0.55, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
@@ -112,12 +123,11 @@ local function createBar(parent: Instance, order: number, title: string): Bar
 	}
 end
 
--- Met à jour une jauge : ne tweene (et n'alloue) que ce qui a réellement changé.
 local function setBar(bar: Bar, ratio: number, color: Color3, valueText: string, warn: boolean)
 	bar.Value.Text = valueText
 	if math.abs(ratio - bar.Ratio) > 0.001 then
 		bar.Ratio = ratio
-		UiTheme.Tween(bar.Fill, 0.35, { Size = UDim2.new(ratio, 0, 1, 0) })
+		UiTheme.Tween(bar.Fill, 0.35, { Size = UDim2.new(ratio, 0, 1, 0) }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 	end
 	if color ~= bar.Color then
 		bar.Color = color
@@ -135,21 +145,19 @@ local function setBar(bar: Bar, ratio: number, color: Color3, valueText: string,
 	end
 end
 
--- Petit repère vertical posé sur une piste (paliers de croissance, bornes de température idéale).
 local function createTick(track: Frame): Frame
 	local tick = Instance.new("Frame")
 	tick.Name = "Tick"
 	tick.AnchorPoint = Vector2.new(0.5, 0)
 	tick.Size = UDim2.new(0, 2, 1, 0)
 	tick.BackgroundColor3 = Color3.new(1, 1, 1)
-	tick.BackgroundTransparency = 0.35
+	tick.BackgroundTransparency = 0.28
 	tick.BorderSizePixel = 0
-	tick.ZIndex = 3
+	tick.ZIndex = 4
 	tick.Parent = track
 	return tick
 end
 
--- Échelle d'affichage fixe de la température (-20°C à 50°C).
 local function tempRatio(temperature: number): number
 	return math.clamp((temperature + 20) / 70, 0, 1)
 end
@@ -170,8 +178,6 @@ function SurvivalHudView.Mount()
 	screenGui.DisplayOrder = 5
 	screenGui.Parent = playerGui
 
-	-- Tactile sans clavier : le stick virtuel occupe le bas-gauche, le HUD passe en haut-gauche
-	-- (sous la barre Roblox). Sinon : bas-gauche comme sur PC.
 	local touchOnly = UiTheme.IsTouchOnly()
 
 	local panel = Instance.new("Frame")
@@ -183,21 +189,18 @@ function SurvivalHudView.Mount()
 		panel.AnchorPoint = Vector2.new(0, 1)
 		panel.Position = UDim2.new(0, 16, 1, -16)
 	end
-	panel.Size = UDim2.new(0, 236, 0, 0)
+	panel.Size = UDim2.new(0, 248, 0, 0)
 	panel.AutomaticSize = Enum.AutomaticSize.Y
-	panel.BackgroundColor3 = Colors.Panel
-	panel.BackgroundTransparency = 0.2
-	panel.BorderSizePixel = 0
+	panel.BackgroundTransparency = 0.1
 	panel.Parent = screenGui
-	UiTheme.Corner(panel, 10)
-	UiTheme.Stroke(panel, Color3.new(1, 1, 1), 1, 0.88)
-	UiTheme.Padding(panel, 10, 8)
+	local panelStroke = UiTheme.StylePanel(panel, 13, Colors.Border, 0.45)
+	UiTheme.Padding(panel, 11, 10)
 
 	local panelScale = Instance.new("UIScale")
 	panelScale.Parent = panel
 	UiTheme.OnViewportChanged(function(size: Vector2)
 		if touchOnly then
-			panelScale.Scale = math.clamp(size.Y / 560, 0.55, 1)
+			panelScale.Scale = math.clamp(size.Y / 580, 0.55, 1)
 		else
 			panelScale.Scale = math.clamp(size.Y / 760, 0.75, 1.2)
 		end
@@ -205,20 +208,63 @@ function SurvivalHudView.Mount()
 
 	local layout = Instance.new("UIListLayout")
 	layout.SortOrder = Enum.SortOrder.LayoutOrder
-	layout.Padding = UDim.new(0, 5)
+	layout.Padding = UDim.new(0, 6)
 	layout.Parent = panel
 
-	local speciesLabel = UiTheme.Label(panel, Enum.Font.GothamBlack, 14, Colors.Text)
+	-- ---------- En-tête avec Portrait 3D en temps réel ----------
+	local header = Instance.new("Frame")
+	header.Name = "Header"
+	header.Size = UDim2.new(1, 0, 0, 50)
+	header.BackgroundTransparency = 1
+	header.LayoutOrder = 0
+	header.Parent = panel
+
+	local portraitBox = Instance.new("Frame")
+	portraitBox.Name = "Portrait3D"
+	portraitBox.Size = UDim2.fromOffset(48, 48)
+	portraitBox.Position = UDim2.fromOffset(0, 1)
+	portraitBox.BackgroundColor3 = Colors.PanelDeep
+	portraitBox.BorderSizePixel = 0
+	portraitBox.Parent = header
+	UiTheme.Corner(portraitBox, 10)
+	local portraitStroke = UiTheme.Stroke(portraitBox, Colors.Accent, 1.5, 0.35)
+
+	local portrait3D = CreatureViewport.Create(portraitBox, false, 1.04)
+
+	local speciesLabel = UiTheme.Label(header, Enum.Font.GothamBlack, 14, Colors.Text)
 	speciesLabel.Name = "SpeciesLabel"
-	speciesLabel.Size = UDim2.new(1, 0, 0, 18)
-	speciesLabel.LayoutOrder = 0
+	speciesLabel.Position = UDim2.fromOffset(56, 4)
+	speciesLabel.Size = UDim2.new(1, -56, 0, 18)
 	speciesLabel.TextTruncate = Enum.TextTruncate.AtEnd
 
-	local hungerBar = createBar(panel, 1, "Faim")
-	local thirstBar = createBar(panel, 2, "Soif")
-	local tempBar = createBar(panel, 3, "Température")
-	local oxygenBar = createBar(panel, 4, "Oxygène")
-	local growthBar = createBar(panel, 5, "Croissance")
+	local stageBadge = UiTheme.Label(header, Enum.Font.GothamBold, 11, Colors.Accent)
+	stageBadge.Name = "StageBadge"
+	stageBadge.Position = UDim2.fromOffset(56, 25)
+	stageBadge.Size = UDim2.fromOffset(112, 19)
+	stageBadge.BackgroundTransparency = 0
+	stageBadge.BackgroundColor3 = Colors.CardSelected
+	stageBadge.TextXAlignment = Enum.TextXAlignment.Center
+	UiTheme.Corner(stageBadge, 6)
+	local stageBadgeStroke = UiTheme.Stroke(stageBadge, Colors.Accent, 1, 0.55)
+
+	-- ---------- Jauges ----------
+	local hungerBar = createBar(panel, 1, "🍖 Faim")
+	local thirstBar = createBar(panel, 2, "💧 Soif")
+	local tempBar = createBar(panel, 3, "🌡️ Température")
+	local oxygenBar = createBar(panel, 4, "🫧 Oxygène")
+	local growthBar = createBar(panel, 5, "🌱 Croissance")
+	local boostBar = createBar(panel, 6, "⚡ Boost (Shift)")
+	local levelBar = createBar(panel, 7, "⭐ Niveau 1")
+
+	-- Bande visuelle de la zone de température idéale sur la piste de Température
+	local idealZone = Instance.new("Frame")
+	idealZone.Name = "IdealZone"
+	idealZone.BackgroundColor3 = Colors.Accent
+	idealZone.BackgroundTransparency = 0.72
+	idealZone.BorderSizePixel = 0
+	idealZone.ZIndex = 1
+	idealZone.Parent = tempBar.Track
+	UiTheme.Corner(idealZone, 3)
 
 	local idealMinTick = createTick(tempBar.Track)
 	local idealMaxTick = createTick(tempBar.Track)
@@ -230,7 +276,7 @@ function SurvivalHudView.Mount()
 	local adulteTick = createTick(growthBar.Track)
 	adulteTick.Position = UDim2.new(STAGE_ADULTE / 100, 0, 0, 0)
 
-	local hintLabel = UiTheme.Label(panel, Enum.Font.Gotham, 11, Colors.Muted)
+	local hintLabel = UiTheme.Label(panel, Enum.Font.GothamMedium, 11, Colors.Muted)
 	hintLabel.Name = "GrowthHint"
 	hintLabel.Size = UDim2.new(1, 0, 0, 14)
 	hintLabel.LayoutOrder = 6
@@ -238,62 +284,78 @@ function SurvivalHudView.Mount()
 
 	local footer = Instance.new("Frame")
 	footer.Name = "Footer"
-	footer.Size = UDim2.new(1, 0, 0, 16)
-	footer.BackgroundTransparency = 1
+	footer.Size = UDim2.new(1, 0, 0, 38)
+	footer.BackgroundColor3 = Colors.Card
+	footer.BackgroundTransparency = 0.25
+	footer.BorderSizePixel = 0
 	footer.LayoutOrder = 7
 	footer.Parent = panel
+	UiTheme.Corner(footer, 7)
+	UiTheme.Padding(footer, 8, 3)
 
-	local seasonLabel = UiTheme.Label(footer, Enum.Font.GothamMedium, 12, Colors.Text)
+	local seasonLabel = UiTheme.Label(footer, Enum.Font.GothamBold, 11, Colors.Text)
 	seasonLabel.Name = "SeasonLabel"
-	seasonLabel.Size = UDim2.new(0.7, 0, 1, 0)
+	seasonLabel.Size = UDim2.new(0.65, 0, 0, 15)
 
-	local clockLabel = UiTheme.Label(footer, Enum.Font.GothamMedium, 12, Colors.Muted)
+	local clockLabel = UiTheme.Label(footer, Enum.Font.GothamBold, 11, Colors.Muted)
 	clockLabel.Name = "ClockLabel"
-	clockLabel.Position = UDim2.new(0.7, 0, 0, 0)
-	clockLabel.Size = UDim2.new(0.3, 0, 1, 0)
+	clockLabel.Position = UDim2.new(0.65, 0, 0, 0)
+	clockLabel.Size = UDim2.new(0.35, 0, 0, 15)
 	clockLabel.TextXAlignment = Enum.TextXAlignment.Right
+
+	local windLabel = UiTheme.Label(footer, Enum.Font.GothamMedium, 11, Colors.Muted)
+	windLabel.Name = "WindLabel"
+	windLabel.Position = UDim2.new(0, 0, 0, 17)
+	windLabel.Size = UDim2.new(1, 0, 0, 15)
+	windLabel.Text = "💨 Vent : Calme"
 
 	-- ---------- Bannière de changement de saison (haut-centre) ----------
 	local banner = Instance.new("CanvasGroup")
 	banner.Name = "SeasonBanner"
 	banner.AnchorPoint = Vector2.new(0.5, 0)
 	banner.Position = BANNER_HIDDEN
-	banner.Size = UDim2.fromOffset(440, 88)
-	banner.BackgroundColor3 = Colors.Panel
-	banner.BackgroundTransparency = 0.1
+	banner.Size = UDim2.fromOffset(450, 92)
+	banner.BackgroundColor3 = Color3.new(1, 1, 1)
+	banner.BackgroundTransparency = 0.06
 	banner.BorderSizePixel = 0
 	banner.GroupTransparency = 1
 	banner.Visible = false
 	banner.Parent = screenGui
-	UiTheme.Corner(banner, 12)
+	UiTheme.Corner(banner, 14)
+	local bannerGradient = UiTheme.Gradient(banner, Colors.PanelTop, Colors.PanelDeep, 95)
+	local bannerStroke = UiTheme.Stroke(banner, Colors.Accent, 1.5, 0.35)
 	UiTheme.BindScale(banner, 480, 320, 0.6, 1.2)
 
 	local bannerTitle = UiTheme.Label(banner, Enum.Font.GothamBlack, 24, Colors.Text)
-	bannerTitle.Position = UDim2.fromOffset(12, 8)
-	bannerTitle.Size = UDim2.new(1, -24, 0, 32)
+	bannerTitle.Position = UDim2.fromOffset(14, 10)
+	bannerTitle.Size = UDim2.new(1, -28, 0, 32)
 	bannerTitle.TextXAlignment = Enum.TextXAlignment.Center
 
-	local bannerBody = UiTheme.Label(banner, Enum.Font.Gotham, 13, Colors.Muted)
-	bannerBody.Position = UDim2.fromOffset(14, 42)
-	bannerBody.Size = UDim2.new(1, -28, 0, 38)
+	local bannerBody = UiTheme.Label(banner, Enum.Font.GothamMedium, 13, Colors.Muted)
+	bannerBody.Position = UDim2.fromOffset(16, 44)
+	bannerBody.Size = UDim2.new(1, -32, 0, 38)
 	bannerBody.TextXAlignment = Enum.TextXAlignment.Center
 	bannerBody.TextYAlignment = Enum.TextYAlignment.Top
 	bannerBody.TextWrapped = true
 
 	local bannerSequence = 0
-	local function showSeasonBanner(title: string, body: string)
+	local function showSeasonBanner(seasonId: string, titleText: string, bodyText: string)
 		bannerSequence += 1
 		local mySequence = bannerSequence
-		bannerTitle.Text = title
-		bannerBody.Text = body
+		local palette = UiTheme.GetSeasonPalette(seasonId)
+		bannerTitle.Text = titleText
+		bannerTitle.TextColor3 = palette.Accent
+		bannerBody.Text = bodyText
+		bannerStroke.Color = palette.Accent
+		bannerGradient.Color = ColorSequence.new(palette.Tint, Colors.PanelDeep)
 		banner.Position = BANNER_HIDDEN
 		banner.Visible = true
-		UiTheme.Tween(banner, 0.45, { GroupTransparency = 0, Position = BANNER_SHOWN }, Enum.EasingStyle.Back)
+		UiTheme.Tween(banner, 0.48, { GroupTransparency = 0, Position = BANNER_SHOWN }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		task.delay(BANNER_SECONDS, function()
 			if bannerSequence ~= mySequence then
 				return
 			end
-			local fadeOut = UiTheme.Tween(banner, 0.5, { GroupTransparency = 1, Position = BANNER_HIDDEN })
+			local fadeOut = UiTheme.Tween(banner, 0.45, { GroupTransparency = 1, Position = BANNER_HIDDEN })
 			fadeOut.Completed:Wait()
 			if bannerSequence == mySequence then
 				banner.Visible = false
@@ -312,22 +374,50 @@ function SurvivalHudView.Mount()
 		return if typeof(value) == "number" then value else fallback
 	end
 
-	-- Faim / Soif / Oxygène : 0..100, vert -> ambre (< 50) -> rouge pulsant (< 25).
 	local function updatePercentBar(bar: Bar, value: number): number
 		local clamped = math.clamp(value, 0, 100)
 		local color = if clamped >= 50 then Colors.Accent elseif clamped >= LOW_STAT_THRESHOLD then Colors.Warning else Colors.Danger
-		setBar(bar, clamped / 100, color, tostring(math.floor(clamped)), clamped < LOW_STAT_THRESHOLD)
+		setBar(bar, clamped / 100, color, tostring(math.floor(clamped)) .. "%", clamped < LOW_STAT_THRESHOLD)
 		return clamped
+	end
+
+	local lastPortraitSig = ""
+	local function refreshPortrait3D(spin: boolean)
+		local speciesId = player:GetAttribute("Species")
+		local actualSpecies = if typeof(speciesId) == "string" and InsectData[speciesId] then speciesId else "FourmiRousse"
+		local stageAttr = player:GetAttribute("Stage")
+		local actualStage = if typeof(stageAttr) == "string" then stageAttr else "Oeuf"
+		if player:GetAttribute("IsMolting") == true then
+			actualStage = "Mue"
+		end
+		local mutationAttr = player:GetAttribute("Mutation")
+		local mutationId = if typeof(mutationAttr) == "string" and mutationAttr ~= "" then mutationAttr else nil
+		local sig = string.format("%s|%s|%s", actualSpecies, actualStage, tostring(mutationId))
+		if sig ~= lastPortraitSig then
+			lastPortraitSig = sig
+			portrait3D.SetCreature(actualSpecies, actualStage, mutationId, false)
+			if spin then
+				portrait3D.SpinOnce()
+			end
+		end
 	end
 
 	local function refreshGrowth()
 		local growth = math.clamp(numberAttribute("Growth", 0), 0, 100)
 		local stage = player:GetAttribute("Stage")
-		local stageName = (typeof(stage) == "string" and STAGE_NAMES[stage]) or "Œuf"
+		local stageKey = if typeof(stage) == "string" then stage else "Oeuf"
 		if player:GetAttribute("IsMolting") == true then
-			stageName = "Mue"
+			stageKey = "Mue"
 		end
-		setBar(growthBar, growth / 100, Colors.Accent, string.format("%s · %d%%", stageName, math.floor(growth)), false)
+		local stageName = STAGE_NAMES[stageKey] or "🥚 Œuf"
+		local isMother = player:GetAttribute("IsMother") == true
+		stageBadge.Text = if isMother then "👑 Maman · 100%" else string.format("%s · %d%%", stageName, math.floor(growth))
+		local badgeColor = if isMother then Colors.Gold else Colors.Accent
+		stageBadge.TextColor3 = badgeColor
+		stageBadgeStroke.Color = badgeColor
+		portraitStroke.Color = badgeColor
+
+		setBar(growthBar, growth / 100, badgeColor, string.format("%d%%", math.floor(growth)), false)
 
 		local info = speciesInfo()
 		local metamorphosis = info == nil or info.GrowthType == "Metamorphose"
@@ -337,9 +427,9 @@ function SurvivalHudView.Mount()
 		local hint: string
 		local hintColor = Colors.Muted
 		if stage == "Oeuf" and growth == 0 and player:GetAttribute("HasConfirmedSpawn") ~= true then
-			hint = "Choisissez une espèce ou un nid pour éclore"
+			hint = "🥚 Choisissez une espèce ou un nid pour éclore"
 		elseif starving and stage ~= "Cocon" and growth < 100 then
-			hint = "Croissance en pause : mangez et buvez !"
+			hint = "⚠ Croissance en pause : mangez et buvez !"
 			hintColor = Colors.Warning
 		elseif growth < STAGE_LARVE then
 			hint = string.format("Prochain stade : Larve à %d%%", STAGE_LARVE)
@@ -355,10 +445,11 @@ function SurvivalHudView.Mount()
 			end
 		elseif growth < 100 then
 			hint = "Adulte : colonie possible à 100%"
-		elseif player:GetAttribute("IsMother") == true then
-			hint = "Maman : votre nid accueille les œufs"
+		elseif isMother then
+			hint = "👑 Maman : votre nid accueille les œufs"
+			hintColor = Colors.Gold
 		else
-			hint = "Croissance max : fondez une colonie !"
+			hint = "✨ Croissance max : fondez une colonie !"
 			hintColor = Colors.Accent
 		end
 		hintLabel.Text = hint
@@ -367,7 +458,7 @@ function SurvivalHudView.Mount()
 
 	local function refreshHunger()
 		updatePercentBar(hungerBar, numberAttribute("Hunger", 0))
-		refreshGrowth() -- l'indice "croissance en pause" dépend de la faim
+		refreshGrowth()
 	end
 	local function refreshThirst()
 		updatePercentBar(thirstBar, numberAttribute("Thirst", 0))
@@ -375,11 +466,32 @@ function SurvivalHudView.Mount()
 	end
 	local function refreshOxygen()
 		local oxygen = updatePercentBar(oxygenBar, numberAttribute("Oxygen", 100))
-		-- Jauge masquée tant qu'on respire normalement : le panneau reste compact.
 		oxygenBar.Container.Visible = oxygen < 99.5
 	end
 
-	-- Température : bleu -> vert -> rouge selon la zone idéale de l'espèce active.
+	-- Jauge de boost (MovementService) : masquée quand pleine.
+	local function refreshBoost()
+		local energy = math.clamp(numberAttribute("BoostEnergy", 1), 0, 1)
+		setBar(boostBar, energy, if energy > 0.25 then Colors.Accent else Colors.Warning, tostring(math.floor(energy * 100)), false)
+		boostBar.Container.Visible = energy < 0.995
+	end
+
+	-- Niveau + XP vers le niveau suivant (chasser et manger).
+	local function refreshLevel()
+		local level = math.max(1, math.floor(numberAttribute("Level", 1)))
+		local xp = numberAttribute("XP", 0)
+		local nextXp = numberAttribute("XPNext", 0)
+		local label = levelBar.Container:FindFirstChild("Label")
+		if label and label:IsA("TextLabel") then
+			label.Text = "⭐ Niveau " .. level
+		end
+		if nextXp > 0 then
+			setBar(levelBar, math.clamp(xp / nextXp, 0, 1), Colors.Accent, string.format("%d / %d XP", xp, nextXp), false)
+		else
+			setBar(levelBar, 1, Colors.Warning, "MAX", false)
+		end
+	end
+
 	local function refreshTemperature()
 		local bodyTemp = numberAttribute("BodyTemperature", 22)
 		local info = speciesInfo()
@@ -390,10 +502,10 @@ function SurvivalHudView.Mount()
 		local state = "idéal"
 		if bodyTemp < idealMin then
 			color = Colors.Accent:Lerp(Colors.Cold, math.clamp((idealMin - bodyTemp) / 15, 0, 1))
-			state = "trop froid"
+			state = "froid"
 		elseif bodyTemp > idealMax then
 			color = Colors.Accent:Lerp(Colors.Danger, math.clamp((bodyTemp - idealMax) / 15, 0, 1))
-			state = "trop chaud"
+			state = "chaud"
 		end
 		setBar(
 			tempBar,
@@ -407,23 +519,29 @@ function SurvivalHudView.Mount()
 	local function refreshSpecies()
 		local info = speciesInfo()
 		speciesLabel.Text = if info then info.Name else "Micro Wild"
-		idealMinTick.Position = UDim2.new(tempRatio(if info then info.IdealTempMin else 10), 0, 0, 0)
-		idealMaxTick.Position = UDim2.new(tempRatio(if info then info.IdealTempMax else 30), 0, 0, 0)
+		local minR = tempRatio(if info then info.IdealTempMin else 10)
+		local maxR = tempRatio(if info then info.IdealTempMax else 30)
+		idealMinTick.Position = UDim2.new(minR, 0, 0, 0)
+		idealMaxTick.Position = UDim2.new(maxR, 0, 0, 0)
+		idealZone.Position = UDim2.new(minR, 0, 0, 0)
+		idealZone.Size = UDim2.new(math.max(0.02, maxR - minR), 0, 1, 0)
 		coconTick.Visible = info == nil or info.GrowthType == "Metamorphose"
 		refreshTemperature()
 		refreshGrowth()
+		refreshPortrait3D(true)
 	end
 
-	-- Flash blanc de la jauge de croissance à chaque changement de stade (hors retour à l'œuf).
 	local lastStage = player:GetAttribute("Stage")
 	local function onStageChanged()
 		local stage = player:GetAttribute("Stage")
 		if stage ~= lastStage and stage ~= "Oeuf" then
 			growthBar.Fill.BackgroundColor3 = Color3.new(1, 1, 1)
 			UiTheme.Tween(growthBar.Fill, 0.9, { BackgroundColor3 = Colors.Accent })
+			UiTheme.Pop(stageBadge, 0.85, 0.3)
 		end
 		lastStage = stage
 		refreshGrowth()
+		refreshPortrait3D(true)
 	end
 
 	local lastSeasonId = workspace:GetAttribute("CurrentSeason")
@@ -434,14 +552,15 @@ function SurvivalHudView.Mount()
 		if typeof(displayName) ~= "string" then
 			displayName = if seasonInfo then seasonInfo.DisplayName else tostring(seasonId or "?")
 		end
+		local palette = UiTheme.GetSeasonPalette(if typeof(seasonId) == "string" then seasonId else nil)
 		seasonLabel.Text = displayName :: string
+		seasonLabel.TextColor3 = palette.Accent
+		UiTheme.Tween(panelStroke, 0.5, { Color = palette.Accent:Lerp(Colors.Border, 0.5) })
 
 		if typeof(seasonId) == "string" then
 			ClientState.CurrentSeason = seasonId
-			-- Bannière uniquement sur un vrai changement (pas à la première réplication).
 			if lastSeasonId ~= nil and seasonId ~= lastSeasonId and seasonInfo then
-				showSeasonBanner(seasonInfo.DisplayName, seasonInfo.Description)
-				-- Fondu d'apparition du nouveau nom de saison dans le pied du panneau.
+				showSeasonBanner(seasonId, seasonInfo.DisplayName, seasonInfo.Description)
 				seasonLabel.TextTransparency = 1
 				UiTheme.Tween(seasonLabel, 0.8, { TextTransparency = 0 })
 			end
@@ -449,33 +568,103 @@ function SurvivalHudView.Mount()
 		end
 	end
 
+	local COMPASS_ARROWS = { "→", "↘", "↓", "↙", "←", "↖", "↑", "↗" }
+	local function refreshWind()
+		if player:GetAttribute("InShelterOrColony") == true then
+			windLabel.Text = "🏠 À l'abri (vent & pluie)"
+			windLabel.TextColor3 = Colors.Accent
+			return
+		end
+		local precip = workspace:GetAttribute("Precipitation")
+		local rainIntensity = (workspace:GetAttribute("RainIntensity") :: number?) or 0
+		local isHeavyRain = workspace:GetAttribute("RainHeavy") == true or rainIntensity >= 0.7
+		local rainPrefix = ""
+		if precip == "Rain" and rainIntensity > 0.03 then
+			if isHeavyRain then
+				rainPrefix = "⛈️ Déluge · "
+			elseif rainIntensity >= 0.42 then
+				rainPrefix = "🌧️ Averse · "
+			else
+				rainPrefix = "🌦️ Pluie fine · "
+			end
+		elseif precip == "Snow" then
+			rainPrefix = "🌨️ Neige · "
+		end
+
+		local windAttr = workspace:GetAttribute("WindVector")
+		local wind = if typeof(windAttr) == "Vector3" then windAttr else Vector3.zero
+		local speed = Vector3.new(wind.X, 0, wind.Z).Magnitude
+		if speed < 1.5 then
+			windLabel.Text = rainPrefix .. "💨 Vent : Calme"
+			windLabel.TextColor3 = if isHeavyRain
+				then Colors.Warning
+				elseif rainPrefix ~= "" then Colors.Cold
+				else Colors.Muted
+			return
+		end
+		local angle = math.atan2(wind.Z, wind.X)
+		local sector = (math.floor((angle / (math.pi * 2)) * 8 + 0.5) % 8) + 1
+		local arrow = COMPASS_ARROWS[sector] or "→"
+		local isGust = workspace:GetAttribute("WindGust") == true or speed >= 19
+		local stateText = if isGust
+			then "Rafale !"
+			elseif speed >= 13 then "Vent fort"
+			else "Brise"
+		windLabel.Text = string.format("%s💨 %s %s (%d km/h)", rainPrefix, stateText, arrow, math.floor(speed * 2.2))
+		windLabel.TextColor3 = if isGust or isHeavyRain
+			then Colors.Warning
+			elseif speed >= 13 or rainPrefix ~= "" then Colors.Cold
+			else Colors.Muted
+	end
+
 	refreshHunger()
 	refreshThirst()
 	refreshOxygen()
+	refreshBoost()
+	refreshLevel()
 	refreshSpecies()
+	refreshPortrait3D(false)
 	refreshSeason()
+	refreshWind()
 
 	player:GetAttributeChangedSignal("Hunger"):Connect(refreshHunger)
 	player:GetAttributeChangedSignal("Thirst"):Connect(refreshThirst)
 	player:GetAttributeChangedSignal("Oxygen"):Connect(refreshOxygen)
+	player:GetAttributeChangedSignal("BoostEnergy"):Connect(refreshBoost)
+	for _, attribute in ipairs({ "Level", "XP", "XPNext" }) do
+		player:GetAttributeChangedSignal(attribute):Connect(refreshLevel)
+	end
 	player:GetAttributeChangedSignal("BodyTemperature"):Connect(refreshTemperature)
 	player:GetAttributeChangedSignal("Species"):Connect(refreshSpecies)
 	player:GetAttributeChangedSignal("Growth"):Connect(refreshGrowth)
 	player:GetAttributeChangedSignal("Stage"):Connect(onStageChanged)
-	player:GetAttributeChangedSignal("IsMolting"):Connect(refreshGrowth)
+	player:GetAttributeChangedSignal("IsMolting"):Connect(function()
+		refreshGrowth()
+		refreshPortrait3D(true)
+	end)
+	player:GetAttributeChangedSignal("Mutation"):Connect(function()
+		refreshPortrait3D(true)
+	end)
 	player:GetAttributeChangedSignal("IsMother"):Connect(refreshGrowth)
 	player:GetAttributeChangedSignal("HasConfirmedSpawn"):Connect(refreshGrowth)
+	player:GetAttributeChangedSignal("InShelterOrColony"):Connect(refreshWind)
 	workspace:GetAttributeChangedSignal("CurrentSeason"):Connect(refreshSeason)
 	workspace:GetAttributeChangedSignal("SeasonDisplayName"):Connect(refreshSeason)
+	workspace:GetAttributeChangedSignal("WindVector"):Connect(refreshWind)
+	workspace:GetAttributeChangedSignal("WindGust"):Connect(refreshWind)
+	workspace:GetAttributeChangedSignal("Precipitation"):Connect(refreshWind)
+	workspace:GetAttributeChangedSignal("RainIntensity"):Connect(refreshWind)
+	workspace:GetAttributeChangedSignal("RainHeavy"):Connect(refreshWind)
 
-	-- Horloge : une vérification par seconde, et le texte n'est reformaté que si la minute change.
 	task.spawn(function()
 		local lastMinuteOfDay = -1
 		while true do
 			local minuteOfDay = math.floor(Lighting.ClockTime * 60)
 			if minuteOfDay ~= lastMinuteOfDay then
 				lastMinuteOfDay = minuteOfDay
-				clockLabel.Text = string.format("%02d:%02d", minuteOfDay // 60, minuteOfDay % 60)
+				local hour = minuteOfDay // 60
+				local isDay = hour >= 6 and hour < 19
+				clockLabel.Text = string.format("%s %02d:%02d", if isDay then "☀️" else "🌙", hour, minuteOfDay % 60)
 			end
 			task.wait(1)
 		end

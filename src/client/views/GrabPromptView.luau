@@ -1,8 +1,7 @@
 --!strict
 -- GrabPromptView.luau
--- Prompt centre-écran "AGRIPPÉ PAR ..." + barre de progression locale pour le mash ESPACE.
--- La logique de QTE (comptage des appuis, réussite de l'évasion) est côté serveur : cette vue ne
--- fait qu'informer et envoyer l'intention RequestGrabEscape à chaque appui.
+-- Prompt centre-écran "AGRIPPÉ PAR ..." au style organique « Micro Wild » + barre de progression
+-- avec rebond visuel à chaque appui sur ESPACE / bouton tactile « Libérer ».
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -17,11 +16,9 @@ local GrabPromptView = {}
 local mounted = false
 
 local ESCAPE_ACTION = "MW_GrabEscape"
--- Repli si le serveur n'envoie pas le nombre d'appuis requis.
 local DEFAULT_PRESSES_NEEDED = 12
--- Tailles pré-allouées : l'entrée "pop" part d'un cadre un peu plus petit.
-local PROMPT_SIZE = UDim2.fromOffset(420, 90)
-local PROMPT_POP_START = UDim2.fromOffset(370, 80)
+local PROMPT_SIZE = UDim2.fromOffset(430, 96)
+local PROMPT_POP_START = UDim2.fromOffset(375, 84)
 
 function GrabPromptView.Mount()
 	if mounted then
@@ -46,17 +43,15 @@ function GrabPromptView.Mount()
 	promptFrame.AnchorPoint = Vector2.new(0.5, 0.5)
 	promptFrame.Position = UDim2.new(0.5, 0, 0.4, 0)
 	promptFrame.Size = PROMPT_SIZE
-	promptFrame.BackgroundColor3 = Colors.Panel
-	promptFrame.BackgroundTransparency = 0.1
-	promptFrame.BorderSizePixel = 0
+	promptFrame.BackgroundTransparency = 0.06
 	promptFrame.Visible = false
 	promptFrame.Parent = screenGui
-	UiTheme.Corner(promptFrame, 12)
-	local promptStroke = UiTheme.Stroke(promptFrame, Colors.Danger, 2, 0.6)
-	UiTheme.Padding(promptFrame, 14, 10)
+	local promptStroke = UiTheme.StylePanel(promptFrame, 14, Colors.Danger, 0.5)
+	promptStroke.Thickness = 2
+	UiTheme.Padding(promptFrame, 16, 12)
 	UiTheme.BindScale(promptFrame, 480, 360, 0.6, 1.2)
 
-	local promptLabel = UiTheme.Label(promptFrame, Enum.Font.GothamBold, 18, Colors.Danger)
+	local promptLabel = UiTheme.Label(promptFrame, Enum.Font.GothamBlack, 17, Colors.Danger)
 	promptLabel.Name = "PromptLabel"
 	promptLabel.Size = UDim2.new(1, 0, 0, 44)
 	promptLabel.TextWrapped = true
@@ -69,7 +64,8 @@ function GrabPromptView.Mount()
 	track.BackgroundColor3 = Colors.Track
 	track.BorderSizePixel = 0
 	track.Parent = promptFrame
-	UiTheme.Corner(track, 6)
+	UiTheme.Corner(track, 7)
+	UiTheme.Stroke(track, Colors.Border, 1, 0.65)
 
 	local fill = Instance.new("Frame")
 	fill.Name = "Fill"
@@ -77,12 +73,20 @@ function GrabPromptView.Mount()
 	fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = Colors.Accent
 	fill.Parent = track
-	UiTheme.Corner(fill, 6)
+	UiTheme.Corner(fill, 7)
 
-	-- Alerte : contour pulsant, un seul tween en boucle joué seulement pendant l'agrippement.
+	local shine = Instance.new("Frame")
+	shine.Name = "Shine"
+	shine.Size = UDim2.new(1, 0, 0.45, 0)
+	shine.BackgroundColor3 = Color3.new(1, 1, 1)
+	shine.BackgroundTransparency = 0.8
+	shine.BorderSizePixel = 0
+	shine.Parent = fill
+	UiTheme.Corner(shine, 7)
+
 	local strokePulse = TweenService:Create(
 		promptStroke,
-		TweenInfo.new(0.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+		TweenInfo.new(0.38, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
 		{ Transparency = 0 }
 	)
 
@@ -102,8 +106,6 @@ function GrabPromptView.Mount()
 
 	local function setEscapeProgress(value: number)
 		escapeProgress = math.clamp(value, 0, 1)
-		-- Remplissage tweené (une allocation par appui, jamais par frame) : ambre -> vert à mesure
-		-- qu'on approche de la libération.
 		UiTheme.Tween(fill, 0.12, {
 			Size = UDim2.new(escapeProgress, 0, 1, 0),
 			BackgroundColor3 = Colors.Warning:Lerp(Colors.Accent, escapeProgress),
@@ -114,8 +116,10 @@ function GrabPromptView.Mount()
 		if inputState ~= Enum.UserInputState.Begin or not isGrabbed then
 			return Enum.ContextActionResult.Pass
 		end
-		-- Une barre fidèle au compteur serveur : 1/N par appui, sans décroissance.
 		setEscapeProgress(escapeProgress + 1 / pressesNeeded)
+		-- Petit rebond nerveux du cadre à chaque appui pour renforcer le ressenti du QTE.
+		promptFrame.Size = UDim2.fromOffset(442, 100)
+		UiTheme.Tween(promptFrame, 0.14, { Size = PROMPT_SIZE }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		if requestGrabEscapeRemote then
 			requestGrabEscapeRemote:FireServer()
 		end
@@ -125,19 +129,17 @@ function GrabPromptView.Mount()
 	local function showPrompt(grabberName: string?)
 		isGrabbed = true
 		setEscapeProgress(0)
-		-- Espace / bouton A / bouton tactile "Libérer" : le QTE marche sur tous les appareils.
 		ContextActionService:BindActionAtPriority(ESCAPE_ACTION, onEscapeAction, true, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space, Enum.KeyCode.ButtonA)
 		ContextActionService:SetTitle(ESCAPE_ACTION, "Libérer")
 		ContextActionService:SetPosition(ESCAPE_ACTION, UDim2.new(0.5, -40, 0.6, 0))
 		promptLabel.Text = string.format(
-			"AGRIPPÉ PAR %s — %s pour te libérer !",
+			"⚠ AGRIPPÉ PAR %s — %s pour te libérer !",
 			grabberName or "un prédateur",
-			if UiTheme.IsTouchOnly() then "Touche « Libérer »" else "Appuie sur ESPACE"
+			if UiTheme.IsTouchOnly() then "Touche « Libérer »" else "Martèle [ESPACE]"
 		)
-		-- Entrée : petit "pop" + contour rouge pulsant.
 		promptFrame.Size = PROMPT_POP_START
 		promptFrame.Visible = true
-		UiTheme.Tween(promptFrame, 0.25, { Size = PROMPT_SIZE }, Enum.EasingStyle.Back)
+		UiTheme.Tween(promptFrame, 0.26, { Size = PROMPT_SIZE }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		strokePulse:Play()
 	end
 
@@ -146,7 +148,7 @@ function GrabPromptView.Mount()
 		ContextActionService:UnbindAction(ESCAPE_ACTION)
 		promptFrame.Visible = false
 		strokePulse:Cancel()
-		promptStroke.Transparency = 0.6
+		promptStroke.Transparency = 0.5
 		setEscapeProgress(0)
 	end
 
@@ -166,8 +168,6 @@ function GrabPromptView.Mount()
 		end)
 	end)
 
-	-- Filet de sécurité : si l'attribut serveur retombe à false (ex: mort du joueur) sans que
-	-- GrabStateChanged(false) soit émis, on masque quand même le prompt.
 	player:GetAttributeChangedSignal("IsGrabbed"):Connect(function()
 		if isGrabbed and player:GetAttribute("IsGrabbed") == false then
 			hidePrompt()

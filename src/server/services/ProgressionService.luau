@@ -12,6 +12,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
+local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
 
 local ProgressionService = {}
 
@@ -180,6 +181,58 @@ function ProgressionService.AddEvolutionPoints(player: Player, amount: number)
 	refreshLeaderstats(player)
 end
 
+-- ============================================================
+-- Expérience et niveaux (par vie) : chasser et manger font monter de niveau
+-- ============================================================
+
+-- XP nécessaire pour passer du niveau `level` au suivant.
+local function xpToNext(level: number): number
+	return 40 + 35 * (level - 1)
+end
+
+local function publishExperience(player: Player, level: number, xp: number)
+	player:SetAttribute("Level", level)
+	player:SetAttribute("XP", xp)
+	player:SetAttribute("XPNext", if level >= EvolutionDomain.MAX_LEVEL then 0 else xpToNext(level))
+end
+
+function ProgressionService.AddExperience(player: Player, amount: number)
+	if amount <= 0 or player.Parent == nil then
+		return
+	end
+	local level = EvolutionDomain.GetLevel(player)
+	if level >= EvolutionDomain.MAX_LEVEL then
+		return
+	end
+	local xp = ((player:GetAttribute("XP") :: number?) or 0) + amount
+	local gained = 0
+	while level < EvolutionDomain.MAX_LEVEL and xp >= xpToNext(level) do
+		xp -= xpToNext(level)
+		level += 1
+		gained += 1
+	end
+	if level >= EvolutionDomain.MAX_LEVEL then
+		xp = 0
+	end
+	publishExperience(player, level, math.floor(xp))
+	if gained > 0 then
+		EvolutionDomain.ApplyLevel(player)
+		Remotes.Get("NotifyClient"):FireClient(
+			player,
+			if level >= EvolutionDomain.MAX_LEVEL
+				then string.format("⭐ Niveau %d (max) ! Vous êtes au sommet de votre espèce.", level)
+				else string.format("⭐ Niveau %d ! Plus grand, plus fort, plus rapide.", level),
+			"info"
+		)
+	end
+end
+
+-- Nouvelle vie : retour au niveau 1.
+function ProgressionService.ResetExperience(player: Player)
+	publishExperience(player, 1, 0)
+	EvolutionDomain.ApplyLevel(player)
+end
+
 function ProgressionService.RecordKill(attackerUserId: number?, victimName: string, victimIsGiant: boolean)
 	if not attackerUserId then
 		return
@@ -191,6 +244,7 @@ function ProgressionService.RecordKill(attackerUserId: number?, victimName: stri
 	end
 	profile.Kills += 1
 	ProgressionService.AddEvolutionPoints(attacker, if victimIsGiant then 400 else 40)
+	ProgressionService.AddExperience(attacker, if victimIsGiant then 250 else 60)
 	Remotes.Get("NotifyClient"):FireClient(attacker, "Vous avez tué " .. victimName .. " !", "info")
 end
 
@@ -257,6 +311,7 @@ function ProgressionService.GetUnlockedMutationCount(player: Player): number
 end
 
 local function onPlayerAdded(player: Player)
+	publishExperience(player, 1, 0)
 	createLeaderstats(player)
 	local profile = loadProfile(player)
 	if not player.Parent then

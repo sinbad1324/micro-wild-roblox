@@ -14,6 +14,27 @@ local ServerTypes = require(ServerScriptService.types.ServerTypes)
 
 local EvolutionDomain = {}
 
+-- Niveaux d'XP (ProgressionService.AddExperience) : par niveau au-delà du 1er, l'insecte grandit
+-- un peu et gagne vie, force et vitesse. Remis au niveau 1 à chaque nouvelle vie.
+EvolutionDomain.MAX_LEVEL = 20
+local LEVEL_SCALE_STEP = 0.012 -- +1.2 % de taille par niveau (jusqu'à ~+23 %)
+local LEVEL_HEALTH_STEP = 0.04
+local LEVEL_SPEED_STEP = 0.01
+EvolutionDomain.LEVEL_DAMAGE_STEP = 0.03
+
+function EvolutionDomain.GetLevel(player: Player): number
+	local level = player:GetAttribute("Level")
+	return if type(level) == "number" then math.clamp(math.floor(level), 1, EvolutionDomain.MAX_LEVEL) else 1
+end
+
+function EvolutionDomain.GetLevelScale(player: Player): number
+	return 1 + LEVEL_SCALE_STEP * (EvolutionDomain.GetLevel(player) - 1)
+end
+
+local function levelHealthFactor(player: Player): number
+	return 1 + LEVEL_HEALTH_STEP * (EvolutionDomain.GetLevel(player) - 1)
+end
+
 -- Stade "stable" dérivé uniquement de la croissance (ignore la fenêtre transitoire "Mue",
 -- qui est gérée à part par GrowthAndNestService car elle dépend du TEMPS, pas que de la
 -- croissance : voir EvolutionDomain.ShouldTriggerMolt).
@@ -95,8 +116,8 @@ local function applyStats(player: Player, humanoid: Humanoid, speciesId: string,
 		local sprint = if table.find(species.Abilities, "SprintOndulant") then 1.3 else 1
 		MovementService.SetBaseWalkSpeed(player, species.WalkSpeed * sprint)
 		MovementService.SetBaseJumpPower(player, 50)
-		humanoid.MaxHealth = species.MaxHealth
-		humanoid.Health = species.MaxHealth
+		humanoid.MaxHealth = species.MaxHealth * levelHealthFactor(player)
+		humanoid.Health = humanoid.MaxHealth
 	end
 end
 
@@ -107,7 +128,7 @@ function EvolutionDomain.ApplyStageStats(player: Player, character: Model, speci
 		return
 	end
 	applyStats(player, humanoid, speciesId, stage)
-	character:ScaleTo(EvolutionDomain.GetStageScale(stage, (player:GetAttribute("Growth") :: number?) or 0))
+	character:ScaleTo(EvolutionDomain.GetStageScale(stage, (player:GetAttribute("Growth") :: number?) or 0) * EvolutionDomain.GetLevelScale(player))
 end
 
 -- Point d'entrée UNIQUE pour changer de stade : attribut + stats + corps 3D. Sans le visuel, un
@@ -130,6 +151,7 @@ function EvolutionDomain.SetStage(player: Player, speciesId: string, stage: Serv
 	end
 
 	local targetScale = EvolutionDomain.GetStageScale(stage, (player:GetAttribute("Growth") :: number?) or 0)
+		* EvolutionDomain.GetLevelScale(player)
 	local startScale = character:GetScale()
 	if not instant and character:FindFirstChild("InsectVisual") and math.abs(targetScale - startScale) > 0.02 then
 		for step = 1, STAGE_TWEEN_STEPS - 1 do
@@ -149,6 +171,31 @@ function EvolutionDomain.SetStage(player: Player, speciesId: string, stage: Serv
 	end
 	character:ScaleTo(targetScale)
 	InsectVisualService.ApplyVisual(character, speciesId, stage, player:GetAttribute("Mutation") :: string?)
+end
+
+-- Nouveau niveau : vitesse, vie (même proportion + petit soin) et taille, sans reconstruire le corps.
+function EvolutionDomain.ApplyLevel(player: Player)
+	local level = EvolutionDomain.GetLevel(player)
+	if level > 1 then
+		MovementService.AddModifier(player, "Level", "Multiplier", 1 + LEVEL_SPEED_STEP * (level - 1))
+	else
+		MovementService.RemoveModifier(player, "Level")
+	end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not character or not humanoid or humanoid.Health <= 0 then
+		return
+	end
+	local stage = player:GetAttribute("Stage")
+	if stage == "Adulte" then
+		local species = InsectData[(player:GetAttribute("Species") :: string?) or ""] or InsectData[GameConstants.DEFAULT_SPECIES]
+		local ratio = humanoid.Health / math.max(humanoid.MaxHealth, 1)
+		humanoid.MaxHealth = species.MaxHealth * levelHealthFactor(player)
+		humanoid.Health = math.min(humanoid.MaxHealth, humanoid.MaxHealth * (ratio + 0.25))
+	end
+	if type(stage) == "string" and character:FindFirstChild("InsectVisual") then
+		character:ScaleTo(EvolutionDomain.GetStageScale(stage :: any, (player:GetAttribute("Growth") :: number?) or 0) * EvolutionDomain.GetLevelScale(player))
+	end
 end
 
 return EvolutionDomain

@@ -35,6 +35,10 @@ local UP_SHARPNESS = 14 -- vitesse de bascule de l'orientation (plus haut = plus
 local SNAP_SHARPNESS = 22 -- vitesse de recollage à la bonne distance de la surface
 local TURN_SHARPNESS = 16 -- vitesse de rotation du corps vers la direction de marche
 local MAX_CORRECTION_SPEED = 60
+-- Coins : la bascule démarre un peu AVANT le contact (fraction de la portée des pattes) et l'insecte
+-- continue d'avancer pendant qu'il tourne (fraction de sa vitesse) au lieu de s'arrêter net.
+local PIVOT_LOOKAHEAD = 0.6
+local CORNER_SPEED = 0.7
 
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -57,12 +61,27 @@ antiGravity.Parent = rootPart
 local climbing = false
 local engagedAt = 0
 local lostTime = 0
+local floorTime = 0 -- temps passé d'affilée sur une face de sol (retour au Humanoid)
+local FLOOR_CONFIRM_TIME = 0.15
 local jumpCooldownUntil = 0
 local jumpWasHeld = false
 local up = Vector3.yAxis -- normale lissée de la surface sous les pattes
 local facing = Vector3.new(0, 0, -1) -- direction du regard, dans le plan de la surface
 local pivotUp: Vector3? = nil -- coin rentrant en cours : face visée (gardée jusqu'à la fin du pivot)
 local pivotFrom = Vector3.yAxis -- face quittée pendant le pivot
+-- Collision du root coupée UNIQUEMENT pendant une bascule (coin rentrant / arête) : la boîte englobe
+-- tout le corps (tête, mâchoires) et se coinçait contre le mur / le plafond en tournant. Le reste du
+-- temps elle reste active : sans elle, l'insecte traversait le sol et tombait dans le vide.
+local rootCollided = rootPart.CanCollide
+
+local overlapParams = OverlapParams.new()
+overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+overlapParams.FilterDescendantsInstances = { character }
+overlapParams.RespectCanCollide = true
+
+local function overlapsWorld(): boolean
+	return #workspace:GetPartsInPart(rootPart, overlapParams) > 0
+end
 
 local function canPlayerClimb(): boolean
 	-- Allowlist : un Stage pas encore répliqué (nil) ne doit pas autoriser l'escalade.
@@ -154,6 +173,10 @@ local function stopClimbing(landedOnFloor: boolean)
 	antiGravity.Enabled = false
 	humanoid.PlatformStand = false
 	rootPart.AssemblyAngularVelocity = Vector3.zero
+	-- Collision rendue TOUT DE SUITE (jamais de chute sans collision) ; la dernière normale sert à
+	-- dégager la boîte si elle mord dans le décor après le redressement.
+	local lastUp = up
+	rootPart.CanCollide = rootCollided
 	if humanoid.Health <= 0 then
 		return
 	end
@@ -167,6 +190,14 @@ local function stopClimbing(landedOnFloor: boolean)
 		local position = rootPart.Position
 		rootPart.CFrame = CFrame.lookAt(position, position + flat)
 	end
+	-- Petits pas le long de la normale quittée tant que la boîte chevauche une part (pas d'éjection).
+	local push = math.max(0.05, rootPart.Size.Y * 0.25)
+	for _ = 1, 8 do
+		if not overlapsWorld() then
+			break
+		end
+		rootPart.CFrame += lastUp * push
+	end
 	if landedOnFloor then
 		humanoid:ChangeState(Enum.HumanoidStateType.Running)
 	else
@@ -178,6 +209,7 @@ local function startClimbing()
 	climbing = true
 	engagedAt = os.clock()
 	lostTime = 0
+	floorTime = 0
 	pivotUp = nil
 	up = rootPart.CFrame.UpVector
 	facing = projectOnPlane(rootPart.CFrame.LookVector, up)
@@ -187,6 +219,7 @@ local function startClimbing()
 	facing = facing.Unit
 	CharacterState.IsClimbingWall = true
 	humanoid.PlatformStand = true
+	rootCollided = rootPart.CanCollide
 	antiGravity.Enabled = true
 end
 
@@ -200,6 +233,12 @@ local function tryEngage(reach: number)
 	-- Même portée que le rayon de coin rentrant : on ne s'accroche que si le pivot verra la face.
 	local result = ray(rootPart.Position, direction, math.max(reach, bodyExtent(direction)) + 0.3)
 	if result and result.Normal.Y < WALL_MAX_UP_DOT and direction:Dot(-result.Normal) > 0.3 then
+		-- Petite marche (facette de rocher, caillou) : StepAssistController la franchit d'un bond.
+		-- On ne s'accroche qu'aux vrais murs, sinon l'escalade s'allume et s'éteint à chaque facette.
+		-- (au sol seulement : en l'air, on agrippe le mur comme avant)
+		if humanoid.FloorMaterial ~= Enum.Material.Air and CharacterState.StepHeight(rootPart, humanoid, direction, rayParams) then
+			return
+		end
 		startClimbing()
 	end
 end
@@ -210,13 +249,15 @@ local function surfaceGap(normal: Vector3, reach: number): number
 end
 
 -- Décalage qui place le centre à la bonne distance d'une face (absolu : ne s'accumule pas).
-local function clearanceFrom(position: Vector3, normal: Vector3, reach: number): Vector3
+-- `pushOnly` : ne fait que repousser (face quittée : on a le droit de s'en éloigner en grimpant).
+local function clearanceFrom(position: Vector3, normal: Vector3, reach: number, pushOnly: boolean): Vector3
 	local gap = surfaceGap(normal, reach)
 	local hit = ray(position, -normal, gap + reach + 0.5)
 	if not hit then
 		return Vector3.zero
 	end
-	return hit.Normal * (surfaceGap(hit.Normal, reach) - (position - hit.Position):Dot(hit.Normal))
+	local amount = surfaceGap(hit.Normal, reach) - (position - hit.Position):Dot(hit.Normal)
+	return hit.Normal * (if pushOnly then math.max(0, amount) else amount)
 end
 
 local function updateClimb(deltaTime: number, reach: number)
@@ -225,16 +266,21 @@ local function updateClimb(deltaTime: number, reach: number)
 	local move = getSurfaceMove(up)
 	local moving = move.Magnitude > 0.05
 	local moveDir = if moving then move.Unit else facing
-	local step = move * speed * deltaTime
+	-- Légère déviation tangentielle par le vent lorsqu'on grimpe sur une paroi ou branche exposée.
+	local wind = CharacterState.GetEffectiveWind(rootPart, rayParams)
+	local surfaceWind = projectOnPlane(wind, up)
+	local windStep = if moving then surfaceWind * (0.22 * deltaTime) elseif surfaceWind.Magnitude > 14 then surfaceWind * (0.12 * deltaTime) else Vector3.zero
+	local step = move * speed * deltaTime + windStep
 
 	local targetUp = up
 	local targetPos = position + step
 	local surfaceFound = false
+	local wrapping = false
 
 	-- 1) Coin rentrant : une autre face juste devant (mur quand on marche au sol, plafond en haut
 	--    d'un mur...). On n'avance pas dedans, on pivote dessus jusqu'au bout (hystérésis).
 	if moving and not pivotUp then
-		local ahead = ray(position, moveDir, surfaceGap(moveDir, reach) + step.Magnitude + 0.15)
+		local ahead = ray(position, moveDir, surfaceGap(moveDir, reach) + step.Magnitude + reach * PIVOT_LOOKAHEAD + 0.15)
 		if ahead and ahead.Normal:Dot(up) < WALL_MAX_UP_DOT then
 			pivotUp = ahead.Normal
 			pivotFrom = up
@@ -242,10 +288,21 @@ local function updateClimb(deltaTime: number, reach: number)
 	end
 	local pivot = pivotUp
 	if pivot and up:Dot(pivot) < 0.95 then
-		-- La boîte tourne autour de son centre : on l'écarte des deux faces pour qu'elle n'y rentre pas.
-		step = Vector3.zero
+		-- On tourne en continuant d'avancer SUR la nouvelle face (l'élan qui rentrait dans le mur
+		-- devient "s'éloigner de l'ancienne face"), à bonne distance de la nouvelle face.
+		if moving then
+			local along = projectOnPlane(moveDir, pivot)
+			local away = projectOnPlane(pivotFrom, pivot)
+			if away.Magnitude > 1e-3 then
+				along += away.Unit * math.max(0, moveDir:Dot(-pivot))
+			end
+			step = if along.Magnitude > 1e-3 then along.Unit * (speed * CORNER_SPEED * deltaTime) else Vector3.zero
+		else
+			step = Vector3.zero
+		end
 		targetUp = pivot
-		targetPos = position + clearanceFrom(position, pivotFrom, reach) + clearanceFrom(position, pivot, reach)
+		local ahead = position + step
+		targetPos = ahead + clearanceFrom(ahead, pivotFrom, reach, true) + clearanceFrom(ahead, pivot, reach, false)
 		surfaceFound = true
 	else
 		pivotUp = nil
@@ -259,8 +316,23 @@ local function updateClimb(deltaTime: number, reach: number)
 			local front = ray(targetPos + moveDir * (reach * 0.8) + up * (reach * 0.5), -up, reach * 2.6)
 			local normal = below.Normal
 			if front then
-				normal = (normal + front.Normal).Unit
+				normal += front.Normal
 			end
+			-- Échantillons à gauche / à droite : sur une surface à facettes (rocher), la normale moyenne
+			-- ne saute plus d'une facette à l'autre (corps stable au lieu de tressauter).
+			local side = up:Cross(moveDir)
+			if side.Magnitude > 1e-3 then
+				side = side.Unit * (reach * 0.6)
+				local left = ray(targetPos - side + up * (reach * 0.5), -up, reach * 2.6)
+				local right = ray(targetPos + side + up * (reach * 0.5), -up, reach * 2.6)
+				if left then
+					normal += left.Normal
+				end
+				if right then
+					normal += right.Normal
+				end
+			end
+			normal = if normal.Magnitude > 1e-3 then normal.Unit else below.Normal
 			targetUp = normal
 			-- below.Position inclut déjà le pas (rayon parti de position + step).
 			targetPos = below.Position + below.Normal * surfaceGap(below.Normal, reach)
@@ -274,10 +346,22 @@ local function updateClimb(deltaTime: number, reach: number)
 		local wrapOrigin = targetPos + moveDir * (reach * 0.5) - up * (reach + 0.05)
 		local wrap = ray(wrapOrigin, -moveDir, reach * 2 + step.Magnitude)
 		if wrap and wrap.Normal:Dot(up) < 0.95 then
-			step = Vector3.zero -- le pas pointe hors de l'arête
+			-- Le pas pointe hors de l'arête : on le redirige le long de la face d'après (on s'enroule sans s'arrêter).
+			local around = projectOnPlane(-up, wrap.Normal)
+			local edge = up:Cross(wrap.Normal)
+			step = Vector3.zero
+			if moving and around.Magnitude > 1e-3 then
+				-- Seule la part de l'input qui sort par-dessus l'arête s'enroule ; le reste longe l'arête.
+				step = around.Unit * (speed * CORNER_SPEED * deltaTime * math.max(0, moveDir:Dot(wrap.Normal)))
+				if edge.Magnitude > 1e-3 then
+					edge = edge.Unit
+					step += edge * (moveDir:Dot(edge) * speed * deltaTime)
+				end
+			end
 			targetUp = wrap.Normal
-			targetPos = wrap.Position + wrap.Normal * surfaceGap(wrap.Normal, reach)
+			targetPos = wrap.Position + wrap.Normal * surfaceGap(wrap.Normal, reach) + step
 			surfaceFound = true
+			wrapping = true
 		end
 	end
 
@@ -310,12 +394,13 @@ local function updateClimb(deltaTime: number, reach: number)
 	end
 
 	-- Retour au sol : surface sous les pattes quasi horizontale et orientation déjà alignée dessus.
-	if
-		os.clock() - engagedAt > MIN_CLIMB_TIME
-		and surfaceFound
-		and targetUp.Y >= FLOOR_MIN_Y
-		and up:Dot(targetUp) >= 0.985
-	then
+	-- Confirmé sur FLOOR_CONFIRM_TIME : une facette plate isolée ne coupe pas l'escalade.
+	if surfaceFound and targetUp.Y >= FLOOR_MIN_Y and up:Dot(targetUp) >= 0.985 then
+		floorTime += deltaTime
+	else
+		floorTime = 0
+	end
+	if os.clock() - engagedAt > MIN_CLIMB_TIME and floorTime >= FLOOR_CONFIRM_TIME then
 		stopClimbing(true)
 		return
 	end
@@ -326,6 +411,13 @@ local function updateClimb(deltaTime: number, reach: number)
 	local velocity = (wanted - position) / math.max(deltaTime, 1 / 240)
 	if velocity.Magnitude > MAX_CORRECTION_SPEED then
 		velocity = velocity.Unit * MAX_CORRECTION_SPEED
+	end
+	-- Collision coupée pendant une bascule seulement ; rendue dès qu'on est de nouveau à plat sur une
+	-- face et que la boîte ne mord plus dans le décor (les rayons nous tiennent sur la surface entre-temps).
+	if pivotUp ~= nil or wrapping then
+		rootPart.CanCollide = false
+	elseif not rootPart.CanCollide and rootCollided and not overlapsWorld() then
+		rootPart.CanCollide = true
 	end
 	-- Rotation d'abord, vitesse ensuite (affecter le CFrame ne doit pas écraser la vitesse posée).
 	rootPart.CFrame = CFrame.lookAt(position, position + facing, up)
@@ -347,6 +439,7 @@ connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 		or humanoid.Health <= 0
 		or CharacterState.IsFlying
 		or CharacterState.IsSwimming
+		or CharacterState.IsSwinging
 		or player:GetAttribute("IsGrabbed") == true
 	then
 		stopClimbing(false)
@@ -384,6 +477,7 @@ end)
 
 local function cleanup()
 	stopClimbing(false)
+	rootPart.CanCollide = rootCollided
 	if connection then
 		connection:Disconnect()
 		connection = nil

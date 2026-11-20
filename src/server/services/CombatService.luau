@@ -56,13 +56,34 @@ local GRAB_FOLLOW_RATE = 18 -- 1/s : la proie rejoint les mandibules en douceur 
 local GRAB_FACE_GRABBER = CFrame.Angles(0, math.pi, 0)
 local LUNGE_WINDUP = 0.25 -- délai entre le télégraphe de charge et le coup
 local LEAP_AIRTIME = 0.6 -- durée du bond côté client (anneau d'atterrissage)
-local MAX_WEBS_PER_PLAYER = 2
+local MAX_WEBS_PER_PLAYER = 2 -- toiles pièges
+local MAX_WEB_PATCHES_PER_PLAYER = 4 -- flaques collantes du tir de toile
+local WEB_SHOT_SPEED = 140
+local WEB_THROW_SPEED = 80
+local WEB_POLL_SECONDS = 0.1
+local WEB_LINE_TIMEOUT = 20 -- le fil disparaît même si le "lâché" du client se perd
+local WEB_IMMUNITY = 4 -- après une capture, aucune toile (même superposée) ne reprend la victime
+local WEB_LINE_SLACK = 6
 
 local cooldowns: { [Player]: { [string]: number } } = {}
 local grabsByGrabber: { [Player]: GrabState } = {}
 local grabsByVictim: { [Model]: GrabState } = {}
 local escapePressTimes: { [Player]: { number } } = {}
 local webs: { [Player]: { BasePart } } = {}
+local webPatches: { [Player]: { BasePart } } = {}
+-- Toiles actives (piège ou flaque) : détection par sondage serveur, pas par Touched (la Root d'un
+-- insecte flotte à HipHeight au-dessus d'une toile posée au sol, et Touched est peu fiable sur les
+-- personnages dont le client possède la physique).
+type ActiveWeb = {
+	Part: BasePart,
+	Owner: Player,
+	Trap: boolean,
+	Definition: AbilityCatalog.AbilityDefinition,
+}
+local activeWebs: { ActiveWeb } = {}
+type WebLine = { Anchor: BasePart, Token: number }
+local webLines: { [Player]: WebLine } = {}
+local webImmuneUntil: { [Model]: number } = {} -- partagé par TOUTES les toiles : pas de piège enchaîné
 local stillSince: { [Player]: number } = {}
 
 -- ============================================================
@@ -109,14 +130,11 @@ end
 -- Multiplicateur de puissance selon le stade (une larve mord faiblement, un oeuf pas du tout).
 local function stagePowerFactor(player: Player): number
 	local stage = player:GetAttribute("Stage")
-	if stage == "Adulte" then
-		return 1
-	elseif stage == "Larve" then
-		return 0.4
-	elseif stage == "Mue" then
-		return 0.3
-	end
-	return 0
+	local base = if stage == "Adulte" then 1 elseif stage == "Larve" then 0.4 elseif stage == "Mue" then 0.3 else 0
+	-- Niveau d'XP : +3 % de force par niveau.
+	local level = player:GetAttribute("Level")
+	local bonus = if type(level) == "number" then math.max(0, level - 1) * 0.03 else 0
+	return base * (1 + bonus)
 end
 
 local function sameFamily(a: Player, b: Player?): boolean
@@ -166,6 +184,12 @@ local function findTargets(attacker: Player, attackerRoot: BasePart, range: numb
 	for _, animal in ipairs(CollectionService:GetTagged("Animal")) do
 		if animal:IsA("Model") and animal.PrimaryPart then
 			consider(animal, animal.PrimaryPart, (animal:GetAttribute("HitRadius") :: number?) or 4, nil)
+		end
+	end
+	-- Insectes sauvages PNJ (WildInsectService).
+	for _, wild in ipairs(CollectionService:GetTagged("WildInsect")) do
+		if wild:IsA("Model") and wild.PrimaryPart then
+			consider(wild, wild.PrimaryPart, (wild:GetAttribute("HitRadius") :: number?) or 2, nil)
 		end
 	end
 	-- Mamans PNJ (NpcMotherService) : ses propres enfants ne la mordent pas.
@@ -657,60 +681,304 @@ local function executeLight(player: Player, root: BasePart, definition: AbilityC
 	flash(root.Position + root.CFrame.LookVector * 2, Color3.fromRGB(255, 255, 200), range * 0.6)
 end
 
-local function spawnWeb(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition)
-	local list = webs[player] or {}
-	webs[player] = list
-	while #list >= MAX_WEBS_PER_PLAYER do
+-- ============================================================
+-- Toiles d'araignée
+-- ============================================================
+
+local webRayParams = RaycastParams.new()
+webRayParams.FilterType = Enum.RaycastFilterType.Exclude
+webRayParams.RespectCanCollide = true -- les toiles (CanCollide false) et zones invisibles sont traversées
+webRayParams.IgnoreWater = false
+
+local function isFinite(v: Vector3): boolean
+	for _, c in ipairs({ v.X, v.Y, v.Z }) do
+		if c ~= c or math.abs(c) == math.huge then
+			return false
+		end
+	end
+	return true
+end
+
+-- Rayon de visée depuis l'insecte vers le point visé par le client (jamais plus loin que `range`,
+-- jamais à travers un mur). Les personnages sont ignorés : on vise le décor ; les cibles sont
+-- testées à part le long du segment.
+local function castAim(player: Player, root: BasePart, aim: unknown, range: number): (Vector3, Vector3, RaycastResult?)
+	local direction = root.CFrame.LookVector
+	if typeof(aim) == "Vector3" and isFinite(aim :: Vector3) then
+		local offset = (aim :: Vector3) - root.Position
+		if offset.Magnitude > 0.5 then
+			direction = offset.Unit
+		end
+	end
+	local ignore: { Instance } = {}
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other.Character then
+			table.insert(ignore, other.Character)
+		end
+	end
+	webRayParams.FilterDescendantsInstances = ignore
+	local result = workspace:Raycast(root.Position, direction * range, webRayParams)
+	return (if result then result.Position else root.Position + direction * range), direction, result
+end
+
+-- Première cible (joueur / animal / Maman PNJ) le long du segment [from, to].
+local function targetAlong(player: Player, root: BasePart, from: Vector3, to: Vector3, blocked: boolean): Target?
+	local segment = to - from
+	local length = segment.Magnitude
+	if length < 0.01 then
+		return nil
+	end
+	local unit = segment / length
+	local best: Target? = nil
+	local bestAlong = math.huge
+	for _, target in ipairs(findTargets(player, root, length + 4, 180)) do
+		local relative = target.Root.Position - from
+		local along = math.clamp(relative:Dot(unit), 0, length)
+		local miss = (relative - unit * along).Magnitude
+		-- Trajectoire arrêtée par un mur : une cible juste derrière (projection au bout du segment) ne compte pas.
+		local behindWall = blocked and relative:Dot(unit) >= length - 0.1
+		if miss <= target.Radius + 1.2 and along < bestAlong and not behindWall then
+			best, bestAlong = target, along
+		end
+	end
+	return best
+end
+
+-- Pose une toile à plat sur une surface (sol, mur, plafond, branche) : axe Y = normale.
+local function placeWeb(owner: Player, position: Vector3, normal: Vector3, size: number, trap: boolean, definition: AbilityCatalog.AbilityDefinition, lifetime: number)
+	local store = if trap then webs else webPatches
+	local list = store[owner] or {}
+	store[owner] = list
+	local limit = if trap then MAX_WEBS_PER_PLAYER else MAX_WEB_PATCHES_PER_PLAYER
+	while #list >= limit do
 		local oldest = table.remove(list, 1)
 		if oldest and oldest.Parent then
 			oldest:Destroy()
 		end
 	end
-
+	local up = if normal.Magnitude > 0.01 then normal.Unit else Vector3.yAxis
+	local tangent = up:Cross(if math.abs(up.Y) < 0.9 then Vector3.yAxis else Vector3.xAxis).Unit
 	local web = Instance.new("Part")
-	web.Name = "ToilePiege"
-	web.Size = Vector3.new(10, 0.2, 10)
-	web.CFrame = root.CFrame * CFrame.new(0, -1.5 * (player.Character :: Model):GetScale(), -6)
+	web.Name = if trap then "ToilePiege" else "FlaqueDeSoie"
+	web.Size = Vector3.new(size, 0.12, size)
+	web.CFrame = CFrame.fromMatrix(position + up * 0.07, tangent, up)
 	web.Anchored = true
 	web.CanCollide = false
 	web.CanQuery = false
-	web.Material = Enum.Material.Fabric
-	web.Color = Color3.fromRGB(235, 235, 240)
-	web.Transparency = 0.55
-	web:SetAttribute("OwnerUserId", player.UserId)
+	web.CanTouch = false
+	-- Volume de détection invisible : chaque client tisse la vraie toile (rayons + spirale) par-dessus
+	-- (CombatFxController, tag "SpiderWeb"), y compris pour les joueurs qui arrivent après.
+	web.Transparency = 1
+	web.CastShadow = false
+	web:SetAttribute("OwnerUserId", owner.UserId)
+	web:SetAttribute("WebKind", if trap then "Trap" else "Patch")
+	web:SetAttribute("BornAt", workspace:GetServerTimeNow())
+	CollectionService:AddTag(web, "SpiderWeb")
 	web.Parent = workspace
-	local decal = Instance.new("SelectionBox")
-	decal.Adornee = web
-	decal.LineThickness = 0.03
-	decal.Color3 = Color3.fromRGB(250, 250, 250)
-	decal.Transparency = 0.5
-	decal.Parent = web
 	table.insert(list, web)
-	Debris:AddItem(web, definition.Duration)
-	fx("Web", web, nil, nil, nil) -- apparition animée côté client
+	table.insert(activeWebs, { Part = web, Owner = owner, Trap = trap, Definition = definition })
+	Debris:AddItem(web, lifetime)
+end
 
-	local caught: { [Model]: number } = {}
-	web.Touched:Connect(function(hit)
-		local model = hit:FindFirstAncestorOfClass("Model")
-		local victim = model and Players:GetPlayerFromCharacter(model)
-		if not model or not victim or victim == player or sameFamily(player, victim) then
+-- Sondage des toiles : une Root dans le volume de la toile (épaisseur élargie d'une hauteur de corps).
+local function webTick()
+	local now = os.clock()
+	for model, untilTime in pairs(webImmuneUntil) do
+		if untilTime <= now or not model.Parent then
+			webImmuneUntil[model] = nil
+		end
+	end
+	local index = 1
+	while index <= #activeWebs do
+		local entry = activeWebs[index]
+		local part = entry.Part
+		if not part.Parent or not entry.Owner.Parent then
+			table.remove(activeWebs, index)
+			continue
+		end
+		index += 1
+		local half = part.Size * 0.5
+		for _, victim in ipairs(Players:GetPlayers()) do
+			if victim == entry.Owner or sameFamily(entry.Owner, victim) then
+				continue
+			end
+			local character, root = getAliveRoot(victim)
+			if not character or not root then
+				continue
+			end
+			local reach = root.Size.Y * 0.5 + 2.2 * math.max(character:GetScale(), 0.5)
+			local relative = part.CFrame:PointToObjectSpace(root.Position)
+			-- Du côté de la face seulement (+Y = normale) : rien sous une feuille / derrière un mur.
+			if math.abs(relative.X) > half.X + 0.5 or math.abs(relative.Z) > half.Z + 0.5 or relative.Y < -0.5 or relative.Y > reach then
+				continue
+			end
+			if (webImmuneUntil[character] or 0) > now then
+				continue
+			end
+			webImmuneUntil[character] = now + WEB_IMMUNITY
+			local definition = entry.Definition
+			if entry.Trap then
+				StatusEffectService.Apply(character, definition.Status or "Stun", definition.StatusDuration or 2, definition.StatusMagnitude, entry.Owner.UserId)
+				StatusEffectService.Apply(character, "Glue", 4, 0.7, entry.Owner.UserId)
+				notify(victim, "Pris dans une toile d'araignée !", "warning")
+				notify(entry.Owner, victim.Name .. " est pris dans votre toile !", "info")
+			else
+				StatusEffectService.Apply(character, "Glue", 2.5, definition.StatusMagnitude or 0.6, entry.Owner.UserId)
+			end
+		end
+	end
+end
+
+-- Toile piège LANCÉE : vole jusqu'à la surface visée puis se déploie dessus.
+local function throwTrapWeb(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition, scale: number, aim: unknown): boolean
+	local range = definition.Range * math.max(scale, 0.6)
+	local endPosition, direction, hit = castAim(player, root, aim, range)
+	local normal = if hit then hit.Normal else Vector3.yAxis
+	if not hit then
+		-- Visée dans le vide : la toile retombe sur le sol sous le point visé.
+		local ground = workspace:Raycast(endPosition, Vector3.new(0, -40, 0), webRayParams)
+		if not ground then
+			feedback(player, false, "Rien où accrocher la toile.")
+			return false
+		end
+		endPosition, normal = ground.Position, ground.Normal
+	end
+	local startPosition = root.Position + direction * 1.5
+	local travel = (endPosition - startPosition).Magnitude / WEB_THROW_SPEED
+	fx("Silk", startPosition, endPosition, travel, player.Character)
+	task.delay(travel, function()
+		if player.Parent then
+			placeWeb(player, endPosition, normal, 10 * math.max(scale, 0.6), true, definition, definition.Duration)
+		end
+	end)
+	return true
+end
+
+-- Tir de toile : boule de soie rapide ; englue la première proie sur la trajectoire, sinon laisse
+-- une flaque collante là où elle s'écrase.
+local function shootWeb(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition, scale: number, aim: unknown)
+	local range = definition.Range * math.max(scale, 0.6)
+	local endPosition, direction, hit = castAim(player, root, aim, range)
+	local startPosition = root.Position + direction * 1.5
+	local target = targetAlong(player, root, startPosition, endPosition, hit ~= nil)
+	if target then
+		endPosition = target.Root.Position
+	end
+	local travel = (endPosition - startPosition).Magnitude / WEB_SHOT_SPEED
+	fx("Silk", startPosition, endPosition, travel, player.Character)
+	task.delay(travel, function()
+		if not player.Parent then
 			return
 		end
-		if caught[model] and os.clock() - caught[model] < 4 then
-			return
+		if target then
+			-- La proie a pu s'écarter pendant le vol.
+			if (target.Root.Position - endPosition).Magnitude <= 5 + target.Radius then
+				local _, currentRoot = getAliveRoot(player)
+				if strike(player, target, definition.Power * stagePowerFactor(player), currentRoot or root, false) then
+					applyStatusFromDefinition(player, target, definition)
+				end
+			end
+		elseif hit then
+			placeWeb(player, endPosition, hit.Normal, 4 * math.max(scale, 0.6), false, definition, definition.Duration)
 		end
-		caught[model] = os.clock()
-		StatusEffectService.Apply(model, definition.Status or "Stun", definition.StatusDuration or 2, definition.StatusMagnitude, player.UserId)
-		StatusEffectService.Apply(model, "Glue", 4, 0.7, player.UserId)
-		notify(victim, "Pris dans une toile d'araignée !", "warning")
-		notify(player, victim.Name .. " est pris dans votre toile !", "info")
 	end)
 end
 
-local function executeUtility(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition, abilityId: string, scale: number): boolean
+-- Fil de balancier : la physique est locale (WebSwingController) ; le serveur valide l'ancre et
+-- affiche le fil pour tout le monde (Beam root -> ancre).
+local function clearWebLine(player: Player)
+	local line = webLines[player]
+	if line then
+		webLines[player] = nil
+		line.Anchor:Destroy()
+	end
+end
+
+local function onWebLine(player: Player, anchor: unknown)
+	clearWebLine(player)
+	if anchor == nil then
+		return
+	end
+	if typeof(anchor) ~= "Vector3" or not isFinite(anchor :: Vector3) then
+		return
+	end
+	local point = anchor :: Vector3
+	local character, root = getAliveRoot(player)
+	if not character or not root or player:GetAttribute("Stage") ~= "Adulte" or player:GetAttribute("IsGrabbed") == true then
+		return
+	end
+	local definition = AbilityCatalog.FilDeRappel
+	if not definition or not table.find(getSpecies(player).Abilities, "FilDeRappel") then
+		return
+	end
+	if isOnCooldown(player, "WebLine") then
+		return
+	end
+	startCooldown(player, "WebLine", 0.08) -- sous la cadence client (0.15 s) : la gigue ne fait pas sauter un fil
+	local reach = definition.Range * math.max(character:GetScale(), 0.6) + WEB_LINE_SLACK
+	local offset = point - root.Position
+	if offset.Magnitude > reach or offset.Magnitude < 0.5 then
+		return
+	end
+	-- Pas d'ancre à travers un mur.
+	webRayParams.FilterDescendantsInstances = { character }
+	local blocked = workspace:Raycast(root.Position, offset, webRayParams)
+	if blocked and (blocked.Position - point).Magnitude > 1.5 then
+		return
+	end
+
+	local anchorPart = Instance.new("Part")
+	anchorPart.Name = "FilDeSoie"
+	anchorPart.Shape = Enum.PartType.Ball
+	anchorPart.Size = Vector3.one * 0.3
+	anchorPart.Anchored = true
+	anchorPart.CanCollide = false
+	anchorPart.CanQuery = false
+	anchorPart.CanTouch = false
+	anchorPart.Color = Color3.fromRGB(245, 245, 250)
+	anchorPart.Material = Enum.Material.SmoothPlastic
+	anchorPart.CFrame = CFrame.new(point)
+	local anchorAttachment = Instance.new("Attachment")
+	anchorAttachment.Parent = anchorPart
+	local rootAttachment = root:FindFirstChild("WebLineAttachment") :: Attachment?
+	if not rootAttachment then
+		local created = Instance.new("Attachment")
+		created.Name = "WebLineAttachment"
+		created.Parent = root
+		rootAttachment = created
+	end
+	local beam = Instance.new("Beam")
+	beam.Attachment0 = rootAttachment
+	beam.Attachment1 = anchorAttachment
+	beam.Width0 = 0.08 * math.max(character:GetScale(), 0.6)
+	beam.Width1 = beam.Width0
+	beam.Color = ColorSequence.new(Color3.fromRGB(245, 245, 250))
+	beam.Transparency = NumberSequence.new(0.1)
+	beam.FaceCamera = true
+	beam.Segments = 1
+	beam:SetAttribute("OwnerUserId", player.UserId)
+	beam.Parent = anchorPart
+	CollectionService:AddTag(beam, "WebLine") -- le lanceur masque ce Beam (il voit déjà sa corde locale)
+	anchorPart.Parent = workspace
+
+	local token = os.clock()
+	webLines[player] = { Anchor = anchorPart, Token = token }
+	task.delay(WEB_LINE_TIMEOUT, function()
+		local line = webLines[player]
+		if line and line.Token == token then
+			clearWebLine(player)
+		end
+	end)
+end
+
+local function executeUtility(player: Player, root: BasePart, definition: AbilityCatalog.AbilityDefinition, abilityId: string, scale: number, aim: unknown): boolean
 	if abilityId == "TisserToilePiege" then
-		spawnWeb(player, root, definition)
+		return throwTrapWeb(player, root, definition, scale, aim)
+	elseif abilityId == "TirDeToile" then
+		shootWeb(player, root, definition, scale, aim)
 		return true
+	elseif abilityId == "FilDeRappel" then
+		return false -- géré par RequestWebLine (le chemin F / RequestGrab ne doit rien lancer)
 	elseif abilityId == "MarquagePheromoneCible" then
 		local target = findTargets(player, root, definition.Range * math.max(scale, 0.6), 35)[1]
 		if not target then
@@ -778,7 +1046,7 @@ local ABILITY_COLORS: { [string]: Color3 } = {
 }
 
 -- Résout et exécute le pouvoir du slot demandé pour l'espèce du joueur.
-local function useAbility(player: Player, slot: string)
+local function useAbility(player: Player, slot: string, aim: unknown)
 	local character, root = getAliveRoot(player)
 	if not character or not root then
 		return
@@ -850,7 +1118,7 @@ local function useAbility(player: Player, slot: string)
 	elseif primitive == "Light" then
 		executeLight(player, root, definition, scale)
 	else
-		executed = executeUtility(player, root, definition, abilityId, scale)
+		executed = executeUtility(player, root, definition, abilityId, scale, aim)
 	end
 
 	if not executed then
@@ -971,9 +1239,19 @@ end
 
 function CombatService.Start()
 	Remotes.Get("RequestLeftClickBite").OnServerEvent:Connect(onBite)
-	Remotes.Get("RequestUseAbility").OnServerEvent:Connect(function(player, slot: unknown)
+	Remotes.Get("RequestUseAbility").OnServerEvent:Connect(function(player, slot: unknown, aim: unknown)
 		if slot == "E" or slot == "R" then
-			useAbility(player, slot :: string)
+			useAbility(player, slot :: string, aim)
+		end
+	end)
+	Remotes.Get("RequestWebLine").OnServerEvent:Connect(onWebLine)
+	task.spawn(function()
+		while true do
+			task.wait(WEB_POLL_SECONDS)
+			local ok, err = pcall(webTick)
+			if not ok then
+				warn("[CombatService] webTick : " .. tostring(err))
+			end
 		end
 	end)
 	Remotes.Get("RequestGrab").OnServerEvent:Connect(function(player)
@@ -981,7 +1259,7 @@ function CombatService.Start()
 			releaseGrab(grabsByGrabber[player], "Le prédateur vous relâche.")
 			return
 		end
-		useAbility(player, "F")
+		useAbility(player, "F", nil)
 	end)
 	Remotes.Get("RequestGrabEscape").OnServerEvent:Connect(onGrabEscape)
 
@@ -1002,6 +1280,11 @@ function CombatService.Start()
 			web:Destroy()
 		end
 		webs[player] = nil
+		for _, patch in ipairs(webPatches[player] or {}) do
+			patch:Destroy()
+		end
+		webPatches[player] = nil
+		clearWebLine(player)
 	end)
 
 	task.spawn(function()

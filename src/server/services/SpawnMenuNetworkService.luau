@@ -99,6 +99,27 @@ local function onSelectSpecies(player: Player, speciesId: unknown)
 		return
 	end
 	local id = speciesId :: string
+	if InsectData[id].Category == "Animal" then
+		-- Animal jouable : pas d'oeuf ni de croissance, il naît adulte dans son habitat.
+		if player:GetAttribute("OwnerNestUserId") ~= nil then
+			GrowthAndNestService.LeaveNest(player)
+		end
+		local home = GrowthAndNestService.GetDefaultHome(id) or (WorldLayout.SPAWN_POSITION + Vector3.new(0, 2, 0))
+		player:SetAttribute("Species", id)
+		player:SetAttribute("HomePosition", home)
+		player:SetAttribute("Mutation", nil)
+		-- Ordre synchrone (comme onSpawnAsMother) : Growth à 100 AVANT HasConfirmedSpawn.
+		player:SetAttribute("Growth", 100)
+		player:SetAttribute("CanLeaveNest", true)
+		player:SetAttribute("HasConfirmedSpawn", true)
+		EvolutionDomain.SetStage(player, id, "Adulte", true)
+		local character = player.Character
+		if character and character.Parent then
+			character:PivotTo(CFrame.new(home + Vector3.new(0, 4, 0)))
+		end
+		notify(player, "Vous êtes un " .. InsectData[id].Name .. " ! Chassez les insectes.", "info")
+		return
+	end
 	confirmSpawn(player, id, GrowthAndNestService.GetDefaultHome(id))
 	notify(player, "Vous êtes un oeuf de " .. InsectData[id].Name .. ". Restez au chaud !", "info")
 end
@@ -198,6 +219,10 @@ local function onSpawnAsMother(player: Player, speciesId: unknown)
 	local isValidId = typeof(speciesId) == "string" and #(speciesId :: string) <= 64 and InsectData[speciesId :: string] ~= nil
 	if not isValidId or not canStillChoose(player) then
 		notify(player, "Choix impossible maintenant.", "warning")
+		return
+	end
+	if InsectData[speciesId :: string].Category == "Animal" then
+		notify(player, "Les animaux ne fondent pas de colonie : choisissez-les dans la liste.", "warning")
 		return
 	end
 	local allowed, reason = ProgressionService.CanSpawnAsMother(player)
