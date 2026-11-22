@@ -351,64 +351,309 @@ end
 -- Montagne praticable : empilement de calottes (herbe -> roche -> sommet) avec radius >= height
 -- pour rester 100% ancré dans le sol et compatible avec groundHeightAt().
 local function addMountain(x: number, z: number, radius: number, height: number, peakMaterial: Enum.Material?)
-	addHill(x, z, radius + 35, math.max(18, math.floor(height * 0.42)), Enum.Material.Grass)
-	addHill(x, z, radius + 12, math.max(28, math.floor(height * 0.72)), Enum.Material.Rock)
+	addHill(x, z, radius + 45, math.max(22, math.floor(height * 0.42)), Enum.Material.Grass)
+	addHill(x, z, radius + 18, math.max(36, math.floor(height * 0.74)), Enum.Material.Rock)
 	addHill(x, z, radius, height, peakMaterial or Enum.Material.Slate)
 end
 
--- Relief doux entre les biomes + chaînes de montagnes en bordure (carte 4000x4000).
+-- Montagne colossale : massif géant à contreforts multiples + pic alpin culminant jusqu'à ~215 studs
+-- de Terrain (complété par des aiguilles rocheuses/enneigées dans generateLandmarks).
+local function addColossalMountain(
+	x: number,
+	z: number,
+	baseRadius: number,
+	peakHeight: number,
+	rockMat: Enum.Material,
+	snowCapped: boolean
+)
+	-- 1) Large socle de piémont
+	addHill(x, z, baseRadius + 70, math.max(32, math.floor(peakHeight * 0.34)), Enum.Material.Grass)
+	-- 2) Contreforts latéraux (épaulements rocheux élargissant le massif)
+	local buttressDist = math.floor(baseRadius * 0.48)
+	local buttressR = math.max(125, math.floor(baseRadius * 0.78))
+	local buttressH = math.max(54, math.floor(peakHeight * 0.56))
+	for _, offset in ipairs({
+		{ Dx = buttressDist, Dz = 20 },
+		{ Dx = -buttressDist, Dz = -18 },
+		{ Dx = 16, Dz = buttressDist },
+		{ Dx = -22, Dz = -buttressDist },
+	}) do
+		addHill(x + offset.Dx, z + offset.Dz, buttressR, buttressH, rockMat)
+	end
+	-- 3) Flancs rocheux principaux
+	local midH = math.floor(peakHeight * 0.78)
+	addHill(x, z, math.max(midH + 18, baseRadius + 24), midH, rockMat)
+	-- 4) Cône sommital
+	local topH = if snowCapped then math.floor(peakHeight * 0.90) else peakHeight
+	addHill(x, z, math.max(topH + 12, baseRadius), topH, Enum.Material.Slate)
+	-- 5) Calotte de neige éternelle au sommet
+	if snowCapped then
+		addHill(x, z, math.max(peakHeight + 8, math.floor(baseRadius * 0.92)), peakHeight, Enum.Material.Snow)
+	end
+end
+
+-- Colline à étages (butte en terrasses) : base large + plateau intermédiaire + dôme sommital.
+local function addTerracedHill(
+	x: number,
+	z: number,
+	baseRadius: number,
+	totalHeight: number,
+	baseMat: Enum.Material,
+	midMat: Enum.Material,
+	topMat: Enum.Material
+)
+	local h1 = math.max(10, math.floor(totalHeight * 0.42))
+	local h2 = math.max(16, math.floor(totalHeight * 0.72))
+	addHill(x, z, baseRadius + 24, h1, baseMat)
+	addHill(x + 6, z - 4, math.max(h2 + 12, math.floor(baseRadius * 0.82)), h2, midMat)
+	addHill(x - 4, z + 5, math.max(totalHeight + 8, math.floor(baseRadius * 0.62)), totalHeight, topMat)
+end
+
+-- Crête vallonnée : chapelet de collines reliées entre (x1, z1) et (x2, z2).
+local function addRidge(
+	x1: number,
+	z1: number,
+	x2: number,
+	z2: number,
+	steps: number,
+	baseRadius: number,
+	peakHeight: number,
+	material: Enum.Material,
+	secondaryMat: Enum.Material?
+)
+	for i = 0, steps do
+		local t = i / math.max(1, steps)
+		-- Profil en cloche le long de la crête (plus haut au centre, plus doux aux extrémités).
+		local bell = 0.65 + 0.35 * math.sin(t * math.pi)
+		local wobble = ((i % 2 == 0) and 1 or -1) * 14
+		local dx, dz = x2 - x1, z2 - z1
+		local len = math.max(1, math.sqrt(dx * dx + dz * dz))
+		local nx, nz = -dz / len, dx / len
+		local hx = x1 + dx * t + nx * wobble
+		local hz = z1 + dz * t + nz * wobble
+		local h = math.max(12, math.floor(peakHeight * bell))
+		local r = math.max(h + 15, math.floor(baseRadius * (0.85 + 0.25 * bell)))
+		local mat = if secondaryMat and i % 3 == 1 then secondaryMat else material
+		addHill(hx, hz, r, h, mat)
+	end
+end
+
+-- Vérifie qu'une colline de rayon horizontal au sol `footprint` ne recouvre aucun bassin,
+-- ruisseau, rampe d'eau, galerie de la Souche, spawn ou le pied du Grand Chêne.
+local function canPlaceHill(x: number, z: number, footprint: number): boolean
+	local limit = MAP_HALF - 40 - footprint
+	if math.abs(x) > limit or math.abs(z) > limit then
+		return false
+	end
+	-- Passage Showcase à l'ouest
+	if x < -MAP_HALF + 160 and z > WorldLayout.SHOWCASE_ORIGIN.Z - 60 and z < WorldLayout.SHOWCASE_ORIGIN.Z + 280 then
+		return false
+	end
+	-- Grand Chêne (tronc + racines + chambre d'écorce)
+	local oakClear = TRUNK_RADIUS + 82 + footprint
+	if x * x + z * z < oakClear * oakClear then
+		return false
+	end
+	-- Souche + galeries + tunnels + spawn
+	local dxS, dzS = x - STUMP_CENTER.X, z - STUMP_CENTER.Z
+	if dxS * dxS + dzS * dzS < (210 + footprint) * (210 + footprint) then
+		return false
+	end
+	local spawnPos = WorldLayout.SPAWN_POSITION
+	local dxSp, dzSp = x - spawnPos.X, z - spawnPos.Z
+	if dxSp * dxSp + dzSp * dzSp < (95 + footprint) * (95 + footprint) then
+		return false
+	end
+	-- Coeur des Rochers Arides (surplombs et cairns fixes)
+	local dxR, dzR = x - ROCKY_CORNER.X, z - ROCKY_CORNER.Z
+	if dxR * dxR + dzR * dzR < (165 + footprint) * (165 + footprint) then
+		return false
+	end
+	-- Mare principale + tous les étangs/bassins secondaires
+	local lakes = {
+		{ Center = POND_CENTER, Size = WorldLayout.POND_WATER_SIZE, Margin = 56 },
+		{ Center = WorldLayout.PRAIRIE_POND_CENTER, Size = WorldLayout.PRAIRIE_POND_SIZE, Margin = 42 },
+		{ Center = WorldLayout.WATERFALL_POOL_CENTER, Size = WorldLayout.WATERFALL_POOL_SIZE, Margin = 42 },
+		{ Center = WorldLayout.SOUTH_OASIS_CENTER, Size = WorldLayout.SOUTH_OASIS_SIZE, Margin = 42 },
+		{ Center = WorldLayout.WEST_POND_CENTER, Size = WorldLayout.WEST_POND_SIZE, Margin = 42 },
+	}
+	for _, lake in ipairs(lakes) do
+		local half = lake.Size / 2
+		local pad = lake.Margin + footprint
+		if
+			x > lake.Center.X - half.X - pad
+			and x < lake.Center.X + half.X + pad
+			and z > lake.Center.Z - half.Z - pad
+			and z < lake.Center.Z + half.Z + pad
+		then
+			return false
+		end
+	end
+	-- Ruisseaux et rivières (lit + rampes latérales)
+	local streamLists = {
+		WorldLayout.STREAM_SEGMENTS,
+		WorldLayout.PRAIRIE_STREAM_SEGMENTS,
+		WorldLayout.EAST_RIVER_SEGMENTS,
+	}
+	local streamPad = 36 + footprint
+	for _, list in ipairs(streamLists) do
+		for _, seg in ipairs(list) do
+			if
+				x > seg.MinX - streamPad
+				and x < seg.MaxX + streamPad
+				and z > seg.MinZ - streamPad
+				and z < seg.MaxZ + streamPad
+			then
+				return false
+			end
+		end
+	end
+	return true
+end
+
+-- Relief riche et varié entre les biomes + crêtes, buttes en terrasses, collines fleuries, dunes et chaînes de montagnes.
 -- Positions choisies loin de l'eau, des galeries, du spawn et du bord ouest (galerie 3D).
 local function generateRelief()
 	local grass = Enum.Material.Grass
-	-- Collines douces entre les biomes et sur les plaines intermédiaires (x, z, rayon, hauteur)
-	addHill(-540, 480, 120, 20, grass)
-	addHill(540, 520, 130, 22, grass)
-	addHill(-580, -520, 115, 18, grass)
-	addHill(0, 880, 125, 22, grass)
-	addHill(-60, -960, 120, 20, grass)
-	addHill(880, 120, 120, 20, grass)
-	addHill(-900, 120, 125, 22, grass)
-	addHill(1460, -640, 110, 18, grass)
-	addHill(-360, 1460, 115, 18, grass)
-	addHill(360, -1460, 120, 20, grass)
-	addHill(-1500, -540, 110, 18, grass)
-	addHill(1520, 420, 105, 18, grass)
-	addHill(-760, 220, 120, 26, grass)
-	addHill(720, 260, 130, 28, grass)
-	addHill(440, -260, 110, 22, grass)
-	addHill(-420, -720, 110, 22, grass)
-	addHill(880, -860, 115, 21, grass)
-	addHill(-120, 560, 110, 20, grass)
-	addHill(620, 860, 115, 22, grass)
-	addHill(-1040, 380, 120, 24, grass)
-	addHill(240, -1200, 115, 22, grass)
-	addHill(-840, -1400, 110, 20, grass)
+	local leafy = Enum.Material.LeafyGrass
+	local ground = Enum.Material.Ground
+	local rock = Enum.Material.Rock
+	local slate = Enum.Material.Slate
+	local sandstone = Enum.Material.Sandstone
+	local sand = Enum.Material.Sand
+	local mud = Enum.Material.Mud
 
-	-- Massifs montagneux (bordures Nord, Est, Sud, Nord-Ouest) : pics jusqu'à 104 studs de haut.
-	-- Massif Est (alimente la Cascade vers (1320, -260))
-	addMountain(1570, -260, 145, 104, Enum.Material.Rock)
-	addMountain(1550, 60, 130, 84, Enum.Material.Slate)
-	addMountain(1530, -560, 125, 78, Enum.Material.Rock)
-	addMountain(1640, 340, 120, 74, Enum.Material.Slate)
-	-- Massif Nord
-	addMountain(60, -1620, 140, 96, Enum.Material.Slate)
-	addMountain(-240, -1660, 125, 80, Enum.Material.Rock)
-	addMountain(360, -1600, 130, 82, Enum.Material.Rock)
-	addMountain(-540, -1600, 115, 68, Enum.Material.Slate)
-	-- Massif Sud
-	addMountain(-60, 1620, 140, 94, Enum.Material.Slate)
-	addMountain(-380, 1650, 125, 78, Enum.Material.Rock)
-	addMountain(540, 1600, 130, 82, Enum.Material.Rock)
-	-- Massif Nord-Ouest (derrière la Souche, loin du passage Showcase)
-	addMountain(-1620, -1600, 130, 84, Enum.Material.Rock)
+	-- 1) Collines principales et dômes vallonnés entre les biomes (x, z, rayon, hauteur, matériau)
+	addHill(-540, 480, 145, 34, grass)
+	addHill(540, 520, 155, 38, grass)
+	addHill(-580, -520, 140, 32, leafy)
+	addHill(0, 880, 150, 36, grass)
+	addHill(-60, -960, 145, 34, leafy)
+	addHill(880, 120, 145, 35, grass)
+	addHill(-900, 120, 150, 36, leafy)
+	addHill(1460, -640, 130, 30, grass)
+	addHill(-360, 1460, 140, 32, grass)
+	addHill(360, -1460, 145, 34, leafy)
+	addHill(-1500, -540, 135, 30, leafy)
+	addHill(1520, 420, 130, 32, sandstone)
+	addHill(-760, 220, 145, 38, grass)
+	addHill(720, 260, 155, 42, grass)
+	addHill(440, -260, 130, 30, grass)
+	addHill(-420, -720, 135, 32, leafy)
+	addHill(880, -860, 135, 30, grass)
+	addHill(-120, 560, 130, 28, grass)
+	addHill(620, 860, 145, 36, sandstone)
+	addHill(-1040, 380, 145, 36, grass)
+	addHill(240, -1200, 135, 32, grass)
+	addHill(-840, -1400, 135, 30, leafy)
 
-	-- Cuvettes (les flaques de pluie s'y forment naturellement).
+	-- 2) Collines ondulées au cœur et en lisière de la Prairie Fleurie (Sud-Ouest)
+	addHill(-1380, 1060, 135, 28, grass)
+	addHill(-1020, 1340, 140, 30, leafy)
+	addHill(-1420, 1380, 150, 36, grass)
+	addHill(-960, 1020, 120, 22, grass)
+	addHill(-1560, 920, 145, 34, leafy)
+	addHill(-780, 1480, 155, 38, grass)
+
+	-- 3) Crêtes vallonnées (chaînes de collines continues formant des reliefs naturels)
+	-- Crête Centrale-Ouest (entre le Chêne, la Souche et la Prairie)
+	addRidge(-320, -120, -880, 280, 4, 135, 36, grass, leafy)
+	-- Crête du Nord (entre la Souche et la Mare)
+	addRidge(-620, -920, 380, -960, 5, 140, 38, leafy, grass)
+	-- Crête du Sud (entre la Prairie, l'Oasis du Sud et les Rochers Arides)
+	addRidge(-520, 1140, -40, 1020, 4, 145, 36, grass, sandstone)
+	-- Crête de l'Est (surplombant la plaine Est et le Bassin de la Cascade)
+	addRidge(640, -180, 1040, 420, 4, 145, 40, grass, rock)
+	-- Crête Sauvage Nord-Ouest (au-dessus du Bassin de l'Ouest)
+	addRidge(-1580, -880, -1480, -320, 4, 135, 34, leafy, mud)
+	-- Crête des Dunes du Sud-Est (lisière des Rochers Arides)
+	addRidge(640, 1440, 1480, 720, 5, 140, 38, sandstone, sand)
+
+	-- 4) Buttes à étages & Plateaux en terrasses (points de vue et perchoirs naturels)
+	addTerracedHill(-340, -420, 135, 44, grass, leafy, rock)
+	addTerracedHill(380, 360, 145, 48, grass, sandstone, rock)
+	addTerracedHill(-820, -260, 140, 46, leafy, ground, slate)
+	addTerracedHill(960, -380, 135, 44, grass, rock, slate)
+	addTerracedHill(-220, 1280, 150, 50, grass, leafy, rock)
+	addTerracedHill(1020, 680, 145, 48, sand, sandstone, rock)
+	addTerracedHill(-1540, 480, 145, 46, grass, leafy, slate)
+	addTerracedHill(460, -1520, 140, 46, leafy, rock, slate)
+
+	-- 5) Semis procédural de ~85 collines, tertres moussus, dunes et buttes rocheuses sur toute la carte
+	for i = 1, 85 do
+		local x = rng:NextInteger(-MAP_HALF + 220, MAP_HALF - 220)
+		local z = rng:NextInteger(-MAP_HALF + 220, MAP_HALF - 220)
+		local height = rng:NextInteger(14, 38)
+		local radius = rng:NextInteger(math.max(85, height * 3), 155)
+		local footprint = math.sqrt(2 * radius * height - height * height)
+		if canPlaceHill(x, z, footprint + 14) then
+			-- Matériau adapté au quadrant / biome local
+			local mat = grass
+			if x > 450 and z > 450 then
+				mat = if i % 3 == 0 then sand elseif i % 3 == 1 then sandstone else rock
+			elseif x < -350 and z < -350 then
+				mat = if i % 3 == 0 then mud elseif i % 2 == 0 then leafy else ground
+			elseif x > 500 and z < -200 then
+				mat = if i % 4 == 0 then rock elseif i % 2 == 0 then leafy else grass
+			else
+				mat = if i % 3 == 0 then leafy elseif i % 7 == 0 then ground else grass
+			end
+			addHill(x, z, radius, height, mat)
+		end
+	end
+
+	-- 6) Massifs montagneux ÉNORMES (bordures Nord, Est, Sud, Nord-Ouest, Sud-Ouest, Sud-Est) :
+	--    montagnes colossales à contreforts multiples et sommets enneigés culminant à 175–215 studs de Terrain
+	--    (+ aiguilles rocheuses jusqu'à ~300 studs).
+	-- Grand Massif de l'Est (domine la Cascade vers (1320, -260) sans empiéter sur le bassin)
+	addColossalMountain(1720, -260, 210, 195, rock, true)
+	addColossalMountain(1710, -820, 200, 180, slate, true)
+	addColossalMountain(1720, 560, 195, 175, sandstone, false)
+	addMountain(1560, 80, 155, 128, slate)
+	addMountain(1550, -560, 150, 124, rock)
+	addMountain(1640, 320, 150, 120, slate)
+	-- Grand Massif Alpin du Nord
+	addColossalMountain(60, -1720, 215, 205, slate, true)
+	addColossalMountain(-560, -1710, 195, 180, rock, true)
+	addColossalMountain(680, -1710, 200, 185, rock, true)
+	addMountain(-240, -1650, 155, 132, rock)
+	addMountain(360, -1620, 155, 134, rock)
+	addMountain(-880, -1680, 150, 122, slate)
+	-- Grand Massif du Sud
+	addColossalMountain(-60, 1720, 210, 198, slate, true)
+	addColossalMountain(840, 1710, 205, 188, sandstone, false)
+	addColossalMountain(-740, 1710, 195, 178, slate, true)
+	addMountain(-380, 1640, 150, 126, rock)
+	addMountain(520, 1620, 155, 130, rock)
+	-- Grand Massif du Nord-Ouest (derrière la Souche, loin du passage Showcase)
+	addColossalMountain(-1710, -1680, 210, 196, rock, true)
+	addMountain(-1340, -1690, 150, 126, slate)
+	addMountain(-1710, -1280, 150, 124, rock)
+	-- Grands Massifs Sud-Ouest & Sud-Est (encadrent la Prairie et les Rochers Arides)
+	addColossalMountain(-1710, 1680, 210, 194, rock, true)
+	addMountain(-1700, 1260, 150, 124, slate)
+	addMountain(-1320, 1690, 150, 128, rock)
+	addColossalMountain(1700, 1680, 215, 202, sandstone, false)
+	addMountain(1340, 1690, 155, 132, sandstone)
+	addMountain(1700, 1280, 155, 130, rock)
+
+	-- Monts intérieurs géants (entre les quadrants, loin des bassins et du Chêne)
+	addColossalMountain(-1580, 120, 175, 150, rock, true)
+	addColossalMountain(920, -1580, 175, 148, slate, true)
+
+	-- 7) Cuvettes et vallons encaissés (les flaques de pluie et l'humidité s'y concentrent).
 	addDip(-280, 560, 85, 8)
 	addDip(760, -280, 85, 8)
 	addDip(-720, -1420, 75, 7)
 	addDip(220, 340, 75, 7)
 	addDip(-840, -180, 80, 8)
 	addDip(420, 820, 80, 8)
+	addDip(-620, 880, 90, 9)
+	addDip(180, -540, 85, 8)
+	addDip(-1180, 260, 85, 8)
+	addDip(1120, -720, 80, 7)
+	addDip(-240, -1180, 85, 8)
+	addDip(840, 1140, 90, 9)
 end
 
 -- ============================================================
@@ -625,10 +870,10 @@ local function generatePond(root: Folder)
 
 	-- Cinq passes sur TOUS les bassins (et pas bassin par bassin) : là où deux boîtes se
 	-- chevauchent (coudes du ruisseau, embouchure), l'eau doit toujours être écrite en dernier.
-	-- 1) Air au-dessus du niveau d'eau (jusqu'à GROUND_TOP_Y + 48 pour dégager d'éventuelles collines).
+	-- 1) Air au-dessus du niveau d'eau (jusqu'à GROUND_TOP_Y + 240 pour dégager toute colline ou piémont).
 	for _, basin in ipairs(basins) do
 		local box, bank = basin.Box, basin.Bank
-		fillBox(box.MinX - bank, box.MaxX + bank, WATER_TOP, GROUND_TOP_Y + 48, box.MinZ - bank, box.MaxZ + bank, Enum.Material.Air)
+		fillBox(box.MinX - bank, box.MaxX + bank, WATER_TOP, GROUND_TOP_Y + 240, box.MinZ - bank, box.MaxZ + bank, Enum.Material.Air)
 	end
 	-- 2) Berge de sable au niveau de l'eau.
 	for _, basin in ipairs(basins) do
@@ -945,6 +1190,52 @@ local function generatePondDecor(root: Folder)
 				newPart(folder, "Galet", Vector3.new(size, size, size), CFrame.new(x, WATER_TOP + size * 0.25, z), Enum.Material.Pebble, Color3.fromRGB(120, 125, 125), { Shape = Enum.PartType.Ball }).CastShadow = false
 			end
 		end
+
+		-- Oasis du Sud : nénuphars exotiques, roseaux dorés et pierres chaudes de berge.
+		local oCenter = WorldLayout.SOUTH_OASIS_CENTER
+		local oHalf = WorldLayout.SOUTH_OASIS_SIZE / 2
+		for i = 1, 8 do
+			local x = oCenter.X + rng:NextNumber(-oHalf.X + 12, oHalf.X - 12)
+			local z = oCenter.Z + rng:NextNumber(-oHalf.Z + 12, oHalf.Z - 12)
+			local diameter = rng:NextInteger(9, 14)
+			newCylinder(folder, "NenupharOasis", Vector3.new(x, WATER_TOP - 0.15, z), 0.4, diameter, Enum.Material.Grass, Color3.fromRGB(78, 160, 72))
+			if i % 2 == 0 then
+				newPart(folder, "FleurLotus", Vector3.new(2.6, 2.6, 2.6), CFrame.new(x, WATER_TOP + 1.3, z), Enum.Material.Neon, Color3.fromRGB(255, 185, 95), { Shape = Enum.PartType.Ball, CanCollide = false })
+				spawnFoodNode(foodFolder, Vector3.new(x + 2.2, WATER_TOP + 1.1, z), "Nectar", Color3.fromRGB(250, 200, 50))
+			end
+		end
+		for _ = 1, 16 do
+			local angle = rng:NextNumber() * math.pi * 2
+			local x = oCenter.X + math.cos(angle) * (oHalf.X + rng:NextNumber(-2, 5))
+			local z = oCenter.Z + math.sin(angle) * (oHalf.Z + rng:NextNumber(-2, 5))
+			if math.abs(x - oCenter.X) > 14 then
+				local h = rng:NextInteger(12, 22)
+				newCylinder(folder, "RoseauOasis", Vector3.new(x, WATER_TOP - 3, z), h + 3, 0.8, Enum.Material.Grass, Color3.fromRGB(125, 165, 70)).CastShadow = false
+			end
+		end
+
+		-- Bassin de l'Ouest : nénuphars sombres, fleurs bioluminescentes et roseaux de marais.
+		local westCenter = WorldLayout.WEST_POND_CENTER
+		local westHalf = WorldLayout.WEST_POND_SIZE / 2
+		for i = 1, 8 do
+			local x = westCenter.X + rng:NextNumber(-westHalf.X + 10, westHalf.X - 10)
+			local z = westCenter.Z + rng:NextNumber(-westHalf.Z + 10, westHalf.Z - 10)
+			local diameter = rng:NextInteger(9, 14)
+			newCylinder(folder, "NenupharOuest", Vector3.new(x, WATER_TOP - 0.15, z), 0.4, diameter, Enum.Material.Grass, Color3.fromRGB(52, 118, 68))
+			if i % 2 == 0 then
+				newPart(folder, "FleurNenupharBleue", Vector3.new(2.4, 2.4, 2.4), CFrame.new(x, WATER_TOP + 1.3, z), Enum.Material.Neon, Color3.fromRGB(125, 225, 245), { Shape = Enum.PartType.Ball, CanCollide = false })
+				spawnFoodNode(foodFolder, Vector3.new(x + 2.2, WATER_TOP + 1.1, z), "Nectar", Color3.fromRGB(240, 190, 40))
+			end
+		end
+		for _ = 1, 20 do
+			local angle = rng:NextNumber() * math.pi * 2
+			local x = westCenter.X + math.cos(angle) * (westHalf.X + rng:NextNumber(-2, 4))
+			local z = westCenter.Z + math.sin(angle) * (westHalf.Z + rng:NextNumber(-2, 4))
+			if math.abs(x - westCenter.X) > 14 then
+				local h = rng:NextInteger(14, 24)
+				newCylinder(folder, "RoseauOuest", Vector3.new(x, WATER_TOP - 3, z), h + 3, 0.8, Enum.Material.Grass, Color3.fromRGB(82, 130, 68)).CastShadow = false
+			end
+		end
 	end
 end
 
@@ -1244,13 +1535,13 @@ local function generatePrairieFleurie(root: Folder)
 		breathe()
 	end
 
-	-- Trèfles : tige courte + 3 folioles plates (plateformes basses).
-	for _ = 1, 30 do
+	-- Trèfles : tige courte + 3 folioles plates (plateformes basses), posés sur le relief.
+	for _ = 1, 36 do
 		local x, z = randomInDisc(PRAIRIE_CENTER, 0, radius)
 		local stemHeight = rng:NextInteger(6, 11)
-		local base = Vector3.new(x, GROUND_TOP_Y, z)
+		local base = Vector3.new(x, groundHeightAt(x, z), z)
 		local green = Color3.fromRGB(60 + rng:NextInteger(0, 20), 150 + rng:NextInteger(0, 30), 70)
-		newCylinder(folder, "TrefleTige", base, stemHeight, 0.7, Enum.Material.Grass, Color3.fromRGB(70, 130, 60)).CastShadow = false
+		newCylinder(folder, "TrefleTige", base - Vector3.new(0, 0.8, 0), stemHeight + 0.8, 0.7, Enum.Material.Grass, Color3.fromRGB(70, 130, 60)).CastShadow = false
 		for leaf = 1, 3 do
 			local angle = leaf / 3 * math.pi * 2
 			newCylinder(
@@ -1262,14 +1553,50 @@ local function generatePrairieFleurie(root: Folder)
 		breathe()
 	end
 
-	-- Champignons : pied + chapeau large. Un sur trois abrite (pied tagué Shelter), un sur deux nourrit.
+	-- Pissenlits géants (sphères d'akènes cotonneux en hauteur + graines) et épis de Lavande sur les collines.
 	for i = 1, 22 do
+		local x, z = randomInDisc(PRAIRIE_CENTER, 15, radius * 0.95)
+		local groundY = groundHeightAt(x, z)
+		local stemH = rng:NextInteger(28, 48)
+		newPart(folder, "PissenlitTige", Vector3.new(1.5, stemH + 1.5, 1.5), CFrame.new(x, groundY + (stemH - 1.5) / 2, z), Enum.Material.Grass, Color3.fromRGB(88, 152, 68))
+		local puffSize = rng:NextNumber(8, 12.5)
+		newPart(
+			folder, "PissenlitAkenes", Vector3.one * puffSize,
+			CFrame.new(x, groundY + stemH + puffSize * 0.35, z),
+			Enum.Material.Fabric, Color3.fromRGB(245, 248, 252),
+			{ Shape = Enum.PartType.Ball, Transparency = 0.15 }
+		)
+		if i % 2 == 0 then
+			spawnFoodNode(foodFolder, Vector3.new(x, groundY + stemH + puffSize * 0.85 + 1, z), "Graine", Color3.fromRGB(215, 190, 125))
+		end
+		breathe()
+	end
+
+	for i = 1, 28 do
+		local x, z = randomInDisc(PRAIRIE_CENTER, 10, radius * 0.95)
+		local groundY = groundHeightAt(x, z)
+		local stemH = rng:NextInteger(18, 32)
+		newPart(folder, "LavandeTige", Vector3.new(1.1, stemH + 1, 1.1), CFrame.new(x, groundY + (stemH - 1) / 2, z), Enum.Material.Grass, Color3.fromRGB(70, 128, 72))
+		local lavenderColor = if i % 2 == 0 then Color3.fromRGB(152, 105, 230) else Color3.fromRGB(185, 125, 245)
+		for tier = 1, 3 do
+			local w = 3.8 - tier * 0.6
+			local tierY = groundY + stemH * 0.55 + tier * (stemH * 0.16)
+			newPart(folder, "LavandeEpi", Vector3.new(w, 2.4, w), CFrame.new(x, tierY, z), Enum.Material.SmoothPlastic, lavenderColor)
+		end
+		if i % 4 == 0 then
+			spawnFoodNode(foodFolder, Vector3.new(x, groundY + stemH + 2, z), "Nectar", Color3.fromRGB(245, 205, 55))
+		end
+		breathe()
+	end
+
+	-- Champignons : pied + chapeau large. Un sur trois abrite (pied tagué Shelter), un sur deux nourrit.
+	for i = 1, 26 do
 		local x, z = randomInDisc(PRAIRIE_CENTER, 0, radius)
 		local stemHeight = rng:NextInteger(8, 16)
 		local capDiameter = rng:NextInteger(12, 20)
-		local base = Vector3.new(x, GROUND_TOP_Y, z)
+		local base = Vector3.new(x, groundHeightAt(x, z), z)
 		local capColor = if rng:NextNumber() < 0.5 then Color3.fromRGB(190, 60, 45) else Color3.fromRGB(200, 170, 120)
-		local stem = newCylinder(folder, "ChampignonPied", base - Vector3.new(0, 1, 0), stemHeight + 1, 3.5, Enum.Material.SmoothPlastic, Color3.fromRGB(235, 228, 210))
+		local stem = newCylinder(folder, "ChampignonPied", base - Vector3.new(0, 1.5, 0), stemHeight + 1.5, 3.5, Enum.Material.SmoothPlastic, Color3.fromRGB(235, 228, 210))
 		newCylinder(folder, "ChampignonChapeau", base + Vector3.new(0, stemHeight, 0), 2.5, capDiameter, Enum.Material.SmoothPlastic, capColor)
 		newCylinder(folder, "ChampignonChapeau", base + Vector3.new(0, stemHeight + 2.5, 0), 2, capDiameter * 0.6, Enum.Material.SmoothPlastic, capColor)
 		if i % 3 == 0 then
@@ -1410,8 +1737,9 @@ end
 
 -- Bûche creuse : 7 planches en octogone (une manque : fissure par où entrent les volants).
 local function buildHollowLog(folder: Instance, center: Vector3, direction: Vector3, length: number)
+	local groundCenter = Vector3.new(center.X, groundHeightAt(center.X, center.Z), center.Z)
 	local apothem = 9
-	local axis = CFrame.lookAt(center + Vector3.new(0, apothem - 0.5, 0), center + Vector3.new(0, apothem - 0.5, 0) + direction)
+	local axis = CFrame.lookAt(groundCenter + Vector3.new(0, apothem - 0.5, 0), groundCenter + Vector3.new(0, apothem - 0.5, 0) + direction)
 	for k = 0, 7 do
 		if k ~= 3 then
 			newPart(
@@ -1422,13 +1750,13 @@ local function buildHollowLog(folder: Instance, center: Vector3, direction: Vect
 		end
 	end
 	for _, along in ipairs({ -length * 0.33, 0, length * 0.33 }) do
-		shelterMarker(folder, "BucheCreuse_Abri", center + direction * along + Vector3.new(0, 2, 0))
+		shelterMarker(folder, "BucheCreuse_Abri", groundCenter + direction * along + Vector3.new(0, 2, 0))
 	end
 	-- Plus rien ne pousse sous la bûche.
 	local reach = length / 2 + 6
-	blockCircle(center.X, center.Z, 14)
-	blockCircle(center.X + direction.X * reach * 0.5, center.Z + direction.Z * reach * 0.5, reach * 0.5 + 6)
-	blockCircle(center.X - direction.X * reach * 0.5, center.Z - direction.Z * reach * 0.5, reach * 0.5 + 6)
+	blockCircle(groundCenter.X, groundCenter.Z, 14)
+	blockCircle(groundCenter.X + direction.X * reach * 0.5, groundCenter.Z + direction.Z * reach * 0.5, reach * 0.5 + 6)
+	blockCircle(groundCenter.X - direction.X * reach * 0.5, groundCenter.Z - direction.Z * reach * 0.5, reach * 0.5 + 6)
 end
 
 -- Grotte / Arche rocheuse : abri d'hiver et plafond escaladable à 360° loin de la Souche.
@@ -1463,33 +1791,228 @@ local function generateLandmarks(root: Folder)
 	local trenchWidth = 24 + WorldLayout.STREAM_BANK_WIDTH * 2
 	local foodFolder = getFoodFolder(root)
 
-	-- Grandes bûches creuses : abris intermédiaires entre les biomes.
+	-- Grandes bûches creuses : abris intermédiaires entre les biomes et sur les collines.
 	buildHollowLog(folder, Vector3.new(-460, GROUND_TOP_Y, 90), Vector3.new(math.cos(math.rad(15)), 0, math.sin(math.rad(15))), 120)
 	buildHollowLog(folder, Vector3.new(-520, GROUND_TOP_Y, -380), Vector3.new(math.cos(math.rad(-35)), 0, math.sin(math.rad(-35))), 100)
 	buildHollowLog(folder, Vector3.new(520, GROUND_TOP_Y, 380), Vector3.new(math.cos(math.rad(50)), 0, math.sin(math.rad(50))), 100)
+	buildHollowLog(folder, Vector3.new(180, GROUND_TOP_Y, -820), Vector3.new(math.cos(math.rad(-20)), 0, math.sin(math.rad(-20))), 110)
+	buildHollowLog(folder, Vector3.new(-1020, GROUND_TOP_Y, 540), Vector3.new(math.cos(math.rad(40)), 0, math.sin(math.rad(40))), 105)
+	buildHollowLog(folder, Vector3.new(960, GROUND_TOP_Y, -540), Vector3.new(math.cos(math.rad(75)), 0, math.sin(math.rad(75))), 96)
 
-	-- Grottes / arches rocheuses (abris stratégiques aux pieds des montagnes et plaines).
+	-- Grottes / arches rocheuses (abris stratégiques aux pieds des montagnes, sur les buttes et plaines).
 	buildMountainCave(folder, Vector3.new(60, GROUND_TOP_Y, -1400), 0)
 	buildMountainCave(folder, Vector3.new(1340, GROUND_TOP_Y, 60), 90)
 	buildMountainCave(folder, Vector3.new(-60, GROUND_TOP_Y, 1400), 180)
+	buildMountainCave(folder, Vector3.new(-1420, GROUND_TOP_Y, -720), -65)
+	buildMountainCave(folder, Vector3.new(880, GROUND_TOP_Y, -1420), 25)
+	buildMountainCave(folder, Vector3.new(-920, GROUND_TOP_Y, 1460), 145)
+	buildMountainCave(folder, Vector3.new(1420, GROUND_TOP_Y, 820), 110)
+
+	-- Aiguilles & Pics Rocheux/Enneigés Colossaux au sommet des plus grandes montagnes :
+	-- prolongent les massifs jusqu'à 270–315 studs au-dessus de la plaine (plus haut que le Grand Chêne),
+	-- avec corniches en spirale escaladables et grotte de cristal au pied de l'aiguille.
+	local colossalPeaks = {
+		{ X = 1720, Z = -260, ExtraH = 105, Snow = true, Color = Color3.fromRGB(102, 106, 114), Mat = Enum.Material.Rock },
+		{ X = 60, Z = -1720, ExtraH = 110, Snow = true, Color = Color3.fromRGB(92, 98, 110), Mat = Enum.Material.Slate },
+		{ X = -560, Z = -1710, ExtraH = 92, Snow = true, Color = Color3.fromRGB(104, 108, 116), Mat = Enum.Material.Rock },
+		{ X = 680, Z = -1710, ExtraH = 96, Snow = true, Color = Color3.fromRGB(98, 104, 112), Mat = Enum.Material.Rock },
+		{ X = -60, Z = 1720, ExtraH = 104, Snow = true, Color = Color3.fromRGB(96, 100, 108), Mat = Enum.Material.Slate },
+		{ X = -1710, Z = -1680, ExtraH = 100, Snow = true, Color = Color3.fromRGB(100, 102, 110), Mat = Enum.Material.Rock },
+		{ X = -1710, Z = 1680, ExtraH = 98, Snow = true, Color = Color3.fromRGB(102, 106, 112), Mat = Enum.Material.Rock },
+		{ X = 1700, Z = 1680, ExtraH = 106, Snow = false, Color = Color3.fromRGB(194, 146, 98), Mat = Enum.Material.Sandstone },
+		{ X = 840, Z = 1710, ExtraH = 92, Snow = false, Color = Color3.fromRGB(186, 138, 92), Mat = Enum.Material.Sandstone },
+		{ X = -1580, Z = 120, ExtraH = 88, Snow = true, Color = Color3.fromRGB(98, 104, 112), Mat = Enum.Material.Slate },
+	}
+	for _, peak in ipairs(colossalPeaks) do
+		local baseY = groundHeightAt(peak.X, peak.Z)
+		local totalH = peak.ExtraH
+		-- 4 étages rocheux décroissants + névé/neige au sommet de chaque étage
+		local tiers = {
+			{ W = 74, H = totalH * 0.34, Ox = 0, Oz = 0 },
+			{ W = 54, H = totalH * 0.30, Ox = 4, Oz = -3 },
+			{ W = 36, H = totalH * 0.22, Ox = -3, Oz = 4 },
+			{ W = 20, H = totalH * 0.14, Ox = 0, Oz = 0 },
+		}
+		local curY = baseY - 12 -- ancré profondément dans le dôme de Terrain
+		for tIdx, tier in ipairs(tiers) do
+			local cx, cz = peak.X + tier.Ox, peak.Z + tier.Oz
+			newPart(
+				folder, "PicColossal_" .. tIdx, Vector3.new(tier.W, tier.H + 6, tier.W * 0.88),
+				CFrame.new(cx, curY + tier.H / 2, cz) * CFrame.Angles(0, math.rad(tIdx * 23), 0),
+				peak.Mat, peak.Color
+			)
+			if peak.Snow and tIdx >= 2 then
+				newPart(
+					folder, "PicNeige_" .. tIdx, Vector3.new(tier.W + 2, 3.5, tier.W * 0.88 + 2),
+					CFrame.new(cx, curY + tier.H + 1.5, cz) * CFrame.Angles(0, math.rad(tIdx * 23), 0),
+					Enum.Material.Snow, Color3.fromRGB(240, 246, 255)
+				)
+			end
+			curY += tier.H
+		end
+		-- Corniches en spirale autour de l'aiguille pour grimper jusqu'au sommet
+		for step = 1, 10 do
+			local frac = step / 10
+			local angle = step * 1.15
+			local radius = 38 * (1 - frac * 0.58)
+			local lx = peak.X + math.cos(angle) * radius
+			local lz = peak.Z + math.sin(angle) * radius
+			local ly = baseY - 4 + frac * (totalH - 14)
+			newPart(
+				folder, "CornicheAlpine", Vector3.new(12, 2.5, 7),
+				CFrame.lookAt(Vector3.new(lx, ly, lz), Vector3.new(peak.X, ly, peak.Z)),
+				if peak.Snow and step >= 6 then Enum.Material.Snow else peak.Mat,
+				if peak.Snow and step >= 6 then Color3.fromRGB(238, 245, 255) else peak.Color
+			)
+		end
+		-- Grotte de cristal géothermique à la base de l'aiguille (abri + chaleur en haute altitude)
+		local cavePos = Vector3.new(peak.X - 36, groundHeightAt(peak.X - 36, peak.Z), peak.Z)
+		shelterMarker(folder, "PicGrotteAbri", cavePos + Vector3.new(0, 2, 0))
+		local crystal = newPart(
+			folder, "CristalAlpin", Vector3.new(3.5, 9, 3.5),
+			CFrame.new(cavePos + Vector3.new(0, 4, 0)) * CFrame.Angles(math.rad(12), 0, math.rad(-10)),
+			Enum.Material.Neon, Color3.fromRGB(115, 220, 255)
+		)
+		CollectionService:AddTag(crystal, "WarmSpot")
+		crystal:SetAttribute("WarmBonus", 8)
+		crystal:SetAttribute("WarmRadius", 22)
+		breathe()
+	end
 
 	-- Clairière des Champignons Géants (Sud-Ouest du Chêne) : plateformes d'escalade à étages + abris.
 	local shroomGlade = Vector3.new(-440, GROUND_TOP_Y, 240)
-	for i = 1, 10 do
-		local angle = (i / 10) * math.pi * 2
-		local r = if i % 2 == 0 then 32 else 54
+	for i = 1, 14 do
+		local angle = (i / 14) * math.pi * 2
+		local r = if i % 2 == 0 then 32 else 58
 		local sx = shroomGlade.X + math.cos(angle) * r
 		local sz = shroomGlade.Z + math.sin(angle) * r
 		if isFree(sx, sz, 10) then
 			local sy = groundHeightAt(sx, sz)
-			local h = rng:NextInteger(18, 34)
-			local cap = rng:NextInteger(18, 28)
-			local capColor = if i % 2 == 0 then Color3.fromRGB(195, 65, 50) else Color3.fromRGB(145, 110, 185)
-			local stem = newCylinder(folder, "ChampignonGeantPied", Vector3.new(sx, sy - 1, sz), h + 1, 5, Enum.Material.SmoothPlastic, Color3.fromRGB(235, 228, 212))
+			local h = rng:NextInteger(18, 36)
+			local cap = rng:NextInteger(18, 30)
+			local capColor = if i % 3 == 0
+				then Color3.fromRGB(195, 65, 50)
+				elseif i % 3 == 1 then Color3.fromRGB(145, 110, 185)
+				else Color3.fromRGB(70, 175, 165)
+			local stem = newCylinder(folder, "ChampignonGeantPied", Vector3.new(sx, sy - 1.5, sz), h + 1.5, 5, Enum.Material.SmoothPlastic, Color3.fromRGB(235, 228, 212))
 			newCylinder(folder, "ChampignonGeantChapeau", Vector3.new(sx, sy + h, sz), 3, cap, Enum.Material.SmoothPlastic, capColor)
 			newCylinder(folder, "ChampignonGeantChapeau", Vector3.new(sx, sy + h + 3, sz), 2.2, cap * 0.62, Enum.Material.SmoothPlastic, capColor)
 			tagShelter(stem)
 			spawnFoodNode(foodFolder, Vector3.new(sx + 4, sy + 1.2, sz), "Champignon", Color3.fromRGB(220, 200, 170))
+		end
+	end
+
+	-- Micro-biome 1 : Bambouseraie Géante (vallon Est / Nord-Est vers (820, -480))
+	-- Tiges segmentées escaladables, anneaux-paliers, feuillage en sommet et jeunes pousses comestibles.
+	local bambooCenter = Vector3.new(820, GROUND_TOP_Y, -480)
+	for i = 1, 32 do
+		local spot = pickSpot(bambooCenter, 8, 175, 7)
+		if spot then
+			local segments = rng:NextInteger(4, 6)
+			local segH = rng:NextInteger(11, 15)
+			local diameter = rng:NextNumber(2.8, 4.0)
+			local bambooGreen = Color3.fromRGB(82 + rng:NextInteger(0, 28), 156 + rng:NextInteger(0, 32), 62)
+			local ringGreen = Color3.fromRGB(115, 185, 85)
+			local totalH = segments * segH
+			newCylinder(folder, "BambouTige", spot - Vector3.new(0, 2, 0), totalH + 2, diameter, Enum.Material.SmoothPlastic, bambooGreen)
+			for s = 1, segments - 1 do
+				newCylinder(folder, "BambouNoeud", spot + Vector3.new(0, s * segH - 0.4, 0), 0.9, diameter + 0.9, Enum.Material.SmoothPlastic, ringGreen)
+			end
+			-- Touffe de feuilles de bambou au sommet (sert de perchoir élevé)
+			local topPos = spot + Vector3.new(0, totalH, 0)
+			local crown = newPart(folder, "BambouFeuillage", Vector3.new(12, 4.5, 12), CFrame.new(topPos + Vector3.new(0, 2, 0)), Enum.Material.Grass, bambooGreen)
+			CollectionService:AddTag(crown, "EvergreenLeaf")
+			if i % 4 == 0 then
+				spawnFoodNode(foodFolder, spot + Vector3.new(diameter, 1.2, 0), "Feuille", Color3.fromRGB(110, 195, 80))
+			end
+			blockCircle(spot.X, spot.Z, diameter + 1.5)
+		end
+		breathe()
+	end
+
+	-- Micro-biome 2 : Tourbière & Marais Bioluminescent (Ouest, entre la Souche et le Bassin de l'Ouest)
+	local bogCenter = Vector3.new(-1080, GROUND_TOP_Y, -340)
+	for i = 1, 18 do
+		local spot = pickSpot(bogCenter, 10, 190, 9)
+		if spot then
+			-- Tertre de mousse & racines tordues + champignons bioluminescents géants
+			local h = rng:NextInteger(12, 24)
+			local cap = rng:NextInteger(12, 20)
+			local glowColor = if i % 2 == 0 then Color3.fromRGB(85, 235, 200) else Color3.fromRGB(110, 185, 255)
+			local stem = newCylinder(folder, "ChampignonMaraisPied", spot - Vector3.new(0, 1.5, 0), h + 1.5, 3.8, Enum.Material.SmoothPlastic, Color3.fromRGB(185, 210, 198))
+			local capPart = newCylinder(folder, "ChampignonMaraisChapeau", spot + Vector3.new(0, h, 0), 2.4, cap, Enum.Material.Neon, glowColor)
+			local light = Instance.new("PointLight")
+			light.Color = glowColor
+			light.Range = 22
+			light.Brightness = 1.1
+			light.Shadows = false
+			light.Parent = capPart
+			if i % 2 == 0 then
+				tagShelter(stem)
+			end
+			if i % 3 == 0 then
+				spawnFoodNode(foodFolder, spot + Vector3.new(3.5, 1.2, 0), "Champignon", glowColor)
+			end
+			blockCircle(spot.X, spot.Z, 6)
+		end
+		breathe()
+	end
+
+	-- Micro-biome 3 : Cercle de Mégalithes Moussus (au sommet de la butte en terrasses (-340, -420))
+	do
+		local hengeCenter = Vector3.new(-340, GROUND_TOP_Y, -420)
+		local hengeRadius = 38
+		local stoneCount = 6
+		for i = 1, stoneCount do
+			local angle = (i / stoneCount) * math.pi * 2
+			local sx = hengeCenter.X + math.cos(angle) * hengeRadius
+			local sz = hengeCenter.Z + math.sin(angle) * hengeRadius
+			local sy = groundHeightAt(sx, sz)
+			local cf = CFrame.lookAt(Vector3.new(sx, sy + 9, sz), Vector3.new(hengeCenter.X, sy + 9, hengeCenter.Z))
+			local pillar = newPart(folder, "MegalithePilier", Vector3.new(6, 20, 4.5), cf, Enum.Material.Slate, Color3.fromRGB(102, 108, 98))
+			-- Couche de mousse au sommet du pilier
+			newPart(folder, "MegalitheMousse", Vector3.new(6.4, 1.4, 4.9), cf * CFrame.new(0, 10.2, 0), Enum.Material.Grass, Color3.fromRGB(72, 138, 62))
+			if i % 2 == 1 then
+				-- Linteau horizontal reliant au pilier suivant + abri et pierre chaude
+				local nextAngle = ((i % stoneCount) + 1) / stoneCount * math.pi * 2
+				local nx = hengeCenter.X + math.cos(nextAngle) * hengeRadius
+				local nz = hengeCenter.Z + math.sin(nextAngle) * hengeRadius
+				local ny = groundHeightAt(nx, nz)
+				local topA = Vector3.new(sx, sy + 19.5, sz)
+				local topB = Vector3.new(nx, ny + 19.5, nz)
+				local lintel = linkPart(folder, topA, topB, 4.8, "MegalitheLinteau", Enum.Material.Rock, Color3.fromRGB(115, 118, 108))
+				CollectionService:AddTag(lintel, "WarmSpot")
+				lintel:SetAttribute("WarmBonus", 5)
+				lintel:SetAttribute("WarmRadius", 16)
+				shelterMarker(folder, "MegalitheAbri", Vector3.new((sx + nx) / 2, math.min(sy, ny) + 1, (sz + nz) / 2))
+			end
+			CollectionService:AddTag(pillar, "WarmSpot")
+			pillar:SetAttribute("WarmBonus", 4)
+			pillar:SetAttribute("WarmRadius", 14)
+		end
+	end
+
+	-- Micro-biome 4 : Arches de Grès & Pierres Chaudes de l'Oasis du Sud (autour de (240, 1240))
+	do
+		local oasis = WorldLayout.SOUTH_OASIS_CENTER
+		local archOffsets = {
+			{ Dx = -140, Dz = -60, Yaw = 35 },
+			{ Dx = 145, Dz = 55, Yaw = -40 },
+			{ Dx = 20, Dz = 135, Yaw = 5 },
+		}
+		for _, arch in ipairs(archOffsets) do
+			local ax, az = oasis.X + arch.Dx, oasis.Z + arch.Dz
+			local ay = groundHeightAt(ax, az)
+			local cf = CFrame.new(ax, ay, az) * CFrame.Angles(0, math.rad(arch.Yaw), 0)
+			local sandRock = Color3.fromRGB(198, 156, 108)
+			newPart(folder, "ArcheGresG", Vector3.new(5.5, 15, 14), cf * CFrame.new(-8, 6.5, 0), Enum.Material.Sandstone, sandRock)
+			newPart(folder, "ArcheGresD", Vector3.new(5.5, 15, 14), cf * CFrame.new(8, 6.5, 0), Enum.Material.Sandstone, sandRock)
+			local topSlab = newPart(folder, "ArcheGresDalle", Vector3.new(24, 4, 15), cf * CFrame.new(0, 15, 0), Enum.Material.Sandstone, Color3.fromRGB(212, 170, 120))
+			CollectionService:AddTag(topSlab, "WarmSpot")
+			topSlab:SetAttribute("WarmBonus", 6)
+			topSlab:SetAttribute("WarmRadius", 18)
+			shelterMarker(folder, "ArcheGresAbri", (cf * CFrame.new(0, 1, 0)).Position)
+			blockCircle(ax, az, 15)
 		end
 	end
 
@@ -1618,12 +2141,19 @@ end
 -- ============================================================
 
 local function buildBlockTree(folder: Instance, foodFolder: Folder, base: Vector3, style: string, scale: number)
-	local baseHeight = if style == "Geant" then 78 elseif style == "Sapin" then 66 else 48
+	local baseHeight = if style == "Geant"
+		then 78
+		elseif style == "Sapin" or style == "PinParasol" then 66
+		elseif style == "Saule" then 44
+		else 48
 	local trunkHeight = math.round(baseHeight * scale)
-	local trunkW = (if style == "Geant" then 8.5 elseif style == "Sapin" then 5.5 else 6.2) * scale
+	local trunkW = (if style == "Geant" then 8.5 elseif style == "Sapin" or style == "PinParasol" then 5.5 elseif style == "Saule" then 6.8 else 6.2) * scale
 	local barkColor = if style == "Bouleau"
 		then Color3.fromRGB(222, 218, 208)
 		elseif style == "Sapin" then Color3.fromRGB(60, 42, 30)
+		elseif style == "PinParasol" then Color3.fromRGB(112, 72, 46)
+		elseif style == "Saule" then Color3.fromRGB(76, 68, 52)
+		elseif style == "Erable" then Color3.fromRGB(68, 48, 36)
 		else Color3.fromRGB(84, 58, 38)
 
 	local x, y, z = base.X, base.Y, base.Z
@@ -1656,11 +2186,58 @@ local function buildBlockTree(folder: Instance, foodFolder: Folder, base: Vector
 			CollectionService:AddTag(leaf, "EvergreenLeaf")
 		end
 		return
+	elseif style == "PinParasol" then
+		-- Pin parasol méditerranéen : large couronne plate persistante au sommet (idéal Sud / Oasis).
+		local topY = y + trunkHeight
+		local canopy1 = newPart(
+			folder, "FeuillagePinParasol", Vector3.new(38, 7, 38) * scale,
+			CFrame.new(x, topY + 2 * scale, z),
+			Enum.Material.Grass, Color3.fromRGB(54, 112, 48)
+		)
+		local canopy2 = newPart(
+			folder, "FeuillagePinParasol", Vector3.new(26, 6, 26) * scale,
+			CFrame.new(x, topY + 7.5 * scale, z),
+			Enum.Material.Grass, Color3.fromRGB(64, 126, 54)
+		)
+		CollectionService:AddTag(canopy1, "EvergreenLeaf")
+		CollectionService:AddTag(canopy2, "EvergreenLeaf")
+		if rng:NextNumber() < 0.4 then
+			spawnFoodNode(foodFolder, Vector3.new(x + rng:NextNumber(-8, 8), y + 1.5, z + rng:NextNumber(-8, 8)), "Graine", Color3.fromRGB(195, 160, 100))
+		end
+		return
+	elseif style == "Saule" then
+		-- Saule pleureur : dôme vert tendre + rideaux de feuillage retombant vers le sol (abri naturel).
+		local topY = y + trunkHeight
+		local willowColor = Color3.fromRGB(98, 168, 74)
+		local mainCrown = newPart(
+			folder, "Feuillage_Saule", Vector3.new(32, 9, 32) * scale,
+			CFrame.new(x, topY, z),
+			Enum.Material.Grass, willowColor
+		)
+		CollectionService:AddTag(mainCrown, "SeasonalLeaf")
+		local curtainOffsets = {
+			Vector3.new(13, -11, 0),
+			Vector3.new(-13, -11, 0),
+			Vector3.new(0, -11, 13),
+			Vector3.new(0, -11, -13),
+		}
+		for _, off in ipairs(curtainOffsets) do
+			local curtain = newPart(
+				folder, "Feuillage_SauleRideau", Vector3.new(5.5, 22, 16) * scale,
+				CFrame.new(x + off.X * scale, topY + off.Y * scale, z + off.Z * scale)
+					* CFrame.Angles(0, if math.abs(off.Z) > 0 then math.rad(90) else 0, 0),
+				Enum.Material.Grass, Color3.fromRGB(88, 158, 68)
+			)
+			CollectionService:AddTag(curtain, "SeasonalLeaf")
+		end
+		shelterMarker(folder, "SauleAbri", Vector3.new(x + 5, y + 1.5, z))
+		return
 	end
 
-	-- Feuillus style BLOCK (Chêne, Bouleau, Cerisier, Géant) : blocs cubiques étagés + tag "SeasonalLeaf".
+	-- Feuillus style BLOCK (Chêne, Bouleau, Cerisier, Érable, Géant) : blocs cubiques étagés + tag "SeasonalLeaf".
 	local baseLeafColor = if style == "Cerisier"
 		then Color3.fromRGB(242, 155, 195)
+		elseif style == "Erable" then Color3.fromRGB(220, 92, 38)
 		elseif style == "Bouleau" then Color3.fromRGB(115, 178, 72)
 		elseif style == "Geant" then Color3.fromRGB(52, 118, 44)
 		else Color3.fromRGB(68, 136, 52)
@@ -1692,7 +2269,7 @@ local function buildBlockTree(folder: Instance, foodFolder: Folder, base: Vector
 		end
 	end
 
-	if (style == "Chene" or style == "Geant") and rng:NextNumber() < 0.35 then
+	if (style == "Chene" or style == "Geant" or style == "Erable") and rng:NextNumber() < 0.35 then
 		spawnFoodNode(foodFolder, Vector3.new(x + rng:NextNumber(-9, 9), y + 1.5, z + rng:NextNumber(-9, 9)), "Fruit", Color3.fromRGB(220, 60, 50))
 	end
 end
@@ -1715,12 +2292,21 @@ local function generateSecondaryTrees(root: Folder)
 	end
 
 	-- 1) Immense Forêt du Nord & du Centre (entre le Chêne, la Souche et la Mare)
-	plantForest(Vector3.new(0, GROUND_TOP_Y, -680), 40, 520, 48, { "Chene", "Geant", "Bouleau", "Cerisier" }, 0.9, 1.35)
+	plantForest(Vector3.new(0, GROUND_TOP_Y, -680), 40, 520, 52, { "Chene", "Geant", "Bouleau", "Cerisier", "Erable" }, 0.9, 1.35)
 	-- 2) Grande Forêt de l'Ouest (entre la Souche, le Bassin Ouest et la Clairière aux Champignons)
-	plantForest(Vector3.new(-820, GROUND_TOP_Y, 40), 40, 480, 42, { "Chene", "Bouleau", "Geant", "Chene" }, 0.85, 1.3)
+	plantForest(Vector3.new(-820, GROUND_TOP_Y, 40), 40, 480, 46, { "Chene", "Bouleau", "Geant", "Erable", "Saule" }, 0.85, 1.3)
 	-- 3) Forêt de l'Est & des Plaines centrales (entre le Chêne, le Bassin Cascade et les Rochers)
-	plantForest(Vector3.new(680, GROUND_TOP_Y, 120), 40, 460, 38, { "Chene", "Cerisier", "Bouleau", "Geant" }, 0.85, 1.25)
-	-- 4) Forêt de Conifères sur les hauteurs et piémonts des massifs Nord, Est et Sud
+	plantForest(Vector3.new(680, GROUND_TOP_Y, 120), 40, 460, 42, { "Chene", "Cerisier", "Bouleau", "Geant", "Erable" }, 0.85, 1.25)
+	-- 4) Saulaies au bord des eaux (Mare, Étang de la Prairie, Bassin de l'Ouest, Ruisseaux)
+	plantForest(WorldLayout.PRAIRIE_POND_CENTER, 95, 220, 12, { "Saule", "Bouleau", "Cerisier" }, 0.9, 1.25)
+	plantForest(WorldLayout.WEST_POND_CENTER, 90, 230, 14, { "Saule", "Bouleau" }, 0.9, 1.3)
+	plantForest(WorldLayout.WATERFALL_POOL_CENTER, 90, 210, 10, { "Saule", "Erable", "Sapin" }, 0.9, 1.25)
+	-- 5) Pinède & Bosquet Méditerranéen du Sud (autour de l'Oasis du Sud et de la Crête Sud)
+	plantForest(WorldLayout.SOUTH_OASIS_CENTER, 105, 340, 24, { "PinParasol", "PinParasol", "Chene", "Erable" }, 0.9, 1.35)
+	plantForest(Vector3.new(-320, GROUND_TOP_Y, 1240), 30, 320, 22, { "PinParasol", "Cerisier", "Bouleau", "Erable" }, 0.85, 1.25)
+	-- 6) Bosquet d'Érables et de Cerisiers sur les collines du Nord-Est
+	plantForest(Vector3.new(720, GROUND_TOP_Y, -780), 30, 340, 22, { "Erable", "Cerisier", "Bouleau", "Geant" }, 0.9, 1.3)
+	-- 7) Forêt de Conifères sur les hauteurs et piémonts des massifs Nord, Est, Sud et Ouest
 	local mountainZones = {
 		Vector3.new(60, GROUND_TOP_Y, -1380),
 		Vector3.new(-260, GROUND_TOP_Y, -1400),
@@ -1730,9 +2316,28 @@ local function generateSecondaryTrees(root: Folder)
 		Vector3.new(-60, GROUND_TOP_Y, 1380),
 		Vector3.new(-380, GROUND_TOP_Y, 1400),
 		Vector3.new(540, GROUND_TOP_Y, 1360),
+		Vector3.new(-1420, GROUND_TOP_Y, -820),
+		Vector3.new(-1440, GROUND_TOP_Y, 520),
 	}
 	for _, zoneCenter in ipairs(mountainZones) do
-		plantForest(zoneCenter, 15, 180, 5, { "Sapin" }, 0.95, 1.45)
+		plantForest(zoneCenter, 15, 200, 6, { "Sapin", "Sapin", "Bouleau" }, 0.95, 1.45)
+	end
+end
+
+-- Fougère géante style BLOCK : frondes arquées rayonnantes formant une canopée basse en sous-bois.
+local function buildGiantFern(folder: Instance, spot: Vector3, scale: number)
+	local fronds = 5
+	local fernColor = Color3.fromRGB(58 + rng:NextInteger(0, 24), 138 + rng:NextInteger(0, 30), 48)
+	local baseYaw = rng:NextNumber() * math.pi * 2
+	for f = 1, fronds do
+		local angle = baseYaw + (f / fronds) * math.pi * 2
+		local dir = Vector3.new(math.cos(angle), 0, math.sin(angle))
+		local p1 = spot + Vector3.new(0, 1.2, 0)
+		local p2 = spot + dir * (5.5 * scale) + Vector3.new(0, 5.2 * scale, 0)
+		local p3 = spot + dir * (11.0 * scale) + Vector3.new(0, 3.4 * scale, 0)
+		linkPart(folder, p1, p2, 1.4 * scale, "FougereTige", Enum.Material.Grass, fernColor)
+		local tip = linkPart(folder, p2, p3, 2.4 * scale, "FougereFronde", Enum.Material.Grass, fernColor)
+		CollectionService:AddTag(tip, "SeasonalLeaf")
 	end
 end
 
@@ -1752,8 +2357,8 @@ local function generateWildFlora(root: Folder)
 		Color3.fromRGB(255, 145, 70),
 	}
 
-	-- 220 Fleurs sauvages style BLOCK disséminées dans les forêts, clairières et bords d'eau.
-	for i = 1, 220 do
+	-- 260 Fleurs sauvages style BLOCK disséminées sur les collines, forêts, clairières et bords d'eau.
+	for i = 1, 260 do
 		local spot = pickSpot(mapCenter, 45, MAP_HALF - 40, 4)
 		if spot
 			and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS * 0.85
@@ -1762,17 +2367,17 @@ local function generateWildFlora(root: Folder)
 		then
 			local stemH = rng:NextInteger(14, 28)
 			local pColor = wildColors[rng:NextInteger(1, #wildColors)]
-			buildBlockFlower(folder, foodFolder, spot, stemH, pColor, rng:NextNumber(0.8, 1.25), i % 9 == 0, "Nectar")
+			buildBlockFlower(folder, foodFolder, spot, stemH, pColor, rng:NextNumber(0.8, 1.25), i % 8 == 0, "Nectar")
 		end
 		breathe()
 	end
 
-	-- 65 Buissons style BLOCK escaladables (abris bas + relief végétal en forêt).
-	for i = 1, 65 do
+	-- 85 Buissons & Ronces à Baies Sauvages style BLOCK escaladables (abris bas + fruits en forêt et sur les collines).
+	for i = 1, 85 do
 		local spot = pickSpot(mapCenter, 55, MAP_HALF - 40, 8)
 		if spot and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS * 0.9 then
-			local w = rng:NextNumber(9, 15)
-			local h = rng:NextNumber(7, 11)
+			local w = rng:NextNumber(9, 16)
+			local h = rng:NextNumber(7, 12)
 			local bushColor = Color3.fromRGB(52 + rng:NextInteger(0, 26), 116 + rng:NextInteger(0, 34), 45)
 			local bush = newPart(
 				folder, "Buisson", Vector3.new(w, h, w),
@@ -1785,8 +2390,30 @@ local function generateWildFlora(root: Folder)
 				Enum.Material.Grass, bushColor
 			)
 			CollectionService:AddTag(bush, "SeasonalLeaf")
-			if i % 4 == 0 then
+			if i % 3 == 0 then
 				tagShelter(bush)
+			end
+			-- Buisson de baies sauvages (framboises / mûres) un buisson sur trois
+			if i % 3 == 1 then
+				local berryColor = if i % 2 == 0 then Color3.fromRGB(210, 45, 75) else Color3.fromRGB(95, 40, 145)
+				newPart(
+					folder, "GrappeBaies", Vector3.new(2.2, 2.2, 2.2),
+					CFrame.new(spot + Vector3.new(w * 0.35, h * 0.78, w * 0.25)),
+					Enum.Material.Neon, berryColor, { Shape = Enum.PartType.Ball, CanCollide = false }
+				)
+				spawnFoodNode(foodFolder, spot + Vector3.new(w * 0.5 + 1.2, 1.5, 0), "Fruit", berryColor)
+			end
+		end
+		breathe()
+	end
+
+	-- 75 Fougères géantes sur les flancs des collines et dans les sous-bois humides.
+	for i = 1, 75 do
+		local spot = pickSpot(mapCenter, 50, MAP_HALF - 60, 7)
+		if spot and (spot - ROCKY_CORNER).Magnitude > WorldLayout.ROCKS_RADIUS then
+			buildGiantFern(folder, spot, rng:NextNumber(0.85, 1.35))
+			if i % 5 == 0 then
+				shelterMarker(folder, "FougereAbri", spot + Vector3.new(0, 1.2, 0))
 			end
 		end
 		breathe()
@@ -1854,6 +2481,363 @@ local function generateFoodNodes(root: Folder)
 	scatter(mapCenter, 140, MAP_HALF - 30, 8, "Fruit", fruitColor, 2)
 end
 
+-- ============================================================
+-- Maisons, Chalets & Bâtiments explorables (style BLOCK)
+-- ============================================================
+
+type HouseSpec = {
+	Name: string,
+	Center: Vector3,
+	YawDeg: number,
+	Width: number,
+	Depth: number,
+	WallHeight: number,
+	WallColor: Color3,
+	WallMat: Enum.Material,
+	TrimColor: Color3,
+	RoofColor: Color3,
+	RoofMat: Enum.Material,
+	WithDock: boolean?,
+}
+
+local function buildHouse(parent: Folder, foodFolder: Folder, spec: HouseSpec)
+	local model = Instance.new("Model")
+	model.Name = spec.Name
+	model.Parent = parent
+
+	local cx, cz = spec.Center.X, spec.Center.Z
+	local w, d, h = spec.Width, spec.Depth, spec.WallHeight
+	local halfW, halfD = w / 2, d / 2
+
+	-- Calcul de la hauteur du relief sous les 4 coins et le centre pour que le plancher
+	-- ne soit jamais enterré par une colline, tandis que les fondations descendent dans la pente.
+	local samplePoints = {
+		Vector2.new(cx, cz),
+		Vector2.new(cx - halfW, cz - halfD),
+		Vector2.new(cx + halfW, cz - halfD),
+		Vector2.new(cx - halfW, cz + halfD),
+		Vector2.new(cx + halfW, cz + halfD),
+	}
+	local minY, maxY = math.huge, -math.huge
+	for _, pt in ipairs(samplePoints) do
+		local gy = groundHeightAt(pt.X, pt.Y)
+		minY = math.min(minY, gy)
+		maxY = math.max(maxY, gy)
+	end
+	local floorY = maxY + 1.2
+	local foundationBottom = math.min(minY - 6, floorY - 6)
+	local foundationH = floorY - foundationBottom
+	local baseCF = CFrame.new(cx, floorY, cz) * CFrame.Angles(0, math.rad(spec.YawDeg), 0)
+
+	local function partAt(name: string, size: Vector3, localCF: CFrame, mat: Enum.Material, color: Color3, opts: PartOptions?): BasePart
+		return newPart(model, name, size, baseCF * localCF, mat, color, opts)
+	end
+
+	local stoneColor = Color3.fromRGB(112, 108, 102)
+	local floorWood = Color3.fromRGB(118, 84, 54)
+	local darkWood = spec.TrimColor
+
+	-- 1) Fondations en pierre + Plancher intérieur en bois
+	partAt("Fondation", Vector3.new(w + 2, foundationH, d + 2), CFrame.new(0, -foundationH / 2, 0), Enum.Material.Cobblestone, stoneColor)
+	local mainFloor = partAt("Plancher", Vector3.new(w, 1.2, d), CFrame.new(0, 0.6, 0), Enum.Material.WoodPlanks, floorWood)
+	model.PrimaryPart = mainFloor
+
+	-- 2) Porche d'entrée (côté +Z local) + Escalier progressif jusqu'au sol réel devant la maison
+	local porchDepth = 10
+	local frontWorld = (baseCF * CFrame.new(0, 0, halfD + porchDepth + 4)).Position
+	local frontGroundY = groundHeightAt(frontWorld.X, frontWorld.Z)
+	local porchSubH = math.max(4, floorY - frontGroundY + 4)
+	partAt("PorcheSocle", Vector3.new(w * 0.56, porchSubH, porchDepth), CFrame.new(0, -porchSubH / 2 + 0.6, halfD + porchDepth / 2), Enum.Material.Cobblestone, stoneColor)
+	partAt("PorchePlancher", Vector3.new(w * 0.58, 1.2, porchDepth + 0.6), CFrame.new(0, 0.6, halfD + porchDepth / 2), Enum.Material.WoodPlanks, floorWood)
+
+	-- Marches d'accès depuis le sol jusqu'au porche (franchissables par tous les insectes terrestres)
+	local totalDrop = math.max(2, floorY + 0.6 - frontGroundY)
+	local stepCount = math.clamp(math.ceil(totalDrop / 1.8), 3, 12)
+	for s = 1, stepCount do
+		local frac = s / stepCount
+		local stepY = -totalDrop * frac + 0.6
+		local stepZ = halfD + porchDepth + s * 2.2
+		partAt("MarcheEntree_" .. s, Vector3.new(16, 2.2, 2.6), CFrame.new(0, stepY, stepZ), Enum.Material.Cobblestone, stoneColor)
+	end
+
+	-- Piliers et auvent du porche
+	local porchRoofY = h * 0.58
+	for _, side in ipairs({ -1, 1 }) do
+		partAt("PorchePilier", Vector3.new(2.2, porchRoofY, 2.2), CFrame.new(side * (w * 0.25), porchRoofY / 2 + 1, halfD + porchDepth - 1.2), Enum.Material.Wood, darkWood)
+	end
+	partAt("PorcheAuvent", Vector3.new(w * 0.62, 1.8, porchDepth + 3), CFrame.new(0, porchRoofY + 1, halfD + porchDepth / 2) * CFrame.Angles(math.rad(10), 0, 0), spec.RoofMat, spec.RoofColor)
+
+	-- Ponton optionnel (Maison du Lac)
+	if spec.WithDock then
+		local dockLen = 28
+		partAt("PontonPlancher", Vector3.new(12, 1.2, dockLen), CFrame.new(0, 0.4, -halfD - dockLen / 2), Enum.Material.WoodPlanks, floorWood)
+		for _, side in ipairs({ -5, 5 }) do
+			for p = 1, 3 do
+				partAt("PontonPieu", Vector3.new(1.8, 18, 1.8), CFrame.new(side, -7, -halfD - p * 8.5), Enum.Material.Wood, darkWood)
+			end
+		end
+	end
+
+	-- 3) Murs avec porte entrouverte (façade +Z), grandes fenêtres latérales (dont une ouverte aux volants) et colombages
+	local wallThick = 2.4
+	local doorW = 12
+	local doorH = math.min(20, h * 0.68)
+	local frontSideW = (w - doorW) / 2
+
+	-- Façade avant (+Z) : 2 pans latéraux + linteau au-dessus de la porte + battant de porte entrouvert
+	partAt("MurAvantG", Vector3.new(frontSideW, h, wallThick), CFrame.new(-(doorW / 2 + frontSideW / 2), h / 2 + 1, halfD - wallThick / 2), spec.WallMat, spec.WallColor)
+	partAt("MurAvantD", Vector3.new(frontSideW, h, wallThick), CFrame.new(doorW / 2 + frontSideW / 2, h / 2 + 1, halfD - wallThick / 2), spec.WallMat, spec.WallColor)
+	partAt("MurAvantHaut", Vector3.new(doorW, h - doorH, wallThick), CFrame.new(0, doorH + (h - doorH) / 2 + 1, halfD - wallThick / 2), spec.WallMat, spec.WallColor)
+	-- Porte en bois pivotée à 65° (laisse un large passage libre pour entrer/sortir)
+	partAt(
+		"PorteEntrouverte", Vector3.new(doorW * 0.85, doorH - 0.5, 1.2),
+		CFrame.new(-doorW / 2 + 0.6, doorH / 2 + 1.2, halfD - 0.5) * CFrame.Angles(0, math.rad(65), 0) * CFrame.new(doorW * 0.42, 0, 0),
+		Enum.Material.WoodPlanks, darkWood
+	)
+
+	-- Mur arrière (-Z) avec ouverture au centre pour l'âtre de la cheminée
+	partAt("MurArriere", Vector3.new(w, h, wallThick), CFrame.new(0, h / 2 + 1, -halfD + wallThick / 2), spec.WallMat, spec.WallColor)
+
+	-- Murs latéraux (-X et +X) avec grandes fenêtres (allège basse, linteau haut, 2 montants, jardinière fleurie)
+	local winW = math.min(18, d * 0.36)
+	local winSillH = 9
+	local winTopY = h - 7
+	local winH = math.max(8, winTopY - winSillH)
+	local sidePanelD = (d - winW) / 2
+	for _, side in ipairs({ -1, 1 }) do
+		local xPos = side * (halfW - wallThick / 2)
+		partAt("MurCoteBas", Vector3.new(wallThick, winSillH, winW), CFrame.new(xPos, winSillH / 2 + 1, 0), spec.WallMat, spec.WallColor)
+		partAt("MurCoteHaut", Vector3.new(wallThick, h - winTopY, winW), CFrame.new(xPos, winTopY + (h - winTopY) / 2 + 1, 0), spec.WallMat, spec.WallColor)
+		partAt("MurCoteAv", Vector3.new(wallThick, h, sidePanelD), CFrame.new(xPos, h / 2 + 1, winW / 2 + sidePanelD / 2), spec.WallMat, spec.WallColor)
+		partAt("MurCoteAr", Vector3.new(wallThick, h, sidePanelD), CFrame.new(xPos, h / 2 + 1, -(winW / 2 + sidePanelD / 2)), spec.WallMat, spec.WallColor)
+		-- Rebord de fenêtre + jardinière fleurie extérieure (perchoir & nectar pour les insectes volants)
+		partAt("RebordFenetre", Vector3.new(4.8, 1.2, winW + 2), CFrame.new(side * halfW, winSillH + 0.8, 0), Enum.Material.Wood, darkWood)
+		partAt("Jardiniere", Vector3.new(3.2, 2.4, winW - 2), CFrame.new(side * (halfW + 1.8), winSillH + 2.2, 0), Enum.Material.Wood, floorWood)
+		partAt("JardiniereFleurs", Vector3.new(2.8, 1.8, winW - 3), CFrame.new(side * (halfW + 1.8), winSillH + 3.8, 0), Enum.Material.Grass, Color3.fromRGB(235, 85, 120))
+		local flowerWorld = (baseCF * CFrame.new(side * (halfW + 2.0), winSillH + 5.2, 0)).Position
+		spawnFoodNode(foodFolder, flowerWorld, "Nectar", Color3.fromRGB(250, 205, 50))
+		-- Côté -X : vitre translucide ; Côté +X : fenêtre grande ouverte pour que les volants entrent en plein vol !
+		if side < 0 then
+			partAt("Vitre", Vector3.new(0.5, winH, winW), CFrame.new(xPos, winSillH + winH / 2 + 1, 0), Enum.Material.Glass, Color3.fromRGB(185, 225, 245), { Transparency = 0.55 })
+		end
+	end
+
+	-- Piliers d'angle en bois massif (colombages escaladables)
+	for _, sx in ipairs({ -1, 1 }) do
+		for _, sz in ipairs({ -1, 1 }) do
+			partAt("PilierAngle", Vector3.new(3.0, h + 1, 3.0), CFrame.new(sx * (halfW - 0.8), h / 2 + 1, sz * (halfD - 0.8)), Enum.Material.Wood, darkWood)
+		end
+	end
+
+	-- 4) Toit en pignon à deux pans + Pignons avant/arrière + Lucarne ouverte au grenier + Cheminée fumante
+	local roofRise = w * 0.36
+	local roofSlopeLen = math.sqrt((halfW + 5) * (halfW + 5) + roofRise * roofRise)
+	local roofAngle = math.atan2(roofRise, halfW + 5)
+	for _, side in ipairs({ -1, 1 }) do
+		local midX = side * ((halfW + 5) / 2)
+		local midY = h + 1 + roofRise / 2
+		partAt(
+			"ToitPan", Vector3.new(roofSlopeLen + 2, 2.2, d + 8),
+			CFrame.new(midX, midY, 0) * CFrame.Angles(0, 0, -side * roofAngle),
+			spec.RoofMat, spec.RoofColor
+		)
+	end
+	-- Poutre faîtière au sommet du toit
+	partAt("PoutreFaitiere", Vector3.new(3.2, 3.2, d + 9), CFrame.new(0, h + roofRise + 0.5, 0), Enum.Material.Wood, darkWood)
+	-- Pignons sous le toit (avec ouverture en lucarne côté avant pour accéder au grenier en volant)
+	partAt("PignonArriere", Vector3.new(w * 0.62, roofRise * 0.72, wallThick), CFrame.new(0, h + 1 + roofRise * 0.36, -halfD + wallThick / 2), spec.WallMat, spec.WallColor)
+	partAt("PignonAvantG", Vector3.new(w * 0.22, roofRise * 0.68, wallThick), CFrame.new(-w * 0.22, h + 1 + roofRise * 0.34, halfD - wallThick / 2), spec.WallMat, spec.WallColor)
+	partAt("PignonAvantD", Vector3.new(w * 0.22, roofRise * 0.68, wallThick), CFrame.new(w * 0.22, h + 1 + roofRise * 0.34, halfD - wallThick / 2), spec.WallMat, spec.WallColor)
+	partAt("RebordLucarne", Vector3.new(12, 1.2, 4.5), CFrame.new(0, h + 1.5, halfD + 1.2), Enum.Material.Wood, darkWood)
+
+	-- 5) Cheminée en brique/pierre + Âtre intérieur ardent (WarmSpot + lumière chaude + fumée)
+	local chimH = h + roofRise + foundationH + 10
+	partAt("ChemineeColonne", Vector3.new(10, chimH, 8), CFrame.new(0, chimH / 2 - foundationH + 1, -halfD - 1.5), Enum.Material.Brick, Color3.fromRGB(138, 72, 58))
+	local smokeTop = partAt("ChemineeSommet", Vector3.new(11.5, 2, 9.5), CFrame.new(0, h + roofRise + 10, -halfD - 1.5), Enum.Material.Cobblestone, stoneColor)
+	local smoke = Instance.new("ParticleEmitter")
+	smoke.Name = "FumeeCheminee"
+	smoke.Rate = 7
+	smoke.Lifetime = NumberRange.new(3.5, 5.5)
+	smoke.Speed = NumberRange.new(4, 7)
+	smoke.SpreadAngle = Vector2.new(18, 18)
+	smoke.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 2.2), NumberSequenceKeypoint.new(1, 7.5) })
+	smoke.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.55), NumberSequenceKeypoint.new(1, 1) })
+	smoke.Color = ColorSequence.new(Color3.fromRGB(215, 215, 220))
+	smoke.Parent = smokeTop
+
+	-- Foyer ardent à l'intérieur (réchauffe toute la maison en hiver)
+	partAt("FoyerSocle", Vector3.new(14, 1.6, 8), CFrame.new(0, 1.4, -halfD + 5), Enum.Material.Cobblestone, stoneColor)
+	local embers = partAt("FoyerBraises", Vector3.new(7, 2.2, 4), CFrame.new(0, 2.6, -halfD + 4.2), Enum.Material.Neon, Color3.fromRGB(255, 115, 30))
+	local fireLight = Instance.new("PointLight")
+	fireLight.Color = Color3.fromRGB(255, 165, 75)
+	fireLight.Range = math.max(w, d) + 12
+	fireLight.Brightness = 1.6
+	fireLight.Shadows = false
+	fireLight.Parent = embers
+	CollectionService:AddTag(embers, "WarmSpot")
+	embers:SetAttribute("WarmBonus", 10)
+	embers:SetAttribute("WarmRadius", math.max(w, d) * 0.75)
+
+	-- 6) Mobilier intérieur escaladable : Table, Bancs, Tapis, Mezzanine/Grenier, Rampe & Nourriture
+	partAt("TapisSalon", Vector3.new(w * 0.48, 0.3, d * 0.42), CFrame.new(0, 1.3, 2), Enum.Material.Fabric, spec.RoofColor)
+
+	-- Table & bancs (permettent de sauter du sol -> banc -> table)
+	local tableX = -w * 0.18
+	local tableZ = 2
+	local tableH = 10
+	partAt("TablePlateau", Vector3.new(14, 1.4, 18), CFrame.new(tableX, tableH + 1, tableZ), Enum.Material.WoodPlanks, floorWood)
+	for _, lx in ipairs({ -5.5, 5.5 }) do
+		for _, lz in ipairs({ -7.5, 7.5 }) do
+			partAt("TablePied", Vector3.new(1.6, tableH, 1.6), CFrame.new(tableX + lx, tableH / 2 + 1, tableZ + lz), Enum.Material.Wood, darkWood)
+		end
+	end
+	partAt("BancTable", Vector3.new(4.5, 5.2, 14), CFrame.new(tableX + 9.5, 3.6, tableZ), Enum.Material.WoodPlanks, darkWood)
+
+	-- Mezzanine / Grenier sous les poutres + rampe en bois pour monter à pied jusqu'au grenier
+	local loftY = h - 1.5
+	local loftDepth = d * 0.38
+	partAt("GrenierPlancher", Vector3.new(w - 4, 1.4, loftDepth), CFrame.new(0, loftY, -halfD + loftDepth / 2 + 2), Enum.Material.WoodPlanks, floorWood)
+	local rampStart = (baseCF * CFrame.new(halfW - 5.5, 1.2, halfD - 8)).Position
+	local rampEnd = (baseCF * CFrame.new(halfW - 5.5, loftY + 0.5, -halfD + loftDepth + 2)).Position
+	linkPart(model, rampStart, rampEnd, 4.5, "RampeGrenier", Enum.Material.WoodPlanks, darkWood)
+
+	-- Festin de nourriture sur la table, au sol et dans le grenier
+	spawnFoodNode(foodFolder, (baseCF * CFrame.new(tableX - 2, tableH + 2.6, tableZ - 3)).Position, "Miette", Color3.fromRGB(220, 185, 135))
+	spawnFoodNode(foodFolder, (baseCF * CFrame.new(tableX + 2, tableH + 2.6, tableZ + 2)).Position, "Fruit", Color3.fromRGB(225, 60, 50))
+	spawnFoodNode(foodFolder, (baseCF * CFrame.new(tableX, tableH + 2.6, tableZ + 6)).Position, "Graine", Color3.fromRGB(205, 175, 110))
+	spawnFoodNode(foodFolder, (baseCF * CFrame.new(-halfW + 6, 2.5, -halfD + 8)).Position, "Bois", Color3.fromRGB(130, 95, 60))
+	spawnFoodNode(foodFolder, (baseCF * CFrame.new(0, loftY + 2.2, -halfD + loftDepth * 0.5)).Position, "Graine", Color3.fromRGB(205, 175, 110))
+
+	-- 7) Marqueurs d'abri (Shelter) couvrant tout l'intérieur (rez-de-chaussée, porche et grenier)
+	for _, localPos in ipairs({
+		Vector3.new(-w * 0.22, 2.5, -d * 0.22),
+		Vector3.new(w * 0.22, 2.5, -d * 0.22),
+		Vector3.new(-w * 0.22, 2.5, d * 0.22),
+		Vector3.new(w * 0.22, 2.5, d * 0.22),
+		Vector3.new(0, 2.5, halfD + porchDepth * 0.5),
+		Vector3.new(0, loftY + 2.5, -halfD + loftDepth * 0.5),
+	}) do
+		shelterMarker(model, "MaisonAbri", (baseCF * CFrame.new(localPos)).Position)
+	end
+
+	-- Empêche les arbres, fleurs et rochers aléatoires de pousser à travers la maison ou son escalier.
+	local blockRadius = math.max(halfW, halfD + porchDepth + 14) + 10
+	blockCircle(cx, cz, blockRadius)
+end
+
+local function generateHouses(root: Folder)
+	local folder = Instance.new("Folder")
+	folder.Name = "Maisons"
+	folder.Parent = root
+	local foodFolder = getFoodFolder(root)
+
+	local houses: { HouseSpec } = {
+		-- 1) Grande Chaumière du Jardin (entre le Grand Chêne et la Prairie Fleurie)
+		{
+			Name = "GrandeChaumiereJardin",
+			Center = Vector3.new(-360, GROUND_TOP_Y, 620),
+			YawDeg = 25,
+			Width = 54,
+			Depth = 44,
+			WallHeight = 30,
+			WallColor = Color3.fromRGB(232, 218, 192),
+			WallMat = Enum.Material.SmoothPlastic,
+			TrimColor = Color3.fromRGB(88, 60, 40),
+			RoofColor = Color3.fromRGB(178, 68, 52),
+			RoofMat = Enum.Material.Brick,
+		},
+		-- 2) Chalet Alpin de la Cascade (contreforts de l'Est, face au massif géant)
+		{
+			Name = "ChaletAlpinEst",
+			Center = Vector3.new(1120, GROUND_TOP_Y, -140),
+			YawDeg = -110,
+			Width = 48,
+			Depth = 40,
+			WallHeight = 28,
+			WallColor = Color3.fromRGB(132, 92, 58),
+			WallMat = Enum.Material.WoodPlanks,
+			TrimColor = Color3.fromRGB(72, 48, 32),
+			RoofColor = Color3.fromRGB(74, 82, 96),
+			RoofMat = Enum.Material.Slate,
+		},
+		-- 3) Cabane du Pêcheur / Maison du Lac (au bord de l'Étang de la Prairie, avec ponton)
+		{
+			Name = "MaisonDuLac",
+			Center = Vector3.new(-870, GROUND_TOP_Y, 760),
+			YawDeg = -90,
+			Width = 44,
+			Depth = 38,
+			WallHeight = 26,
+			WallColor = Color3.fromRGB(135, 162, 178),
+			WallMat = Enum.Material.WoodPlanks,
+			TrimColor = Color3.fromRGB(225, 228, 232),
+			RoofColor = Color3.fromRGB(68, 92, 112),
+			RoofMat = Enum.Material.Slate,
+			WithDock = true,
+		},
+		-- 4) Pavillon de l'Oasis du Sud (entre l'Oasis et les Rochers Arides)
+		{
+			Name = "PavillonOasisSud",
+			Center = Vector3.new(430, GROUND_TOP_Y, 1220),
+			YawDeg = 145,
+			Width = 48,
+			Depth = 40,
+			WallHeight = 27,
+			WallColor = Color3.fromRGB(238, 204, 156),
+			WallMat = Enum.Material.Sandstone,
+			TrimColor = Color3.fromRGB(145, 96, 58),
+			RoofColor = Color3.fromRGB(196, 98, 54),
+			RoofMat = Enum.Material.Brick,
+		},
+		-- 5) Auberge Forestière du Nord (entre le Grand Chêne et la Mare)
+		{
+			Name = "AubergeForestiereNord",
+			Center = Vector3.new(150, GROUND_TOP_Y, -660),
+			YawDeg = -15,
+			Width = 56,
+			Depth = 46,
+			WallHeight = 32,
+			WallColor = Color3.fromRGB(148, 106, 68),
+			WallMat = Enum.Material.WoodPlanks,
+			TrimColor = Color3.fromRGB(68, 46, 30),
+			RoofColor = Color3.fromRGB(82, 112, 68),
+			RoofMat = Enum.Material.Slate,
+		},
+		-- 6) Refuge des Crêtes du Nord-Ouest (entre la Souche et les montagnes)
+		{
+			Name = "RefugeCretesNordOuest",
+			Center = Vector3.new(-740, GROUND_TOP_Y, -820),
+			YawDeg = 40,
+			Width = 46,
+			Depth = 38,
+			WallHeight = 27,
+			WallColor = Color3.fromRGB(118, 86, 60),
+			WallMat = Enum.Material.Wood,
+			TrimColor = Color3.fromRGB(62, 44, 30),
+			RoofColor = Color3.fromRGB(92, 84, 78),
+			RoofMat = Enum.Material.Slate,
+		},
+		-- 7) Cottage Fleuri des Collines (lisière ouest de la Prairie Fleurie)
+		{
+			Name = "CottageCollinesPrairie",
+			Center = Vector3.new(-1440, GROUND_TOP_Y, 680),
+			YawDeg = 75,
+			Width = 46,
+			Depth = 38,
+			WallHeight = 27,
+			WallColor = Color3.fromRGB(242, 224, 212),
+			WallMat = Enum.Material.SmoothPlastic,
+			TrimColor = Color3.fromRGB(115, 82, 58),
+			RoofColor = Color3.fromRGB(152, 82, 118),
+			RoofMat = Enum.Material.Brick,
+		},
+	}
+
+	for _, spec in ipairs(houses) do
+		buildHouse(folder, foodFolder, spec)
+	end
+end
+
 -- Spawn des œufs près du nid (zone de la Souche), + désactivation des spawns préexistants.
 local function generateSpawnLocation(root: Folder)
 	for _, instance in ipairs(workspace:GetDescendants()) do
@@ -1897,6 +2881,7 @@ function WorldGenerationService.Start()
 	generateGrandChene(root)
 	generateStumpAndGalleries(root)
 	generateSpawnLocation(root)
+	generateHouses(root)
 
 	-- Le reste est purement décoratif : s'étale sur plusieurs frames (breathe() -> task.wait())
 	-- sans jamais risquer de casser le contrat déjà posé ci-dessus.

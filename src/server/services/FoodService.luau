@@ -118,7 +118,7 @@ local function feed(player: Player, value: number)
 	local restored = newHunger - hunger
 	if restored > 0 then
 		ProgressionService.AddEvolutionPoints(player, math.ceil(restored / 5))
-		ProgressionService.AddExperience(player, restored * 0.6) -- manger fait grandir
+		ProgressionService.AddExperience(player, restored * 0.6, "Manger") -- manger fait grandir
 	end
 end
 
@@ -619,6 +619,7 @@ local function nestTick()
 				changed = true
 				clearCarried(player)
 				ProgressionService.AddEvolutionPoints(player, 5)
+				ProgressionService.AddExperience(player, 6 + carried * 0.3, "Travail")
 				notify(player, string.format("Nourriture déposée au nid (réserve : %d).", nest.StoredFood), "info")
 			end
 			-- Les bébés de la famille mangent dans la réserve et grandissent plus vite.
@@ -644,6 +645,10 @@ local function nestTick()
 							notify(player, who .. " vous nourrit : croissance x1.5 pendant 30 s", "info")
 						end
 						player:SetAttribute("NestFedUntil", now + 30)
+						-- Larve souvent nourrie au nid = gelée royale (caste Reine, EvolutionTraits).
+						if canBoost then
+							player:SetAttribute("RoyalJelly", ((player:GetAttribute("RoyalJelly") :: number?) or 0) + 1)
+						end
 					elseif canBoost and now - (emptyNestNotifiedAt[player] or -math.huge) > 60 then
 						emptyNestNotifiedAt[player] = now
 						notify(player, "Réserve du nid vide : rapportez de la nourriture", "warning")

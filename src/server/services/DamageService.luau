@@ -13,6 +13,7 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local AbilityCatalog = require(ReplicatedStorage.shared.AbilityCatalog)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
@@ -84,6 +85,7 @@ function DamageService.ApplyDamage(victimCharacter: Model, rawAmount: number, so
 		if not resolvedSource.IgnoreArmor then
 			local speciesId = (victimPlayer:GetAttribute("Species") :: string) or GameConstants.DEFAULT_SPECIES
 			amount *= (1 - getPassiveArmorReduction(speciesId))
+			amount *= (1 - EvolutionTraits.Totals(victimPlayer).Armor) -- traits / caste
 		end
 	else
 		-- Cible = un des 5 animaux géants (ou tout autre NPC) : vérifie l'invulnérabilité

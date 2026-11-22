@@ -7,6 +7,8 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
+local JumpProfiles = require(ReplicatedStorage.shared.JumpProfiles)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
 local MovementService = require(ServerScriptService.services.MovementService)
 local InsectVisualService = require(ServerScriptService.services.InsectVisualService)
@@ -22,6 +24,40 @@ local LEVEL_HEALTH_STEP = 0.04
 local LEVEL_SPEED_STEP = 0.01
 EvolutionDomain.LEVEL_DAMAGE_STEP = 0.03
 
+-- ============================================================
+-- Croissance par niveaux : après l'éclosion, on ne grandit que jusqu'au plafond de son niveau
+-- (niveau 1 = larve tout juste éclose, niveau MAX = 100 %). L'XP s'obtient selon le mode de vie.
+-- ============================================================
+
+export type XpSource = EvolutionTraits.XpSource
+local MAIN_SOURCE_BONUS = 1.5
+local OTHER_SOURCE_FACTOR = 0.75
+
+-- Activité principale d'une espèce (nil = omnivore polyvalent, aucune préférence).
+EvolutionDomain.MainXpSource = EvolutionTraits.MainXpSource
+
+function EvolutionDomain.XpMultiplier(speciesId: string, source: XpSource): number
+	local main = EvolutionDomain.MainXpSource(speciesId)
+	if not main then
+		return 1
+	end
+	return if main == source then MAIN_SOURCE_BONUS else OTHER_SOURCE_FACTOR
+end
+
+function EvolutionDomain.XpHint(speciesId: string): string
+	local main = EvolutionDomain.MainXpSource(speciesId)
+	return if main == "Travail" then "travaillez pour la colonie (rapportez nourriture et matériaux au nid)"
+		elseif main == "Chasse" then "chassez des proies"
+		elseif main == "Manger" then "mangez des plantes"
+		else "mangez et chassez"
+end
+
+-- Croissance maximale autorisée par un niveau (linéaire de l'éclosion à 100 %).
+function EvolutionDomain.GrowthCapForLevel(level: number): number
+	local t = GameConstants.STAGE_THRESHOLDS
+	return t.LARVE + (t.MAX_GROWTH - t.LARVE) * (level - 1) / (EvolutionDomain.MAX_LEVEL - 1)
+end
+
 function EvolutionDomain.GetLevel(player: Player): number
 	local level = player:GetAttribute("Level")
 	return if type(level) == "number" then math.clamp(math.floor(level), 1, EvolutionDomain.MAX_LEVEL) else 1
@@ -31,8 +67,9 @@ function EvolutionDomain.GetLevelScale(player: Player): number
 	return 1 + LEVEL_SCALE_STEP * (EvolutionDomain.GetLevel(player) - 1)
 end
 
+-- Niveau + traits de branche + caste (EvolutionTraits).
 local function levelHealthFactor(player: Player): number
-	return 1 + LEVEL_HEALTH_STEP * (EvolutionDomain.GetLevel(player) - 1)
+	return (1 + LEVEL_HEALTH_STEP * (EvolutionDomain.GetLevel(player) - 1)) * (1 + EvolutionTraits.Totals(player).Health)
 end
 
 -- Stade "stable" dérivé uniquement de la croissance (ignore la fenêtre transitoire "Mue",
@@ -102,12 +139,12 @@ local function applyStats(player: Player, humanoid: Humanoid, speciesId: string,
 		MovementService.SetBaseJumpPower(player, 0)
 	elseif stage == "Larve" then
 		MovementService.SetBaseWalkSpeed(player, math.max(6, species.WalkSpeed * 0.4))
-		MovementService.SetBaseJumpPower(player, 15)
+		MovementService.SetBaseJumpPower(player, JumpProfiles.PowerFor(speciesId, "Larve"))
 	elseif stage == "Mue" then
 		-- Carapace molle qui vient de muer : un peu plus rapide qu'une larve, mais toujours
 		-- très vulnérable (voir DamageService.MOLT_DAMAGE_MULTIPLIER).
 		MovementService.SetBaseWalkSpeed(player, math.max(6, species.WalkSpeed * 0.5))
-		MovementService.SetBaseJumpPower(player, 10)
+		MovementService.SetBaseJumpPower(player, JumpProfiles.PowerFor(speciesId, "Mue"))
 	elseif stage == "Cocon" then
 		MovementService.SetBaseWalkSpeed(player, 0)
 		MovementService.SetBaseJumpPower(player, 0)
@@ -115,7 +152,7 @@ local function applyStats(player: Player, humanoid: Humanoid, speciesId: string,
 		-- Passif "Sprint ondulant" : vitesse de base augmentée (ex: Scolopendre).
 		local sprint = if table.find(species.Abilities, "SprintOndulant") then 1.3 else 1
 		MovementService.SetBaseWalkSpeed(player, species.WalkSpeed * sprint)
-		MovementService.SetBaseJumpPower(player, 50)
+		MovementService.SetBaseJumpPower(player, JumpProfiles.PowerFor(speciesId, "Adulte"))
 		humanoid.MaxHealth = species.MaxHealth * levelHealthFactor(player)
 		humanoid.Health = humanoid.MaxHealth
 	end
@@ -180,6 +217,12 @@ function EvolutionDomain.ApplyLevel(player: Player)
 		MovementService.AddModifier(player, "Level", "Multiplier", 1 + LEVEL_SPEED_STEP * (level - 1))
 	else
 		MovementService.RemoveModifier(player, "Level")
+	end
+	local speedBonus = EvolutionTraits.Totals(player).Speed
+	if speedBonus ~= 0 then
+		MovementService.AddModifier(player, "Evolution", "Multiplier", 1 + speedBonus)
+	else
+		MovementService.RemoveModifier(player, "Evolution")
 	end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")

@@ -16,6 +16,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local SeasonConfig = require(ReplicatedStorage.shared.SeasonConfig)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
@@ -287,9 +288,14 @@ local function findGroundBelow(position: Vector3, ignore: { Instance }): Vector3
 	return if result then result.Position else position - Vector3.new(0, 2, 0)
 end
 
-function GrowthAndNestService.CreateNest(motherPlayer: Player): boolean
+-- `at` : point déclaré par la mère en mode construction ("ma maison est ici"), sinon à ses pieds.
+function GrowthAndNestService.CreateNest(motherPlayer: Player, at: Vector3?): boolean
 	local growth = (motherPlayer:GetAttribute("Growth") :: number?) or 0
 	if growth < GameConstants.NEST_MIN_GROWTH or motherPlayer:GetAttribute("Stage") ~= "Adulte" then
+		return false
+	end
+	if not EvolutionTraits.CanFoundColony(motherPlayer) then
+		notify(motherPlayer, "Seule une Reine peut fonder une colonie.", "warning")
 		return false
 	end
 	local character = motherPlayer.Character
@@ -308,7 +314,7 @@ function GrowthAndNestService.CreateNest(motherPlayer: Player): boolean
 	local speciesId = (motherPlayer:GetAttribute("Species") :: string?) or GameConstants.DEFAULT_SPECIES
 	local plan = InsectBodyPlans.Get(speciesId)
 	local style = nestStyleFor(speciesId)
-	local groundPosition = findGroundBelow(character.PrimaryPart.Position, { character })
+	local groundPosition = findGroundBelow(at or character.PrimaryPart.Position, { character })
 	-- Pas de nid empilé sur un autre (nid joueur, PNJ ou nid IA) : modèles et zones de nourrissage se chevaucheraient.
 	local minSpacing = GameConstants.NEST_RADIUS * 2
 	local nestPosition = groundPosition + Vector3.new(0, 2, 0)
@@ -699,6 +705,19 @@ local function growPlayer(player: Player, seasonInfo: SeasonConfig.SeasonInfo, n
 	end
 
 	growth = math.clamp(growth + rate * GROWTH_TICK_SECONDS, 0, thresholds.MAX_GROWTH)
+	-- Après l'éclosion, la croissance est plafonnée par le niveau (XP). Le cocon, immobile, va au bout.
+	if previousGrowth >= thresholds.LARVE and previousStage ~= "Cocon" then
+		local cap = EvolutionDomain.GrowthCapForLevel(EvolutionDomain.GetLevel(player))
+		if previousGrowth >= cap then
+			if player:GetAttribute("GrowthBlocked") ~= true then
+				player:SetAttribute("GrowthBlocked", true)
+				notify(player, "Pour continuer à grandir, montez de niveau : " .. EvolutionDomain.XpHint(speciesId) .. ".", "info")
+			end
+			return
+		end
+		player:SetAttribute("GrowthBlocked", nil)
+		growth = math.min(growth, cap)
+	end
 	-- 2 décimales : un pas de 0.07 arrondi à 0.1 fausserait le rythme.
 	player:SetAttribute("Growth", MathUtils.RoundToDecimal(growth, 2))
 
@@ -719,7 +738,7 @@ local function growPlayer(player: Player, seasonInfo: SeasonConfig.SeasonInfo, n
 			player:SetAttribute("Hunger", math.max(50, (player:GetAttribute("Hunger") :: number?) or 0))
 			player:SetAttribute("Thirst", math.max(50, (player:GetAttribute("Thirst") :: number?) or 0))
 		elseif newStage == "Larve" then
-			notify(player, "Éclosion ! Vous êtes une larve. Mangez pour grandir.", "info")
+			notify(player, "Éclosion ! Pour grandir maintenant, gagnez de l'XP : " .. EvolutionDomain.XpHint(speciesId) .. ".", "info")
 		end
 		-- SetStage peut céder (WaitForChild) : ne bloque pas la boucle des autres joueurs.
 		task.spawn(EvolutionDomain.SetStage, player, speciesId, newStage)

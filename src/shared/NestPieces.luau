@@ -6,24 +6,27 @@
 -- Toutes les pièces sont en blocs (style du jeu), construites autour d'une origine posée au sol
 -- (-Z = avant de la pièce). Utilisé par le serveur (vraie pièce) et le client (aperçu fantôme).
 
-export type Cost = { Feuille: number?, Brindille: number?, Caillou: number?, Terre: number? }
+export type Cost = { Feuille: number?, Brindille: number?, Caillou: number?, Terre: number?, Cire: number?, Soie: number?, Papier: number? }
 export type Piece = {
 	Id: string,
 	Name: string,
 	Theme: string, -- "Commun" ou un thème d'espèce
 	Cost: Cost,
 	Solid: boolean, -- murs, dômes : on ne passe pas au travers
+	Brick: number?, -- bloc unitaire (taille de grille) : centré sur l'origine, s'empile librement
 	Build: (model: Model, origin: CFrame) -> (),
 }
 
 local NestPieces = {}
 
-NestPieces.MATERIAL_ORDER = { "Feuille", "Brindille", "Caillou", "Terre" }
-NestPieces.MATERIAL_ICONS = { Feuille = "🍂", Brindille = "🪵", Caillou = "🪨", Terre = "🟫" }
+-- Cire / Soie sont sécrétées par l'animal lui-même ; Papier = brindilles mâchées (guêpes, frelons).
+NestPieces.MATERIAL_ORDER = { "Feuille", "Brindille", "Caillou", "Terre", "Cire", "Soie", "Papier" }
+NestPieces.MATERIAL_ICONS = { Feuille = "🍂", Brindille = "🪵", Caillou = "🪨", Terre = "🟫", Cire = "🍯", Soie = "🕸", Papier = "📜" }
 NestPieces.THEME_NAMES = {
 	Commun = "Commun",
 	Terre = "Fourmilière / Terrier",
-	Ruche = "Ruche & papier",
+	Ruche = "Ruche de cire",
+	Papier = "Nid de papier",
 	Soie = "Soie",
 	Aquatique = "Aquatique",
 	Oiseau = "Nid d'oiseau",
@@ -80,7 +83,33 @@ local function ring(model: Model, origin: CFrame, radius: number, y: number, cou
 	end
 end
 
+-- Bloc unitaire d'une espèce : une seule matière, posé grain par grain pour donner SA forme au nid.
+local function brick(id: string, name: string, theme: string, cost: Cost, size: number, build: (model: Model, origin: CFrame) -> ()): Piece
+	return { Id = id, Name = "▣ " .. name, Theme = theme, Cost = cost, Solid = true, Brick = size, Build = build }
+end
+
+local function cube(size: Vector3, color: Color3, material: Enum.Material, transparency: number?): (Model, CFrame) -> ()
+	return function(model, origin)
+		add(model, size, origin, color, material, transparency)
+	end
+end
+
 local PIECES: { Piece } = {
+	-- ================= Blocs (construction libre, 1 matériau = 1 bloc) =================
+	brick("BlocTerre", "Boulette de terre", "Terre", { Terre = 1 }, 1.6, cube(Vector3.one * 1.6, EARTH, Enum.Material.Ground)),
+	-- Alvéole hexagonale (3 blocs tournés de 60°) : la cire est sécrétée par l'abeille, cellule par cellule.
+	brick("Alveole", "Alvéole de cire", "Ruche", { Cire = 1 }, 1.6, function(model, origin)
+		for i = 0, 2 do
+			add(model, Vector3.new(0.92, 1.6, 1.6), origin * CFrame.Angles(0, 0, i * math.pi / 3), WAX, Enum.Material.SmoothPlastic)
+		end
+	end),
+	brick("FeuillePapier", "Feuille de papier mâché", "Papier", { Papier = 1 }, 1.6, cube(Vector3.new(1.6, 1.6, 1.6), PAPER, Enum.Material.Fabric)),
+	brick("NappeSoie", "Nappe de soie", "Soie", { Soie = 1 }, 1.6, cube(Vector3.new(1.6, 1.6, 1.6), SILK, Enum.Material.Fabric, 0.35)),
+	brick("BrindilleTressee", "Brindilles tressées", "Oiseau", { Brindille = 1 }, 1.6, cube(Vector3.new(1.6, 1.6, 1.6), TWIG, Enum.Material.Wood)),
+	brick("PaquetFeuilles", "Paquet de feuilles", "Ecureuil", { Feuille = 1 }, 1.6, cube(Vector3.one * 1.6, LEAF_DRY, Enum.Material.LeafyGrass)),
+	brick("Galet", "Galet", "Aquatique", { Caillou = 1 }, 1.6, cube(Vector3.one * 1.6, SAND, Enum.Material.Sand)),
+	brick("BlocFeuille", "Bloc de feuille", "Feuillage", { Feuille = 1 }, 1.6, cube(Vector3.one * 1.6, LEAF, Enum.Material.LeafyGrass)),
+
 	-- ================= Communes =================
 	{
 		Id = "TapisFeuilles", Name = "Tapis de feuilles", Theme = "Commun", Cost = { Feuille = 3 }, Solid = false,
@@ -161,7 +190,7 @@ local PIECES: { Piece } = {
 
 	-- ================= Ruche & papier =================
 	{
-		Id = "Rayon", Name = "Rayon d'alvéoles", Theme = "Ruche", Cost = { Feuille = 3, Terre = 3 }, Solid = true,
+		Id = "Rayon", Name = "Rayon d'alvéoles", Theme = "Ruche", Cost = { Cire = 6 }, Solid = true,
 		Build = function(model, origin)
 			for row = 0, 3 do
 				for col = 0, 4 do
@@ -172,7 +201,7 @@ local PIECES: { Piece } = {
 		end,
 	},
 	{
-		Id = "TourCire", Name = "Tour de cire", Theme = "Ruche", Cost = { Terre = 4, Feuille = 2 }, Solid = true,
+		Id = "TourCire", Name = "Tour de cire", Theme = "Ruche", Cost = { Cire = 5 }, Solid = true,
 		Build = function(model, origin)
 			for i = 0, 5 do
 				add(model, Vector3.new(1.8, 0.9, 1.8), origin * CFrame.new(0, 0.45 + i * 0.9, 0) * CFrame.Angles(0, i * math.pi / 6, 0), WAX, Enum.Material.SmoothPlastic)
@@ -181,7 +210,7 @@ local PIECES: { Piece } = {
 		end,
 	},
 	{
-		Id = "CoquePapier", Name = "Coque de papier", Theme = "Ruche", Cost = { Brindille = 2, Feuille = 4 }, Solid = true,
+		Id = "CoquePapier", Name = "Coque de papier", Theme = "Papier", Cost = { Papier = 6, Brindille = 1 }, Solid = true,
 		Build = function(model, origin)
 			ring(model, origin, 2.4, 1, 10, Vector3.new(1.6, 2, 0.4), PAPER, Enum.Material.Fabric, 0.35)
 			ring(model, origin, 2, 2.8, 8, Vector3.new(1.6, 1.8, 0.4), PAPER:Lerp(Color3.new(0, 0, 0), 0.1), Enum.Material.Fabric)
@@ -191,7 +220,7 @@ local PIECES: { Piece } = {
 
 	-- ================= Soie =================
 	{
-		Id = "PanneauToile", Name = "Panneau de toile", Theme = "Soie", Cost = { Brindille = 2 }, Solid = false,
+		Id = "PanneauToile", Name = "Panneau de toile", Theme = "Soie", Cost = { Brindille = 2, Soie = 2 }, Solid = false,
 		Build = function(model, origin)
 			stick(model, origin, Vector3.new(-2.6, 0, 0), Vector3.new(-2.6, 5, 0), 0.35, TWIG)
 			stick(model, origin, Vector3.new(2.6, 0, 0), Vector3.new(2.6, 5, 0), 0.35, TWIG)
@@ -210,7 +239,7 @@ local PIECES: { Piece } = {
 		end,
 	},
 	{
-		Id = "TunnelSoie", Name = "Tunnel de soie", Theme = "Soie", Cost = { Feuille = 2 }, Solid = false,
+		Id = "TunnelSoie", Name = "Tunnel de soie", Theme = "Soie", Cost = { Soie = 3 }, Solid = false,
 		Build = function(model, origin)
 			for i = 0, 4 do
 				add(model, Vector3.new(2.4, 2.4, 0.9), origin * CFrame.new(0, 1.2, -2 + i), SILK, Enum.Material.Fabric, 0.35)
@@ -218,7 +247,7 @@ local PIECES: { Piece } = {
 		end,
 	},
 	{
-		Id = "CoconSoie", Name = "Sac d'oeufs de soie", Theme = "Soie", Cost = { Feuille = 1, Brindille = 1 }, Solid = false,
+		Id = "CoconSoie", Name = "Sac d'oeufs de soie", Theme = "Soie", Cost = { Soie = 2 }, Solid = false,
 		Build = function(model, origin)
 			stick(model, origin, Vector3.new(0, 0, 0), Vector3.new(0, 3.2, 0), 0.06, SILK, Enum.Material.SmoothPlastic)
 			add(model, Vector3.new(1.4, 1.6, 1.4), origin * CFrame.new(0, 2.2, 0), SILK, Enum.Material.Fabric)
@@ -226,7 +255,7 @@ local PIECES: { Piece } = {
 		end,
 	},
 	{
-		Id = "HamacSoie", Name = "Hamac de soie", Theme = "Soie", Cost = { Brindille = 2 }, Solid = false,
+		Id = "HamacSoie", Name = "Hamac de soie", Theme = "Soie", Cost = { Brindille = 2, Soie = 2 }, Solid = false,
 		Build = function(model, origin)
 			for _, x in ipairs({ -2.5, 2.5 }) do
 				stick(model, origin, Vector3.new(x, 0, 0), Vector3.new(x, 2.2, 0), 0.3, TWIG)
@@ -367,7 +396,7 @@ end
 local THEME_BY_SPECIES: { [string]: string } = {
 	FourmiRousse = "Terre", TermiteSoldat = "Terre", ScorpionEmpereur = "Terre", Cigale = "Terre",
 	ScarabeeHercule = "Terre", ScarabeeBombardier = "Terre", LucaneCerfVolant = "Terre",
-	AbeilleMellifere = "Ruche", FrelonAsiatique = "Ruche", GuepeEmeraude = "Ruche",
+	AbeilleMellifere = "Ruche", FrelonAsiatique = "Papier", GuepeEmeraude = "Papier",
 	VeuveNoire = "Soie", AraigneeSauteuse = "Soie", Argyronete = "Soie",
 	Oiseau = "Oiseau", Ecureuil = "Ecureuil",
 	PoissonRouge = "Aquatique", Crabe = "Aquatique",

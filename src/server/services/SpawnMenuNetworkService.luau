@@ -11,6 +11,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local WorldLayout = require(ReplicatedStorage.shared.WorldLayout)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
 local ProgressionService = require(ServerScriptService.services.ProgressionService)
@@ -125,9 +126,20 @@ local function onSelectSpecies(player: Player, speciesId: unknown)
 end
 
 -- Fondation de colonie : réservée à un adulte à 100% de croissance (bouton de la barre de pouvoirs).
-local function onCreateNest(player: Player)
+local DECLARE_REACH = 45 -- GameConstants.NEST_RADIUS * 2.5, portée du mode construction
+local function onCreateNest(player: Player, at: unknown)
 	if not throttle(player) then
 		return
+	end
+	-- Maison déclarée en visant (mode construction) : point fini et à portée du joueur.
+	local declared: Vector3? = nil
+	if typeof(at) == "Vector3" then
+		local point = at :: Vector3
+		local root = player.Character and player.Character.PrimaryPart
+		if point.Magnitude ~= point.Magnitude or point.Magnitude == math.huge or not root or (root.Position - point).Magnitude > DECLARE_REACH then
+			return
+		end
+		declared = point
 	end
 	-- CreateNest écraserait une colonie déjà fondée (enfants perdus).
 	if player:GetAttribute("IsMother") == true then
@@ -138,6 +150,10 @@ local function onCreateNest(player: Player)
 	local growth = (player:GetAttribute("Growth") :: number?) or 0
 	if player:GetAttribute("Stage") ~= "Adulte" or growth < 100 then
 		notify(player, "Il faut être adulte à 100% de croissance pour fonder une colonie.", "warning")
+		return
+	end
+	if not EvolutionTraits.CanFoundColony(player) then
+		notify(player, "Seule une Reine peut fonder une colonie : vous servez la vôtre.", "warning")
 		return
 	end
 	-- Mêmes gardes que CreateNest AVANT de quitter sa famille (sinon famille perdue pour rien).
@@ -157,7 +173,7 @@ local function onCreateNest(player: Player)
 	if previousOwner ~= nil then
 		GrowthAndNestService.LeaveNest(player)
 	end
-	if GrowthAndNestService.CreateNest(player) then
+	if GrowthAndNestService.CreateNest(player, declared) then
 		notify(player, "Colonie fondée ! Les nouveaux joueurs peuvent naître dans votre nid.", "info")
 		broadcastNestList()
 	else

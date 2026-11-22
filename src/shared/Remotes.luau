@@ -16,7 +16,8 @@ export type RemoteEventName =
 	| "RequestGrabEscape" -- (): QTE mash pendant qu'on est agrippé
 	| "RequestDig" -- (targetPosition: Vector3, strength: number 1..3)
 	| "RequestBoost" -- (active: boolean): boost de vitesse maintenu (marche, vol, nage)
-	| "RequestCreateNest" -- ()
+	| "RequestEvolutionChoice" -- (traitId: string) : trait de branche choisi (niveaux 5/10/15)
+	| "RequestCreateNest" -- (at: Vector3?) : fonder sa maison à ses pieds ou au point déclaré
 	| "RequestJoinNest" -- (motherUserId: number)
 	| "RequestLeaveNest" -- ()
 	| "RequestSelectSpecies" -- (speciesId: string)
@@ -55,6 +56,7 @@ Remotes.EventNames = {
 	"RequestWebLine",
 	"RequestNestBuild",
 	"RequestCreateNest",
+	"RequestEvolutionChoice",
 	"RequestJoinNest",
 	"RequestLeaveNest",
 	"RequestSelectSpecies",

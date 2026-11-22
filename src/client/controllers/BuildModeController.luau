@@ -6,6 +6,8 @@
 -- suppression (clic sur une pièce = la retirer, moitié remboursée), [B] / Échap pour quitter.
 -- Le stock du nid est lu sur les attributs "Stock_<Matériau>" de son modèle (NestBuildingService) ;
 -- le serveur valide tout (famille, distance, coût).
+-- Blocs unitaires (Piece.Brick) : s'aimantent à une grille et se collent à la face visée -> forme libre.
+-- Sans maison : [B] passe en mode "déclarer" (adulte 100%) : on vise, le cercle montre la zone, clic = maison.
 
 local ContextActionService = game:GetService("ContextActionService")
 local Players = game:GetService("Players")
@@ -15,9 +17,11 @@ local StarterGui = game:GetService("StarterGui")
 local UserInputService = game:GetService("UserInputService")
 
 local AimUtil = require(ReplicatedStorage.shared.AimUtil)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local NestPieces = require(ReplicatedStorage.shared.NestPieces)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local UiTheme = require(script.Parent.Parent.views.UiTheme)
+local SfxController = require(script.Parent.SfxController)
 
 local BuildModeController = {}
 
@@ -47,6 +51,10 @@ local selection = Instance.new("SelectionBox")
 selection.LineThickness = 0.06
 selection.Color3 = Color3.fromRGB(235, 82, 74)
 local renderConn: RBXScriptConnection? = nil
+local declaring = false
+local zoneRing: Part? = nil
+local declarePoint: Vector3? = nil
+local exit: () -> ()
 
 local PANEL_COLOR = Color3.fromRGB(26, 30, 26)
 
@@ -135,9 +143,11 @@ local function refreshStock()
 	end
 	local parts = {}
 	for _, material in ipairs(NestPieces.MATERIAL_ORDER) do
-		table.insert(parts, NestPieces.MATERIAL_ICONS[material] .. " " .. stockOf(model, material))
+		if stockOf(model, material) > 0 then
+			table.insert(parts, NestPieces.MATERIAL_ICONS[material] .. " " .. stockOf(model, material))
+		end
 	end
-	(stockLabel :: TextLabel).Text = "Stock du nid :  " .. table.concat(parts, "   ")
+	(stockLabel :: TextLabel).Text = "Stock du nid :  " .. (if #parts > 0 then table.concat(parts, "   ") else "vide")
 	refreshList()
 end
 
@@ -173,12 +183,26 @@ local function select(piece: NestPieces.Piece?)
 	refreshList()
 end
 
+local function declareHome()
+	local point = declarePoint
+	if active and declaring and point then
+		Remotes.Get("RequestCreateNest"):FireServer(point)
+		hint("Maison déclarée ! Rapportez vos matériaux puis [B] pour bâtir.")
+		exit()
+	end
+end
+
 local function place()
+	if declaring then
+		declareHome()
+		return
+	end
 	local piece = selected
 	if not active or deleting or not piece or not ghostValid then
 		return
 	end
 	Remotes.Get("RequestNestBuild"):FireServer("Place", piece.Id, ghostCFrame)
+	SfxController.Play("Build", ghostCFrame.Position)
 end
 
 local function removeHovered()
@@ -215,8 +239,6 @@ local function button(parent: Instance, text: string, size: UDim2, onClick: () -
 	b.Activated:Connect(onClick)
 	return b
 end
-
-local exit: () -> ()
 
 local function buildGui(theme: string)
 	local screen = Instance.new("ScreenGui")
@@ -332,6 +354,13 @@ local function onRender()
 		return
 	end
 	local position = hit.Position
+	local brick = selected and selected.Brick
+	if brick then
+		-- Collé à la face visée, puis aimanté à la grille du nid (le bas de la 1re rangée au sol).
+		local lift = Vector3.new(0, brick / 2, 0)
+		local p = (position + hit.Normal * (brick / 2)) - center - lift
+		position = center + lift + Vector3.new(math.round(p.X / brick), math.round(p.Y / brick), math.round(p.Z / brick)) * brick
+	end
 	local offset = position - center
 	ghostValid = Vector2.new(offset.X, offset.Z).Magnitude <= BUILD_RADIUS and math.abs(offset.Y) <= 25
 		and selected ~= nil and canAfford(model, selected :: NestPieces.Piece)
@@ -350,6 +379,74 @@ local function onRender()
 	(highlight :: Highlight).OutlineColor = tint
 end
 
+-- Mode "déclarer" : le cercle de la future zone suit le point visé.
+local function onDeclareRender()
+	local camera = workspace.CurrentCamera
+	local character = player.Character
+	local root = character and character:FindFirstChild("HumanoidRootPart")
+	local ring = zoneRing
+	if not camera or not root or not root:IsA("BasePart") or not ring then
+		exit()
+		return
+	end
+	aimParams.FilterDescendantsInstances = { character :: Instance, ring }
+	local start, direction = AimUtil.Ray(camera, root.Position)
+	local hit = workspace:Raycast(start, direction * AIM_DISTANCE, aimParams)
+	declarePoint = if hit and (hit.Position - root.Position).Magnitude <= REACH then hit.Position else nil
+	ring.Transparency = if declarePoint then 0.55 else 1
+	if declarePoint then
+		ring.CFrame = CFrame.new(declarePoint + Vector3.new(0, 0.1, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	end
+end
+
+local function enterDeclare()
+	active = true
+	declaring = true
+	player:SetAttribute("BuildMode", true)
+	local ring = Instance.new("Part")
+	ring.Name = "HomeZoneGhost"
+	ring.Shape = Enum.PartType.Cylinder
+	ring.Size = Vector3.new(0.2, NEST_RADIUS * 2, NEST_RADIUS * 2)
+	ring.Anchored, ring.CanCollide, ring.CanQuery, ring.CanTouch, ring.CastShadow = true, false, false, false, false
+	ring.Material = Enum.Material.Neon
+	ring.Color = Color3.fromRGB(120, 230, 130)
+	ring.Transparency = 1
+	ring.Parent = workspace
+	zoneRing = ring
+
+	local screen = Instance.new("ScreenGui")
+	screen.Name = "BuildModeGui"
+	screen.ResetOnSpawn = false
+	screen.Parent = player:WaitForChild("PlayerGui")
+	gui = screen
+	local panel = Instance.new("Frame")
+	panel.AnchorPoint = Vector2.new(0.5, 1)
+	panel.Position = UDim2.new(0.5, 0, 1, -140)
+	panel.Size = UDim2.fromOffset(300, 90)
+	panel.BackgroundColor3 = PANEL_COLOR
+	panel.BackgroundTransparency = 0.15
+	panel.Parent = screen
+	UiTheme.StylePanel(panel, 12)
+	UiTheme.Padding(panel, 10, 8)
+	local label = UiTheme.Label(panel, Enum.Font.GothamBold, 13, Colors.Text)
+	label.Size = UDim2.new(1, 0, 0, 34)
+	label.TextWrapped = true
+	label.Text = "Visez l'endroit de votre maison : le cercle est votre zone."
+	local confirm = button(panel, "🏠 Ma maison ici (clic)", UDim2.new(0.62, -3, 0, 34), declareHome)
+	confirm.Position = UDim2.new(0, 0, 1, -34)
+	local quit = button(panel, "✖ Quitter (B)", UDim2.new(0.38, -3, 0, 34), function()
+		exit()
+	end)
+	quit.Position = UDim2.new(0.62, 3, 1, -34)
+	renderConn = RunService.RenderStepped:Connect(onDeclareRender)
+	ContextActionService:BindActionAtPriority("MW_BuildExit", function(_, state)
+		if state == Enum.UserInputState.Begin then
+			exit()
+		end
+		return Enum.ContextActionResult.Sink
+	end, false, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Escape)
+end
+
 local stockConns: { RBXScriptConnection } = {}
 
 exit = function()
@@ -362,6 +459,12 @@ exit = function()
 	deleting = false
 	hovered = nil
 	selection.Adornee = nil
+	declaring = false
+	declarePoint = nil
+	if zoneRing then
+		zoneRing:Destroy()
+		zoneRing = nil
+	end
 	if renderConn then
 		renderConn:Disconnect()
 		renderConn = nil
@@ -386,7 +489,12 @@ local function enter()
 	local character = player.Character
 	local root = character and character:FindFirstChild("HumanoidRootPart")
 	if not model then
-		hint("Fondez ou rejoignez une colonie pour construire un nid.")
+		local growth = player:GetAttribute("Growth")
+		if player:GetAttribute("Stage") == "Adulte" and type(growth) == "number" and growth >= 100 and player:GetAttribute("IsMother") ~= true and EvolutionTraits.CanFoundColony(player) then
+			enterDeclare()
+		else
+			hint("Grandissez à 100% (adulte) pour déclarer votre maison, ou rejoignez une colonie.")
+		end
 		return
 	end
 	if not root or not root:IsA("BasePart") or (root.Position - nestCenter(model)).Magnitude > REACH then

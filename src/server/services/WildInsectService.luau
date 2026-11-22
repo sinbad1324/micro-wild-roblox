@@ -265,7 +265,7 @@ onDeath = function(w: Wild, model: Model)
 		if not last or now - last >= KILL_REWARD_COOLDOWN then
 			perWild[w.Index] = now
 			ProgressionService.AddEvolutionPoints(killer, KILL_POINTS)
-			ProgressionService.AddExperience(killer, 30)
+			ProgressionService.AddExperience(killer, 30, "Chasse")
 		end
 	end
 	w.Model = nil

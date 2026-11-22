@@ -18,6 +18,7 @@ local TweenService = game:GetService("TweenService")
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local AbilityController = require(script.Parent.AbilityController)
 local StatusEffectController = require(script.Parent.StatusEffectController)
+local SfxController = require(script.Parent.SfxController)
 
 local CombatFxController = {}
 
@@ -133,6 +134,161 @@ end
 -- ============================================================
 -- Briques visuelles
 -- ============================================================
+
+-- ---------- Rafales de particules (recettes roblox-anime-vfx, échelle insecte) ----------
+-- Une rafale = une part invisible + Attachment + émetteurs désactivés déclenchés par :Emit().
+-- Règles : LightInfluence 0 partout, ZOffset explicite, une couche sombre de contraste par effet,
+-- tailles "snap & hang", étincelles freinées (Drag 15). Tout est détruit après la plus longue vie.
+
+type Keys = { { number } } -- { {temps, valeur}, ... } ; valeurs multipliées par l'échelle
+type Layer = {
+	Texture: number,
+	Count: number,
+	Life: { number },
+	Size: Keys,
+	Color: Color3?, -- nil = teinte de l'effet
+	LE: number?,
+	Bri: number?,
+	ZO: number?,
+	Speed: { number }?,
+	Spread: number?,
+	Drag: number?,
+	Accel: Vector3?,
+	Orient: Enum.ParticleOrientation?,
+	Rot: { number }?,
+	RotSpeed: { number }?,
+	Grid: Enum.ParticleFlipbookLayout?,
+	Transp: Keys?,
+	Squash: Keys?,
+	Delay: number?,
+}
+
+local function keys(list: Keys, factor: number): NumberSequence
+	local points = {}
+	for _, k in ipairs(list) do
+		table.insert(points, NumberSequenceKeypoint.new(k[1], k[2] * factor))
+	end
+	return NumberSequence.new(points)
+end
+
+-- `cframe` : l'axe +Y (direction "Top" des émetteurs) = direction de projection.
+local function burst(cframe: CFrame, scale: number, tint: Color3, layers: { Layer }, hold: number?)
+	local host = makePart(Enum.PartType.Block, WHITE, Vector3.one * 0.1, cframe, 1)
+	local attachment = Instance.new("Attachment")
+	attachment.Parent = host
+	local longest = 0
+	for _, layer in ipairs(layers) do
+		local emitter = Instance.new("ParticleEmitter")
+		emitter.Enabled = false
+		emitter.Texture = "rbxassetid://" .. layer.Texture
+		emitter.Color = ColorSequence.new(layer.Color or tint)
+		emitter.LightInfluence = 0
+		emitter.LightEmission = layer.LE or 0
+		emitter.Brightness = layer.Bri or 1
+		emitter.ZOffset = layer.ZO or 0
+		emitter.Lifetime = NumberRange.new(layer.Life[1], layer.Life[2] or layer.Life[1])
+		emitter.Size = keys(layer.Size, scale)
+		emitter.Transparency = if layer.Transp then keys(layer.Transp, 1) else NumberSequence.new(0, 1)
+		local speed = layer.Speed or { 0.001 } -- > 0 : les orientations par vitesse en ont besoin
+		emitter.Speed = NumberRange.new(speed[1] * scale, (speed[2] or speed[1]) * scale)
+		emitter.SpreadAngle = Vector2.new(layer.Spread or 0, layer.Spread or 0)
+		emitter.Drag = layer.Drag or 0
+		emitter.Acceleration = (layer.Accel or Vector3.zero) * scale
+		emitter.Orientation = layer.Orient or Enum.ParticleOrientation.FacingCamera
+		local rot = layer.Rot or { 0 }
+		emitter.Rotation = NumberRange.new(rot[1], rot[2] or rot[1])
+		local spin = layer.RotSpeed or { 0 }
+		emitter.RotSpeed = NumberRange.new(spin[1], spin[2] or spin[1])
+		if layer.Squash then
+			emitter.Squash = keys(layer.Squash, 1)
+		end
+		if layer.Grid then
+			emitter.FlipbookLayout = layer.Grid
+			emitter.FlipbookMode = Enum.ParticleFlipbookMode.OneShot -- joue sur la durée de vie
+		end
+		emitter.Parent = attachment
+		local delayTime = (hold or 0) + (layer.Delay or 0)
+		if delayTime > 0 then
+			task.delay(delayTime, function()
+				if emitter.Parent then
+					emitter:Emit(layer.Count)
+				end
+			end)
+		else
+			emitter:Emit(layer.Count)
+		end
+		longest = math.max(longest, delayTime + (layer.Life[2] or layer.Life[1]))
+	end
+	Debris:AddItem(host, longest + 0.2)
+end
+
+local BLACK = Color3.new(0, 0, 0)
+local SNAP_TRANSP: Keys = { { 0, 1 }, { 0.1, 0.6 }, { 0.5, 0.7 }, { 1, 1 } } -- disque de fond
+
+-- Contact de morsure / coup (base "Ember Headbutt Spark", ~1.5 stud × échelle) : disque noir de
+-- contraste, éclair étoile très bref, double flipbook d'impact, étincelles blanches + teintées
+-- projetées loin de l'attaquant, croissants de vent.
+local HIT_LAYERS: { Layer } = {
+	{ Texture = 8133065785, Count = 1, Life = { 0.25 }, Color = BLACK, ZO = 0, Size = { { 0, 0 }, { 0.2, 2.6 }, { 1, 3 } }, Transp = SNAP_TRANSP, Rot = { -180, 180 } },
+	{ Texture = 130296383221950, Count = 1, Life = { 0.08 }, LE = 1, Bri = 3, ZO = 4, Size = { { 0, 3.2 }, { 1, 1.2 } }, Rot = { -45, 45 } },
+	{ Texture = 97791845516200, Count = 2, Life = { 0.3 }, LE = 0.5, Bri = 4, ZO = 3, Size = { { 0, 1.6 }, { 1, 1.2 } }, Rot = { -360, 360 }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 16924383752, Count = 10, Life = { 0.2, 0.4 }, Color = WHITE, LE = 0.5, Bri = 6, ZO = 2, Speed = { 10, 16 }, Spread = 55, Drag = 15,
+		Orient = Enum.ParticleOrientation.VelocityParallel, Rot = { 90 }, Size = { { 0, 0 }, { 0.2, 0.06 }, { 1, 0.65 } }, Squash = { { 0, 0.01 }, { 1, -0.34 } } },
+	{ Texture = 16924383752, Count = 10, Life = { 0.2, 0.4 }, LE = 0.5, Bri = 6, ZO = 2, Speed = { 9, 14 }, Spread = 70, Drag = 15,
+		Orient = Enum.ParticleOrientation.VelocityParallel, Rot = { 90 }, Size = { { 0, 0 }, { 0.2, 0.05 }, { 1, 0.6 } } },
+	{ Texture = 12506449597, Count = 3, Life = { 0.2, 0.35 }, Color = WHITE, ZO = 1, Speed = { 0.01 }, Spread = 40,
+		Orient = Enum.ParticleOrientation.VelocityPerpendicular, Rot = { -360, 360 }, RotSpeed = { 200 }, Size = { { 0, 0.3 }, { 0.5, 1.3 }, { 1, 1.7 } } },
+}
+
+-- Impact de projectile liquide (venin, acide, soie) : éclaboussure sombre + claire, gouttes qui
+-- retombent, anneau plat au sol.
+local SPLASH_LAYERS: { Layer } = {
+	{ Texture = 14944433028, Count = 1, Life = { 0.35 }, Color = BLACK, ZO = 0, Size = { { 0, 1.4 }, { 1, 2.6 } }, Transp = { { 0, 0.4 }, { 1, 1 } }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 14944433028, Count = 2, Life = { 0.35 }, LE = 0.5, Bri = 3, ZO = 2, Size = { { 0, 1.2 }, { 1, 2.2 } }, Rot = { -360, 360 }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 12942158384, Count = 12, Life = { 0.4, 0.7 }, LE = 0.3, ZO = 1, Speed = { 8, 14 }, Spread = 70, Drag = 3, Accel = Vector3.new(0, -35, 0),
+		Size = { { 0, 0.35 }, { 1, 0 } } },
+	{ Texture = 15667561065, Count = 1, Life = { 0.3 }, LE = 0.5, Bri = 2, ZO = 1, Orient = Enum.ParticleOrientation.VelocityPerpendicular,
+		Size = { { 0, 0.5 }, { 1, 2.6 } }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+}
+
+-- Atterrissage d'un bond d'attaque : nuage de poussière (couche sombre), onde plate au sol,
+-- débris de terre qui retombent, éclat rouge très bref (c'est une attaque).
+local DUST = Color3.fromRGB(138, 106, 72)
+local LANDING_LAYERS: { Layer } = {
+	{ Texture = 15072761142, Count = 6, Life = { 0.5, 0.7 }, Color = DUST, ZO = 0, Speed = { 6, 10 }, Spread = 80, Drag = 8,
+		Size = { { 0, 1 }, { 1, 3.2 } }, Transp = { { 0, 0.2 }, { 1, 1 } }, Rot = { -180, 180 }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 15667561065, Count = 1, Life = { 0.35 }, Color = Color3.fromRGB(240, 225, 200), LE = 0.3, ZO = 1, Orient = Enum.ParticleOrientation.VelocityPerpendicular,
+		Size = { { 0, 1 }, { 1, 7 } }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 9556807995, Count = 8, Life = { 0.5, 0.8 }, Color = Color3.fromRGB(96, 72, 48), ZO = 1, Speed = { 12, 18 }, Spread = 50, Accel = Vector3.new(0, -60, 0),
+		Size = { { 0, 0.4 }, { 1, 0.3 } }, Rot = { -360, 360 }, RotSpeed = { -300, 300 } },
+	{ Texture = 130296383221950, Count = 1, Life = { 0.1 }, LE = 1, Bri = 3, ZO = 3, Size = { { 0, 4 }, { 1, 1.5 } } },
+}
+
+-- Claquement de mandibules (morsure prédite localement) : deux croissants qui se croisent + éclat.
+local SNAP_LAYERS: { Layer } = {
+	{ Texture = 12506449597, Count = 2, Life = { 0.15 }, Color = WHITE, ZO = 2, Size = { { 0, 1.4 }, { 1, 0.6 } }, Rot = { -60, 60 } },
+	{ Texture = 130296383221950, Count = 1, Life = { 0.07 }, LE = 1, Bri = 2, ZO = 3, Size = { { 0, 1.6 }, { 1, 0.5 } } },
+}
+
+-- Éclat générique de pouvoir (taille 1..30) : disque noir, éclair étoile, anneau d'impact, specks.
+local FLASH_LAYERS: { Layer } = {
+	{ Texture = 8133065785, Count = 1, Life = { 0.3 }, Color = BLACK, ZO = 0, Size = { { 0, 0 }, { 0.2, 1.1 }, { 1, 1.25 } }, Transp = SNAP_TRANSP, Rot = { -180, 180 } },
+	{ Texture = 130296383221950, Count = 1, Life = { 0.12 }, LE = 1, Bri = 3, ZO = 4, Size = { { 0, 1.4 }, { 1, 0.5 } }, Rot = { -45, 45 } },
+	{ Texture = 97791845516200, Count = 1, Life = { 0.35 }, LE = 0.5, Bri = 3, ZO = 3, Size = { { 0, 0.7 }, { 1, 1 } }, Rot = { -360, 360 }, Grid = Enum.ParticleFlipbookLayout.Grid4x4 },
+	{ Texture = 16718212610, Count = 14, Life = { 0.3, 0.6 }, LE = 0.4, ZO = 2, Speed = { 3, 6 }, Spread = 180, Drag = 6, Size = { { 0, 0.12 }, { 1, 0 } } },
+}
+
+-- Base orientée : l'axe +Y (direction des émetteurs) pointe vers `direction`.
+local function aimed(position: Vector3, direction: Vector3): CFrame
+	if direction.Magnitude < 0.01 then
+		return CFrame.new(position)
+	end
+	local unit = direction.Unit
+	if math.abs(unit.Y) > 0.99 then -- vertical : lookAt dégénère, +Y suffit (ou retourné)
+		return if unit.Y > 0 then CFrame.new(position) else CFrame.new(position) * CFrame.Angles(math.pi, 0, 0)
+	end
+	return CFrame.lookAt(position, position + direction.Unit) * CFrame.Angles(-math.pi / 2, 0, 0)
+end
 
 -- Sphère qui gonfle et s'efface. `hold` > 0 = micro-pause d'impact avant l'expansion.
 local function flash(position: Vector3, color: Color3, size: number, hold: number)
@@ -268,7 +424,14 @@ local function onHit(victim: unknown, amount: unknown, attackerUserId: unknown, 
 	local color = if isMe then Color3.fromRGB(255, 80, 70) elseif isMine then Color3.fromRGB(255, 230, 90) else WHITE
 	showNumber(root, tostring(math.max(1, math.floor((amount :: number) + 0.5))), color, isMine or isMe)
 	local radius = (model:GetAttribute("HitRadius") :: number?) or 1.5
-	flash(root.Position, color, math.clamp(radius * 1.3, 2, 10), if isMine then HIT_STOP_SECONDS else 0)
+	-- Étincelles projetées loin de l'attaquant (vers le haut si on ne le connaît pas).
+	local attacker = if typeof(attackerUserId) == "number" then Players:GetPlayerByUserId(attackerUserId :: number) else nil
+	local attackerRoot = attacker and attacker.Character and modelRoot(attacker.Character)
+	local away = if attackerRoot then root.Position - attackerRoot.Position else Vector3.yAxis
+	-- Teintes saturées (règle VFX) : or = notre coup, rouge = on est touché, ambre pâle sinon.
+	local tint = if isMe then Color3.fromRGB(255, 34, 34) elseif isMine then Color3.fromRGB(255, 176, 32) else Color3.fromRGB(255, 214, 150)
+	burst(aimed(root.Position, away), math.clamp(radius * 0.8, 0.6, 5), tint, HIT_LAYERS, if isMine then HIT_STOP_SECONDS else 0)
+	SfxController.Play(if isMe then "Hurt" elseif isMine then "BiteHeavy" else "Bite", root.Position)
 	flashHighlight(model)
 	if isMine then
 		cameraPunch()
@@ -307,10 +470,24 @@ local function onProjectile(from: unknown, to: unknown, color: unknown, travel: 
 	trail.FaceCamera = true
 	trail.Parent = ball
 
+	-- Gouttelettes laissées en vol (espace monde : elles restent derrière le projectile).
+	local drip = Instance.new("ParticleEmitter")
+	drip.Texture = "rbxassetid://867619398"
+	drip.Color = ColorSequence.new(tint)
+	drip.LightInfluence = 0
+	drip.LightEmission = 0.4
+	drip.Rate = 40
+	drip.Lifetime = NumberRange.new(0.2, 0.3)
+	drip.Speed = NumberRange.new(0.001)
+	drip.Size = NumberSequence.new(0.7, 0)
+	drip.Parent = top
+
 	tween(ball, seconds, { CFrame = CFrame.new(endPosition) }, Enum.EasingStyle.Linear)
+	SfxController.Play("Spit", startPosition)
 	task.delay(seconds, function()
 		ball:Destroy()
-		flash(endPosition, tint, 2.4, 0)
+		burst(CFrame.new(endPosition), 1, tint, SPLASH_LAYERS)
+		SfxController.Play("Splash", endPosition)
 	end)
 end
 
@@ -319,7 +496,8 @@ local function onFlash(position: unknown, color: unknown, size: unknown)
 		return
 	end
 	if nearCamera(position :: Vector3) then
-		flash(position :: Vector3, color :: Color3, math.clamp(size :: number, 1, 30), 0)
+		burst(CFrame.new(position :: Vector3), math.clamp(size :: number, 1, 30), color :: Color3, FLASH_LAYERS)
+		SfxController.Play("Power", position :: Vector3)
 	end
 end
 
@@ -372,6 +550,7 @@ local function onTelegraph(caster: unknown, primitive: unknown, vector: unknown,
 		local basis = CFrame.lookAt(ground, ground + direction) + Vector3.new(0, 0.1, 0)
 		local streak = makePart(Enum.PartType.Block, TELEGRAPH_COLOR, Vector3.new(width, 0.12, 0.5), basis * CFrame.new(0, 0, -0.25), 0.25)
 		local lungeWindup = windup or 0.25
+		SfxController.Play("Whoosh", root.Position)
 		tween(streak, lungeWindup * 0.6, { Size = Vector3.new(width, 0.12, range), CFrame = basis * CFrame.new(0, 0, -range / 2) })
 		tween(streak, 0.35, { Transparency = 1 }, Enum.EasingStyle.Quad, lungeWindup * 0.8)
 		Debris:AddItem(streak, lungeWindup + 0.4)
@@ -387,8 +566,12 @@ local function onTelegraph(caster: unknown, primitive: unknown, vector: unknown,
 		tween(disc, airtime, { Size = Vector3.new(0.1, 3, 3), Transparency = 0.2 }, Enum.EasingStyle.Quad)
 		tween(disc, 0.2, { Transparency = 1 }, Enum.EasingStyle.Quad, airtime)
 		Debris:AddItem(disc, airtime + 0.3)
+		local landingScale = math.clamp(if casterModel then casterModel:GetScale() else 1, 0.6, 4)
+		local casterRoot = casterModel and modelRoot(casterModel)
+		SfxController.Play("Whoosh", if casterRoot then casterRoot.Position else ground)
 		task.delay(airtime, function()
-			flash(ground + Vector3.new(0, 0.5, 0), TELEGRAPH_COLOR, 5, 0)
+			burst(CFrame.new(ground + Vector3.new(0, 0.3, 0)), landingScale, TELEGRAPH_COLOR, LANDING_LAYERS)
+			SfxController.Play("Slam", ground)
 		end)
 	end
 end
@@ -616,6 +799,11 @@ local function buildAura(root: BasePart, status: string, scale: number): Instanc
 	local color = STATUS_COLORS[status] or WHITE
 	local emitter = Instance.new("ParticleEmitter")
 	emitter.Name = "StatusAura_" .. status
+	emitter.LightInfluence = 0
+	-- Gouttes (sang, glu), bulles (poison) ou lueurs douces (le reste).
+	emitter.Texture = "rbxassetid://" .. (if status == "Bleed" or status == "Glue" then "12942158384"
+		elseif status == "Poison" or status == "Toxic" then "16879797476"
+		else "96463120013995")
 	emitter.Color = ColorSequence.new(color)
 	emitter.LightEmission = 0.4
 	emitter.Lifetime = NumberRange.new(0.7, 1.1)
@@ -691,7 +879,8 @@ local function onLocalBite()
 		return
 	end
 	local scale = math.clamp(character:GetScale(), 0.5, 4)
-	flash(root.Position + root.CFrame.LookVector * (2.2 * scale), WHITE, 1.4 * scale, 0)
+	burst(CFrame.new(root.Position + root.CFrame.LookVector * (2.2 * scale)), scale, WHITE, SNAP_LAYERS)
+	SfxController.Play("Snap")
 end
 
 local function dispatch(kind: unknown, a: unknown, b: unknown, c: unknown, d: unknown)

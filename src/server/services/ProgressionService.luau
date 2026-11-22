@@ -5,11 +5,13 @@
 -- quota...) : on joue alors sans sauvegarde plutôt que de bloquer le serveur.
 
 local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
 local DataStoreService = game:GetService("DataStoreService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local ServerScriptService = game:GetService("ServerScriptService")
 
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GrowthAndNestService = require(ServerScriptService.services.GrowthAndNestService)
 local EvolutionDomain = require(ServerScriptService.domain.EvolutionDomain)
@@ -22,7 +24,17 @@ type Profile = {
 	Deaths: number,
 	Mutations: { [string]: boolean },
 	ReachedAdult: boolean, -- a atteint l'âge adulte au moins une fois (débloque "Être une Maman")
+	-- Récompense quotidienne : série de jours consécutifs (jour = os.time() // 86400, UTC).
+	DailyStreak: number,
+	LastDailyDay: number,
+	-- Records de vie (à battre) : affichés sur l'écran de mort.
+	BestLevel: number,
+	BestLifeSeconds: number,
+	BestLifeKills: number,
 }
+
+local DAILY_BASE_POINTS = 50 -- x jour de série (plafonné à 7)
+local DAILY_STREAK_CAP = 7
 
 local STORE_NAME = "MicroWild_Profile_v1"
 -- Déblocage du spawn "Être une Maman" : adulte une fois OU ce nombre de PE.
@@ -37,7 +49,10 @@ local profiles: { [Player]: Profile } = {}
 local loadFailed: { [Player]: boolean } = {}
 
 local function newProfile(): Profile
-	return { EvolutionPoints = 0, Kills = 0, Deaths = 0, Mutations = {}, ReachedAdult = false }
+	return {
+		EvolutionPoints = 0, Kills = 0, Deaths = 0, Mutations = {}, ReachedAdult = false,
+		DailyStreak = 0, LastDailyDay = 0, BestLevel = 0, BestLifeSeconds = 0, BestLifeKills = 0,
+	}
 end
 
 local function sanitize(raw: unknown): Profile
@@ -56,6 +71,11 @@ local function sanitize(raw: unknown): Profile
 		profile.Deaths = math.max(0, math.floor(data.Deaths))
 	end
 	profile.ReachedAdult = data.ReachedAdult == true
+	for _, field in ipairs({ "DailyStreak", "LastDailyDay", "BestLevel", "BestLifeSeconds", "BestLifeKills" }) do
+		if typeof(data[field]) == "number" then
+			(profile :: any)[field] = math.max(0, math.floor(data[field]))
+		end
+	end
 	if typeof(data.Mutations) == "table" then
 		for id, unlocked in pairs(data.Mutations :: { [any]: any }) do
 			if typeof(id) == "string" and unlocked == true and InsectBodyPlans.Mutations[id] then
@@ -111,6 +131,12 @@ local function saveProfile(player: Player)
 					Deaths = math.max(stored.Deaths, profile.Deaths),
 					Mutations = table.clone(stored.Mutations),
 					ReachedAdult = stored.ReachedAdult or profile.ReachedAdult, -- OU : ne se perd jamais
+					BestLevel = math.max(stored.BestLevel, profile.BestLevel),
+					BestLifeSeconds = math.max(stored.BestLifeSeconds, profile.BestLifeSeconds),
+					BestLifeKills = math.max(stored.BestLifeKills, profile.BestLifeKills),
+					-- La série peut retomber à 1 : on garde la version du jour le plus récent.
+					DailyStreak = if profile.LastDailyDay >= stored.LastDailyDay then profile.DailyStreak else stored.DailyStreak,
+					LastDailyDay = math.max(stored.LastDailyDay, profile.LastDailyDay),
 				}
 				for id in pairs(profile.Mutations) do
 					merged.Mutations[id] = true
@@ -185,9 +211,9 @@ end
 -- Expérience et niveaux (par vie) : chasser et manger font monter de niveau
 -- ============================================================
 
--- XP nécessaire pour passer du niveau `level` au suivant.
+-- XP nécessaire pour passer du niveau `level` au suivant (~3000 XP du niveau 1 à 20).
 local function xpToNext(level: number): number
-	return 40 + 35 * (level - 1)
+	return 25 + 15 * (level - 1)
 end
 
 local function publishExperience(player: Player, level: number, xp: number)
@@ -196,10 +222,24 @@ local function publishExperience(player: Player, level: number, xp: number)
 	player:SetAttribute("XPNext", if level >= EvolutionDomain.MAX_LEVEL then 0 else xpToNext(level))
 end
 
-function ProgressionService.AddExperience(player: Player, amount: number)
+-- Nombre d'ACTIONS par source pendant la vie (un kill = un dépôt = 1) : décide de la caste.
+local xpBySource: { [Player]: { [string]: number } } = {}
+
+-- `source` : chasse / manger / travail, pondéré par le mode de vie de l'espèce (EvolutionDomain)
+-- et par les traits / la caste (EvolutionTraits).
+-- `reward` = XP de récompense (défi...) : ne compte pas comme une action (caste, défis).
+function ProgressionService.AddExperience(player: Player, amount: number, source: EvolutionDomain.XpSource, reward: boolean?)
 	if amount <= 0 or player.Parent == nil then
 		return
 	end
+	if not reward then
+		local tally = xpBySource[player] or {}
+		xpBySource[player] = tally
+		tally[source] = (tally[source] or 0) + 1
+		ProgressionService.ActionHook(player, source, 1)
+	end
+	amount *= EvolutionDomain.XpMultiplier((player:GetAttribute("Species") :: string?) or "", source)
+	amount *= 1 + EvolutionTraits.Totals(player).Xp
 	local level = EvolutionDomain.GetLevel(player)
 	if level >= EvolutionDomain.MAX_LEVEL then
 		return
@@ -210,12 +250,18 @@ function ProgressionService.AddExperience(player: Player, amount: number)
 		xp -= xpToNext(level)
 		level += 1
 		gained += 1
+		-- Paliers de branche : un trait à choisir (EvolutionChoiceController côté client).
+		if table.find(EvolutionTraits.BRANCH_LEVELS, level) then
+			player:SetAttribute("PendingTraitChoices", ((player:GetAttribute("PendingTraitChoices") :: number?) or 0) + 1)
+			Remotes.Get("NotifyClient"):FireClient(player, "🧬 Nouvelle évolution disponible : choisissez un trait !", "info")
+		end
 	end
 	if level >= EvolutionDomain.MAX_LEVEL then
 		xp = 0
 	end
 	publishExperience(player, level, math.floor(xp))
 	if gained > 0 then
+		ProgressionService.ActionHook(player, "Niveau", level)
 		EvolutionDomain.ApplyLevel(player)
 		Remotes.Get("NotifyClient"):FireClient(
 			player,
@@ -228,9 +274,123 @@ function ProgressionService.AddExperience(player: Player, amount: number)
 end
 
 -- Nouvelle vie : retour au niveau 1.
+-- Fin de vie : bilan + records battus (attribut "LastLife", JSON lu par l'écran de mort).
+local function closeLife(player: Player)
+	local startedAt = player:GetAttribute("LifeStartedAt")
+	local profile = profiles[player]
+	if type(startedAt) ~= "number" or not profile then
+		return
+	end
+	local summary = {
+		Level = EvolutionDomain.GetLevel(player),
+		Seconds = math.floor(os.time() - startedAt),
+		Kills = (xpBySource[player] or {}).Chasse or 0,
+		Records = {} :: { string },
+		BestLevel = 0,
+		BestSeconds = 0,
+		BestKills = 0,
+	}
+	local function beat(field: string, value: number, label: string)
+		if value > (profile :: any)[field] then
+			if (profile :: any)[field] > 0 then
+				table.insert(summary.Records, label)
+			end
+			(profile :: any)[field] = value
+		end
+	end
+	beat("BestLevel", summary.Level, "Niveau")
+	beat("BestLifeSeconds", summary.Seconds, "Survie")
+	beat("BestLifeKills", summary.Kills, "Chasse")
+	summary.BestLevel, summary.BestSeconds, summary.BestKills = profile.BestLevel, profile.BestLifeSeconds, profile.BestLifeKills
+	player:SetAttribute("LastLife", HttpService:JSONEncode(summary))
+end
+
+-- Remplacé au démarrage (QuestService) : action de jeu ("Chasse"/"Manger"/"Travail"/"Niveau"...).
+function ProgressionService.ActionHook(_player: Player, _kind: string, _amount: number) end
+
+-- Récompense quotidienne : série de jours consécutifs, plafonnée à 7 jours.
+local function claimDaily(player: Player, profile: Profile)
+	local today = os.time() // 86400
+	if profile.LastDailyDay >= today then
+		player:SetAttribute("DailyStreak", profile.DailyStreak)
+		return
+	end
+	profile.DailyStreak = if profile.LastDailyDay == today - 1 then profile.DailyStreak + 1 else 1
+	profile.LastDailyDay = today
+	local points = DAILY_BASE_POINTS * math.min(profile.DailyStreak, DAILY_STREAK_CAP)
+	ProgressionService.AddEvolutionPoints(player, points)
+	player:SetAttribute("DailyStreak", profile.DailyStreak)
+	Remotes.Get("NotifyClient"):FireClient(
+		player,
+		string.format("🔥 Série de %d jour(s) ! +%d PE. Revenez demain pour plus%s", profile.DailyStreak, points,
+			if profile.DailyStreak < DAILY_STREAK_CAP then string.format(" (+%d PE)", DAILY_BASE_POINTS * (profile.DailyStreak + 1)) else " !"),
+		"info"
+	)
+end
+
 function ProgressionService.ResetExperience(player: Player)
+	closeLife(player)
 	publishExperience(player, 1, 0)
+	player:SetAttribute("LifeStartedAt", os.time()) -- après le niveau 1 : QuestService retire alors ses défis de niveau
+	player:SetAttribute("GrowthBlocked", nil)
+	-- Branches et caste sont propres à une vie.
+	for id in pairs(EvolutionTraits.All()) do
+		player:SetAttribute("Trait_" .. id, nil)
+	end
+	player:SetAttribute("PendingTraitChoices", nil)
+	player:SetAttribute("Caste", nil)
+	player:SetAttribute("RoyalJelly", nil)
+	xpBySource[player] = nil
 	EvolutionDomain.ApplyLevel(player)
+end
+
+-- Choix d'un trait de branche : validé (choix en attente, trait de SA branche).
+local function onEvolutionChoice(player: Player, traitId: unknown)
+	local pending = (player:GetAttribute("PendingTraitChoices") :: number?) or 0
+	if type(traitId) ~= "string" or pending <= 0 then
+		return
+	end
+	local speciesId = (player:GetAttribute("Species") :: string?) or ""
+	local chosen: EvolutionTraits.Trait? = nil
+	for _, t in ipairs(EvolutionTraits.BranchFor(speciesId)) do
+		if t.Id == traitId then
+			chosen = t
+		end
+	end
+	if not chosen then
+		return
+	end
+	local key = "Trait_" .. chosen.Id
+	player:SetAttribute(key, ((player:GetAttribute(key) :: number?) or 0) + 1)
+	player:SetAttribute("PendingTraitChoices", if pending > 1 then pending - 1 else nil)
+	EvolutionDomain.ApplyLevel(player)
+	Remotes.Get("NotifyClient"):FireClient(player, string.format("%s Évolution : %s (%s)", chosen.Icon, chosen.Name, chosen.Description), "info")
+end
+
+-- Caste d'un insecte social, décidée par sa vie de larve (gelée royale) et ce qu'il a fait.
+local function assignCaste(player: Player)
+	local speciesId = (player:GetAttribute("Species") :: string?) or ""
+	if not EvolutionTraits.IsSocial(speciesId) or player:GetAttribute("Caste") ~= nil then
+		return
+	end
+	local tally = xpBySource[player] or {}
+	-- Gelée royale : larve bien nourrie au nid, et une seule héritière Reine vivante par colonie.
+	local familyId = player:GetAttribute("FamilyId")
+	local heirExists = false
+	for _, other in ipairs(Players:GetPlayers()) do
+		if other ~= player and other:GetAttribute("FamilyId") == familyId and other:GetAttribute("Caste") == "Reine" and other:GetAttribute("IsMother") ~= true then
+			heirExists = true
+		end
+	end
+	local royal = not heirExists and ((player:GetAttribute("RoyalJelly") :: number?) or 0) >= EvolutionTraits.ROYAL_JELLY_FEEDINGS
+	-- Sans colonie, on est une fondatrice solitaire (sinon personne ne pourrait jamais fonder).
+	local caste = if royal or familyId == nil then "Reine"
+		elseif (tally.Chasse or 0) > (tally.Travail or 0) then "Soldat"
+		else "Ouvriere"
+	player:SetAttribute("Caste", caste)
+	EvolutionDomain.ApplyLevel(player)
+	local info = EvolutionTraits.CASTES[caste]
+	Remotes.Get("NotifyClient"):FireClient(player, string.format("%s Vous êtes devenu %s ! %s", info.Icon, info.Name, info.Description), "info")
 end
 
 function ProgressionService.RecordKill(attackerUserId: number?, victimName: string, victimIsGiant: boolean)
@@ -244,7 +404,7 @@ function ProgressionService.RecordKill(attackerUserId: number?, victimName: stri
 	end
 	profile.Kills += 1
 	ProgressionService.AddEvolutionPoints(attacker, if victimIsGiant then 400 else 40)
-	ProgressionService.AddExperience(attacker, if victimIsGiant then 250 else 60)
+	ProgressionService.AddExperience(attacker, if victimIsGiant then 250 else 60, "Chasse")
 	Remotes.Get("NotifyClient"):FireClient(attacker, "Vous avez tué " .. victimName .. " !", "info")
 end
 
@@ -312,6 +472,7 @@ end
 
 local function onPlayerAdded(player: Player)
 	publishExperience(player, 1, 0)
+	player:SetAttribute("LifeStartedAt", os.time()) -- 1re vie : sinon aucun bilan à la 1re mort
 	createLeaderstats(player)
 	local profile = loadProfile(player)
 	if not player.Parent then
@@ -319,6 +480,11 @@ local function onPlayerAdded(player: Player)
 	end
 	profiles[player] = profile
 	refreshLeaderstats(player)
+	task.delay(6, function() -- après l'écran de chargement, pour qu'on voie la récompense
+		if profiles[player] == profile then
+			claimDaily(player, profile)
+		end
+	end)
 end
 
 function ProgressionService.Start()
@@ -332,6 +498,7 @@ function ProgressionService.Start()
 	end
 
 	Players.PlayerAdded:Connect(onPlayerAdded)
+	Remotes.Get("RequestEvolutionChoice").OnServerEvent:Connect(onEvolutionChoice)
 	for _, player in ipairs(Players:GetPlayers()) do
 		task.spawn(onPlayerAdded, player)
 	end
@@ -340,6 +507,7 @@ function ProgressionService.Start()
 		saveProfile(player)
 		profiles[player] = nil
 		loadFailed[player] = nil
+		xpBySource[player] = nil
 	end)
 
 	game:BindToClose(function()
@@ -374,6 +542,7 @@ function ProgressionService.Start()
 		end
 		-- La mutation rare se tire à l'âge adulte : il faut survivre pour la débloquer.
 		if newStage == "Adulte" then
+			assignCaste(player)
 			local profile = profiles[player]
 			if profile and not profile.ReachedAdult then
 				profile.ReachedAdult = true

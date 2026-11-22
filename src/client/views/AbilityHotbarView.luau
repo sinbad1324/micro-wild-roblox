@@ -16,6 +16,8 @@ local UserInputService = game:GetService("UserInputService")
 local AbilityCatalog = require(ReplicatedStorage.shared.AbilityCatalog)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
 local InsectBodyPlans = require(ReplicatedStorage.shared.InsectBodyPlans)
+local NestPieces = require(ReplicatedStorage.shared.NestPieces)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local UiTheme = require(script.Parent.UiTheme)
 
@@ -367,10 +369,10 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 		end
 		-- Matériaux de construction portés (NestBuildingService) : déposés en entrant dans le nid.
 		local materials = {}
-		for _, entry in ipairs({ { "Feuille", "🍂" }, { "Brindille", "🪵" }, { "Caillou", "🪨" }, { "Terre", "🟫" } }) do
-			local count = numberAttribute("Mat_" .. entry[1])
+		for _, material in ipairs(NestPieces.MATERIAL_ORDER) do
+			local count = numberAttribute("Mat_" .. material)
 			if count > 0 then
-				table.insert(materials, entry[2] .. count)
+				table.insert(materials, NestPieces.MATERIAL_ICONS[material] .. count)
 			end
 		end
 		if #materials > 0 then
@@ -386,6 +388,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 		local showColony = player:GetAttribute("Stage") == "Adulte"
 			and numberAttribute("Growth") >= 100
 			and player:GetAttribute("IsMother") ~= true
+			and EvolutionTraits.CanFoundColony(player)
 		if showColony ~= colonyVisible then
 			colonyVisible = showColony
 			colonyButton.Visible = showColony
@@ -426,7 +429,11 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 	for _, attribute in ipairs({ "Species", "Stage", "DigStrength" }) do
 		player:GetAttributeChangedSignal(attribute):Connect(refreshSlots)
 	end
-	for _, attribute in ipairs({ "CarriedFoodType", "Growth", "Stage", "IsMother", "Species", "Mat_Feuille", "Mat_Brindille", "Mat_Caillou", "Mat_Terre" }) do
+	local watched = { "CarriedFoodType", "Growth", "Stage", "IsMother", "Species", "Caste" }
+	for _, material in ipairs(NestPieces.MATERIAL_ORDER) do
+		table.insert(watched, "Mat_" .. material)
+	end
+	for _, attribute in ipairs(watched) do
 		player:GetAttributeChangedSignal(attribute):Connect(refreshInfo)
 	end
 	for _, attribute in ipairs({ "EvolutionPoints", "Kills", "Mutation" }) do

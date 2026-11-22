@@ -13,6 +13,8 @@ local AbilityHotbarView = require(playerScripts.views.AbilityHotbarView)
 local DeathScreenView = require(playerScripts.views.DeathScreenView)
 local ControlsHelpView = require(playerScripts.views.ControlsHelpView)
 local AdminPanelView = require(playerScripts.views.AdminPanelView)
+local QuestTrackerView = require(playerScripts.views.QuestTrackerView)
+local ProgressFxView = require(playerScripts.views.ProgressFxView)
 
 local UIManager = {}
 
@@ -38,6 +40,8 @@ function UIManager.Init()
 	safeMount("DeathScreenView", DeathScreenView.Mount)
 	safeMount("ControlsHelpView", ControlsHelpView.Mount)
 	safeMount("AdminPanelView", AdminPanelView.Mount)
+	safeMount("QuestTrackerView", QuestTrackerView.Mount)
+	safeMount("ProgressFxView", ProgressFxView.Mount)
 end
 
 return UIManager

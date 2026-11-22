@@ -13,6 +13,9 @@
 --     LIBREMENT des pièces du catalogue de son espèce (NestPieces : fourmilière, ruche, soie,
 --     aquatique, nid d'oiseau, drey, feuillage + pièces communes), payées sur le stock ;
 --     suppression = remboursement de moitié. Tout est validé ici (famille, distance, coût, limite).
+--   * Chaque espèce bâtit à sa manière : l'abeille SÉCRÈTE la cire, l'araignée la soie (si nourrie),
+--     guêpes / frelons mâchent leurs brindilles en papier au dépôt, la fourmi creuse la terre.
+--     Les blocs unitaires (Piece.Brick) se posent un par un pour donner au nid la forme voulue.
 --   * Bonus : plus on a investi de matériaux, plus la famille se soigne au nid (niveaux 1..4).
 
 local CollectionService = game:GetService("CollectionService")
@@ -43,7 +46,11 @@ local HEAL_PER_LEVEL = 0.015 -- part de la vie max rendue par tick et par niveau
 local HEAL_COMBAT_GRACE = 5 -- pas de soin juste après un coup reçu
 -- Points cumulés pour atteindre chaque niveau.
 local LEVEL_THRESHOLDS = { 10, 30, 60, 100 }
-local MAX_PIECES = 60 -- par nid
+local MAX_PIECES = 60 -- grandes pièces, par nid
+local MAX_BRICKS = 400 -- blocs unitaires, par nid (1 à 3 parts chacun)
+local SECRETE_SECONDS = 5 -- 1 cire / soie produite toutes les 5 s...
+local SECRETE_MIN_HUNGER = 40 -- ...si l'animal est assez nourri...
+local SECRETE_HUNGER_COST = 2 -- ...et ça lui coûte un peu de faim.
 local BUILD_RADIUS_FACTOR = 1.6 -- pièces posées jusqu'à NEST_RADIUS * ceci du centre du nid
 local BUILD_MAX_HEIGHT = 25
 local BUILDER_REACH_FACTOR = 2.5 -- le constructeur doit être près de son nid
@@ -56,7 +63,12 @@ local MATERIALS: { [string]: MaterialInfo } = {
 	Brindille = { Name = "Brindille", Points = 2, Color = Color3.fromRGB(120, 84, 52), Material = Enum.Material.Wood },
 	Caillou = { Name = "Caillou", Points = 3, Color = Color3.fromRGB(128, 126, 120), Material = Enum.Material.Slate },
 	Terre = { Name = "Terre", Points = 1, Color = Color3.fromRGB(105, 78, 52), Material = Enum.Material.Ground },
+	Cire = { Name = "Cire", Points = 2, Color = Color3.fromRGB(236, 186, 64), Material = Enum.Material.SmoothPlastic },
+	Soie = { Name = "Soie", Points = 2, Color = Color3.fromRGB(242, 242, 248), Material = Enum.Material.Fabric },
+	Papier = { Name = "Papier", Points = 2, Color = Color3.fromRGB(196, 176, 140), Material = Enum.Material.Fabric },
 }
+-- Matière sécrétée par le corps selon le thème de l'espèce (comme dans la nature).
+local SECRETION: { [string]: string } = { Ruche = "Cire", Soie = "Soie" }
 local GATHERABLE = { "Feuille", "Feuille", "Brindille", "Brindille", "Caillou" } -- tirage pondéré
 
 local lastDirtAt: { [Player]: number } = {}
@@ -187,6 +199,7 @@ local function onGather(player: Player, node: BasePart)
 		notify(player, "Vous ne pouvez plus porter de " .. MATERIALS[material].Name .. " : rapportez-les au nid.", "warning")
 		return
 	end
+	ProgressionService.ActionHook(player, "Ramasser", 1)
 	if player:GetAttribute("FamilyId") == nil then
 		notify(player, MATERIALS[material].Name .. " ramassée. Fondez ou rejoignez une colonie pour bâtir un nid.", "info")
 	end
@@ -339,14 +352,18 @@ local function depositTick()
 		end
 		local stock = nest.Materials or {}
 		nest.Materials = stock
+		local chewsPaper = NestPieces.ThemeFor(nest.SpeciesId, (InsectData[nest.SpeciesId] or {} :: any).Category) == "Papier"
 		for material in pairs(MATERIALS) do
 			local count = (player:GetAttribute(attributeName(material)) :: number?) or 0
-			stock[material] = (stock[material] or 0) + count
+			-- Guêpes / frelons : les brindilles sont mâchées en pâte à papier.
+			local into = if chewsPaper and material == "Brindille" then "Papier" else material
+			stock[into] = (stock[into] or 0) + count
 			player:SetAttribute(attributeName(material), nil)
 		end
 		publishStock(nest)
 		nest.BuildPoints = ((nest.BuildPoints :: number?) or 0) + points
 		ProgressionService.AddEvolutionPoints(player, math.ceil(points / 2))
+		ProgressionService.AddExperience(player, points * 1.5, "Travail")
 		local level = levelFor(nest.BuildPoints)
 		local nextThreshold = LEVEL_THRESHOLDS[level + 1]
 		notify(
@@ -410,8 +427,16 @@ local function onBuildRequest(player: Player, action: unknown, a: unknown, b: un
 		if not piece or (piece.Theme ~= theme and piece.Theme ~= "Commun") then
 			return
 		end
-		if #container:GetChildren() >= MAX_PIECES then
-			notify(player, string.format("Nid plein (%d pièces max) : retirez-en une.", MAX_PIECES), "warning")
+		local bricks = 0
+		for _, child in ipairs(container:GetChildren()) do
+			if child:GetAttribute("Brick") then
+				bricks += 1
+			end
+		end
+		local count = if piece.Brick then bricks else #container:GetChildren() - bricks
+		local limit = if piece.Brick then MAX_BRICKS else MAX_PIECES
+		if count >= limit then
+			notify(player, string.format("Limite atteinte (%d max) : retirez-en.", limit), "warning")
 			return
 		end
 		-- Seuls la position et le cap comptent (pas d'inclinaison envoyée par le client).
@@ -421,6 +446,16 @@ local function onBuildRequest(player: Player, action: unknown, a: unknown, b: un
 		if Vector2.new(offset.X, offset.Z).Magnitude > GameConstants.NEST_RADIUS * BUILD_RADIUS_FACTOR or math.abs(offset.Y) > BUILD_MAX_HEIGHT then
 			notify(player, "Trop loin du nid pour construire ici.", "warning")
 			return
+		end
+		-- Bloc : case déjà occupée = refus (sinon on paye deux fois la même place).
+		local brickSize = piece.Brick
+		if brickSize then
+			local overlap = OverlapParams.new()
+			overlap.FilterType = Enum.RaycastFilterType.Include
+			overlap.FilterDescendantsInstances = { container }
+			if #workspace:GetPartBoundsInBox(CFrame.new(requested.Position), Vector3.one * brickSize * 0.6, overlap) > 0 then
+				return
+			end
 		end
 		for material, amount in pairs(piece.Cost) do
 			if (stock[material] or 0) < (amount :: number) then
@@ -436,7 +471,9 @@ local function onBuildRequest(player: Player, action: unknown, a: unknown, b: un
 		local built = NestPieces.Build(piece, CFrame.new(requested.Position) * CFrame.Angles(0, yaw, 0))
 		built:SetAttribute("PieceId", piece.Id)
 		built:SetAttribute("PlacedBy", player.UserId)
+		built:SetAttribute("Brick", if piece.Brick then true else nil)
 		built.Parent = container
+		ProgressionService.ActionHook(player, "Batir", 1)
 		publishStock(nest)
 	elseif action == "Remove" then
 		if typeof(a) ~= "Instance" or (a :: Instance).Parent ~= container then
@@ -452,6 +489,21 @@ local function onBuildRequest(player: Player, action: unknown, a: unknown, b: un
 		end
 		target:Destroy()
 		publishStock(nest)
+	end
+end
+
+-- Sécrétion : abeilles (cire) et araignées (soie) fabriquent elles-mêmes leur matériau, si nourries.
+local function secreteTick()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local speciesId = player:GetAttribute("Species")
+		if type(speciesId) ~= "string" or not canGather(player) or not getActiveRoot(player) then
+			continue
+		end
+		local material = SECRETION[NestPieces.ThemeFor(speciesId, (InsectData[speciesId] or {} :: any).Category)]
+		local hunger = (player:GetAttribute("Hunger") :: number?) or 0
+		if material and hunger >= SECRETE_MIN_HUNGER and NestBuildingService.AddMaterial(player, material, 1) then
+			player:SetAttribute("Hunger", hunger - SECRETE_HUNGER_COST)
+		end
 	end
 end
 
@@ -515,9 +567,17 @@ function NestBuildingService.Start()
 		end
 	end)
 	task.spawn(function()
-		local healAcc = 0
+		local healAcc, secreteAcc = 0, 0
 		while true do
 			task.wait(TICK_SECONDS)
+			secreteAcc += TICK_SECONDS
+			if secreteAcc >= SECRETE_SECONDS then
+				secreteAcc = 0
+				local ok, err = pcall(secreteTick)
+				if not ok then
+					warn("[NestBuildingService] sécrétion : " .. tostring(err))
+				end
+			end
 			local ok, err = pcall(depositTick)
 			if not ok then
 				warn("[NestBuildingService] dépôt : " .. tostring(err))

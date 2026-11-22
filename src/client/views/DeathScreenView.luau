@@ -6,6 +6,7 @@
 --   * Apparition fluide en fondu + rebond Back et décompte jusqu'à la réapparition
 -- Aucun travail par frame hors la brève pirouette 3D d'entrée.
 
+local HttpService = game:GetService("HttpService")
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
@@ -125,7 +126,34 @@ function DeathScreenView.Mount()
 	keptLabel.TextWrapped = true
 	keptLabel.TextXAlignment = Enum.TextXAlignment.Center
 
-	local countdown = line(5, Enum.Font.GothamBlack, 15, Colors.Accent)
+	-- Bilan de la vie et records (attribut "LastLife", posé par ProgressionService à la mort).
+	local recordLabel = line(5, Enum.Font.GothamBold, 13, Colors.Gold)
+	recordLabel.RichText = true
+	local function refreshRecords()
+		local raw = player:GetAttribute("LastLife")
+		local ok, life = pcall(function()
+			return if type(raw) == "string" then HttpService:JSONDecode(raw) else nil
+		end)
+		if not ok or type(life) ~= "table" then
+			recordLabel.Text = ""
+			return
+		end
+		local seconds = tonumber(life.Seconds) or 0
+		local text = string.format(
+			"Cette vie : niveau %d  ·  %d min %02d s  ·  %d proie(s)\n🏆 Records : niveau %d  ·  %d min  ·  %d proies",
+			tonumber(life.Level) or 1, seconds // 60, seconds % 60, tonumber(life.Kills) or 0,
+			tonumber(life.BestLevel) or 0, (tonumber(life.BestSeconds) or 0) // 60, tonumber(life.BestKills) or 0
+		)
+		if type(life.Records) == "table" and #life.Records > 0 then
+			text = "<font size=\"18\">🎉 NOUVEAU RECORD : " .. table.concat(life.Records, ", ") .. " !</font>\n" .. text
+		else
+			text ..= "\nPresque ! Battez vos records à la prochaine vie."
+		end
+		recordLabel.Text = text
+	end
+	player:GetAttributeChangedSignal("LastLife"):Connect(refreshRecords)
+
+	local countdown = line(6, Enum.Font.GothamBlack, 15, Colors.Accent)
 
 	-- ---------- Suivi de la vie en cours ----------
 	local lifeStage = "Oeuf"
@@ -179,6 +207,7 @@ function DeathScreenView.Mount()
 			"🧬 Conservés : Points d'Évolution (%d), Kills, mutations débloquées\n🍂 Perdus : stade, croissance et mutation de cette vie",
 			math.floor(numberAttribute("EvolutionPoints", 0))
 		)
+		refreshRecords()
 		screenGui.Enabled = true
 		root.GroupTransparency = 1
 		panel.Position = PANEL_HIDDEN

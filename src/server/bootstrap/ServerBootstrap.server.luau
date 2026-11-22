@@ -25,6 +25,7 @@ local AdminService = require(services.AdminService)
 local NpcMotherService = require(services.NpcMotherService)
 local WildInsectService = require(services.WildInsectService)
 local NestBuildingService = require(services.NestBuildingService)
+local QuestService = require(services.QuestService)
 local CombatService = require(services.CombatService)
 local DigService = require(services.DigService)
 local AnimalService = require(services.AnimalService)
@@ -65,6 +66,9 @@ start("NpcMotherService", NpcMotherService.Start)
 start("WildInsectService", WildInsectService.Start)
 start("NestBuildingService", NestBuildingService.Start)
 start("SpawnMenuNetworkService", SpawnMenuNetworkService.Start)
+-- Défis enchaînés : alimentés par les actions de jeu remontées par ProgressionService.
+ProgressionService.ActionHook = QuestService.Record
+start("QuestService", QuestService.Start)
 start("AdminService", AdminService.Start)
 
 -- Mutation tirée à l'âge adulte : reconstruit le corps 3D avec ses couleurs rares.

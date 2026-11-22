@@ -22,12 +22,15 @@ local AnimalAnimationController = require(playerScripts.controllers.AnimalAnimat
 local CameraController = require(playerScripts.controllers.CameraController)
 local WorldFxController = require(playerScripts.controllers.WorldFxController)
 local BuildModeController = require(playerScripts.controllers.BuildModeController)
+local EvolutionChoiceController = require(playerScripts.controllers.EvolutionChoiceController)
+local SfxController = require(playerScripts.controllers.SfxController)
 
 -- Les RemoteEvents sont créés par ServerBootstrap au boot ; on attend qu'ils existent avant de
 -- câbler quoi que ce soit qui en dépend.
 Remotes.Get("NotifyClient")
 
 -- Monte toutes les vues (HUD, toasts, menu, barre de pouvoirs, mort, aide H).
+SfxController.Start() -- avant les vues : le dossier de sons existe quand elles jouent
 UIManager.Init()
 AbilityController.Start()
 StatusEffectController.Start()
@@ -39,3 +42,4 @@ AnimalAnimationController.Start()
 CameraController.Start()
 WorldFxController.Start()
 BuildModeController.Start()
+EvolutionChoiceController.Start()

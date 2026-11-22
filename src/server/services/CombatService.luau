@@ -17,6 +17,7 @@ local ServerScriptService = game:GetService("ServerScriptService")
 
 local AbilityCatalog = require(ReplicatedStorage.shared.AbilityCatalog)
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local GameConstants = require(ServerScriptService.constant.GameConstants)
 local DamageService = require(ServerScriptService.services.DamageService)
@@ -134,7 +135,7 @@ local function stagePowerFactor(player: Player): number
 	-- Niveau d'XP : +3 % de force par niveau.
 	local level = player:GetAttribute("Level")
 	local bonus = if type(level) == "number" then math.max(0, level - 1) * 0.03 else 0
-	return base * (1 + bonus)
+	return base * (1 + bonus) * (1 + EvolutionTraits.Totals(player).Damage)
 end
 
 local function sameFamily(a: Player, b: Player?): boolean

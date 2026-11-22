@@ -596,37 +596,37 @@ local WIND_PROFILES: { [string]: WindProfile } = {
 		ForceMin = 4.5,
 		ForceMax = 22,
 		GustThreshold = 15.5,
-		CalmMin = 8,
-		CalmMax = 24,
-		DurationMin = 4,
-		DurationMax = 13,
+		CalmMin = 45,
+		CalmMax = 95,
+		DurationMin = 5,
+		DurationMax = 12,
 	},
 	Ete = {
 		ForceMin = 3.5,
 		ForceMax = 17,
 		GustThreshold = 13,
-		CalmMin = 12,
-		CalmMax = 30,
-		DurationMin = 3.5,
-		DurationMax = 10,
+		CalmMin = 65,
+		CalmMax = 130,
+		DurationMin = 4,
+		DurationMax = 9,
 	},
 	Automne = {
 		ForceMin = 7,
 		ForceMax = 34,
 		GustThreshold = 19,
-		CalmMin = 5,
-		CalmMax = 16,
-		DurationMin = 5,
-		DurationMax = 16,
+		CalmMin = 25,
+		CalmMax = 55,
+		DurationMin = 6,
+		DurationMax = 14,
 	},
 	Hiver = {
 		ForceMin = 6,
 		ForceMax = 28,
 		GustThreshold = 17.5,
-		CalmMin = 7,
-		CalmMax = 20,
-		DurationMin = 4.5,
-		DurationMax = 14,
+		CalmMin = 35,
+		CalmMax = 75,
+		DurationMin = 5,
+		DurationMax = 12,
 	},
 }
 
@@ -666,7 +666,7 @@ local function startWindCycle(token: number, season: string)
 		local firstCycle = true
 		while seasonToken == token do
 			local calmDuration = if firstCycle
-				then rng:NextNumber(3.5, 9)
+				then rng:NextNumber(profile.CalmMin * 0.5, profile.CalmMax * 0.75)
 				else rng:NextNumber(profile.CalmMin, profile.CalmMax)
 			firstCycle = false
 
