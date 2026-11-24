@@ -23,7 +23,15 @@
 -- tous les segments d'abdomen) partagent le même pivot : appliquer la même rotation à toutes les
 -- parts de même (Anim, Side, Index) fait bouger le membre d'un bloc ; pour "Abdomen" et "Tail",
 -- appliquer la même rotation quel que soit Index (Index sert à déphaser si on veut onduler).
+-- Pattes (IK à 2 os) : LegCoxa + LegFemur portent LegSeg = "Upper" (tournent à la hanche), LegTibia +
+-- LegTarsus (+ bague, corbeille à pollen) portent LegSeg = "Lower" (tournent autour du genou, calculé
+-- par l'animateur). Le fémur porte IKKnee / IKToe (Vector3, genou et pointe du pied depuis la hanche,
+-- repère du root, échelle AnimScale). Toute nouvelle pièce de patte DOIT porter LegSeg.
+-- Pièces "Jaw" : mandibule + palpe ; pièces de tête non étiquetées (Head, Muzzle, Clypeus, Eye,
+-- EyeShine, Ocellus...) : suivent la tête par leur NOM (HEAD_NAMES de InsectAnimationController).
 -- Les parts non animables gardent C0 = offset complet et n'ont pas d'attribut Anim.
+-- Style "blocs" : les détails de surface (yeux, taches, reflets, stries) sont posés SUR les faces
+-- des blocs (voir headBox / shell / shellSpot), jamais d'après une surface d'ellipsoïde.
 -- Le conteneur porte "AnimScale" (number) : échelle du personnage à la construction. Après un
 -- ScaleTo, utiliser RestC0.Position * (character:GetScale() / AnimScale).
 
@@ -48,6 +56,7 @@ type Ctx = {
 	mutation: MutationInfo?,
 	partIndex: number,
 	pale: number, -- 0..1 : éclaircit tout (carapace molle juste après la mue)
+	shade: number, -- 0..1 : assombrit les prochaines parts (anneaux alternés, relief) sans casser les mutations
 	-- Étiquette d'animation posée sur les prochaines parts créées (voir setAnim).
 	animKind: string?,
 	animSide: number,
@@ -117,6 +126,9 @@ local function paint(ctx: Ctx, role: Role, raw: Color3?): (Color3, Enum.Material
 		end
 	end
 
+	if ctx.shade > 0 and role ~= "Eye" then
+		color = color:Lerp(Color3.new(0, 0, 0), ctx.shade)
+	end
 	if ctx.pale > 0 and role ~= "Eye" then
 		color = color:Lerp(WHITE, ctx.pale)
 	end
@@ -226,13 +238,57 @@ local function wing(ctx: Ctx, name: string, a: Vector3, b: Vector3, chord: numbe
 	if veins > 0 then
 		-- Un peu plus épaisses que le panneau pour dépasser des deux faces.
 		local right = cf.RightVector * (chord * ctx.s)
-		limb(ctx, "WingVein", a, a:Lerp(b, 0.92), thick + 0.025, "Dark")
+		-- Nervure costale : longe le BORD D'ATTAQUE (côté tête, -Z), comme sur une vraie aile.
+		-- Aile couchée le long du corps (repliée, en toit) : pas de bord "avant", on prend le bord externe.
+		local lead: Vector3
+		if math.abs(cf.RightVector.Z) < 0.3 then
+			lead = if cf.RightVector.X * a.X >= 0 then right else -right
+		else
+			lead = if cf.RightVector.Z <= 0 then right else -right
+		end
+		limb(ctx, "WingVein", a + lead * 0.3, a:Lerp(b, 0.95) + lead * 0.42, thick + 0.025, "Dark")
 		for k = 2, veins do
 			local offset = if k % 2 == 0 then 0.3 else -0.3
 			limb(ctx, "WingVein", a, a:Lerp(b, 0.7) + right * offset, thick + 0.02, "Dark")
 		end
 	end
 	return cf
+end
+
+-- Carapace bombée en style blocs : bloc de base + "couronne" plus étroite posée dessus (dôme à
+-- deux gradins). Coordonnées en unités insecte (y depuis le sol). `inward` décale la couronne vers
+-- la ligne médiane (Side de l'élytre ; 0 = centrée). Les détails de surface (taches, reflets) se
+-- posent ensuite SUR les faces via shellSpot/shellGloss, au lieu d'être enfouis dans le bloc.
+type Shell = { top: number, crownTop: number, cx: number, z: number, chx: number, chz: number }
+
+local function shell(ctx: Ctx, name: string, x: number, y: number, z: number, size: Vector3, role: Role, inward: number): Shell
+	local hx, hy, hz = size.X / 2, size.Y / 2, size.Z / 2
+	local ch = hy * 0.4
+	local cx = x - inward * hx * 0.15
+	local chx, chz = hx * 0.72, hz * 0.8
+	local base = ellipsoid(ctx, name, at(ctx, x, y, z), size, role)
+	-- La couronne s'enfonce de 0.02 dans la base : aucune fente visible entre les gradins.
+	local crown = ellipsoid(ctx, name .. "Crown", at(ctx, cx, y + hy + ch / 2 - 0.01, z), Vector3.new(chx * 2, ch + 0.02, chz * 2), role)
+	if ctx.plan.Metallic then
+		-- Carapace vernie.
+		base.Reflectance = 0.32
+		crown.Reflectance = 0.32
+	end
+	return { top = y + hy, crownTop = y + hy + ch, cx = cx, z = z, chx = chx, chz = chz }
+end
+
+-- Tache posée à la surface d'une carapace : sur la couronne, elle descend jusqu'au gradin
+-- inférieur (rien ne flotte au bord) ; sinon c'est une simple pastille sur le gradin bas.
+local function shellSpot(ctx: Ctx, sh: Shell, name: string, px: number, pz: number, w: number, role: Role): Part
+	local onCrown = math.abs(px - sh.cx) <= sh.chx and math.abs(pz - sh.z) <= sh.chz
+	local bottom = sh.top - 0.02
+	local topY = (if onCrown then sh.crownTop else sh.top) + 0.03
+	return ellipsoid(ctx, name, at(ctx, px, (topY + bottom) / 2, pz), Vector3.new(w, topY - bottom, w), role)
+end
+
+-- Reflet spéculaire (bande blanche translucide) sur le dessus de la couronne : effet "laqué".
+local function shellGloss(ctx: Ctx, sh: Shell, offset: number)
+	ellipsoid(ctx, "Gloss", at(ctx, sh.cx + offset * sh.chx * 0.35, sh.crownTop + 0.005, sh.z - sh.chz * 0.25), Vector3.new(0.07, 0.03, sh.chz * 0.9), "Shine", nil, 0.5)
 end
 
 -- ============================================================
@@ -312,53 +368,66 @@ end
 -- Constructeurs de parties
 -- ============================================================
 
+-- Boîte de la tête (unités insecte) : centre (y, z) + demi-tailles. Sert à poser yeux, ocelles et
+-- clypéus SUR les faces du bloc (et non enfouis dedans).
+type HeadBox = { y: number, z: number, hx: number, hy: number, hz: number }
+
+local function headBox(plan: BodyPlan, L: Layout): HeadBox
+	local r = L.headR
+	if plan.HeadShape == "Triangle" then
+		return { y = L.H + 0.12, z = L.headZ, hx = r * 1.25, hy = r * 0.65, hz = r * 0.65 }
+	elseif plan.HeadShape == "Wide" then
+		return { y = L.H + 0.05, z = L.headZ + r * 0.2, hx = r * 1.45, hy = r * 0.75, hz = r * 0.7 }
+	end
+	return { y = L.H + 0.05, z = L.headZ, hx = r, hy = r * 0.9, hz = r * 0.95 }
+end
+
 local function buildHead(ctx: Ctx, L: Layout)
 	local plan = ctx.plan
 	local r = L.headR
+	local hb = headBox(plan, L)
 	local role = (plan.HeadColor :: any) :: Role
+	ellipsoid(ctx, "Head", at(ctx, 0, hb.y, hb.z), Vector3.new(hb.hx * 2, hb.hy * 2, hb.hz * 2), role)
 	if plan.HeadShape == "Triangle" then
-		-- Mante : tête triangulaire (large en haut, museau pointu vers le bas).
-		ellipsoid(ctx, "Head", at(ctx, 0, L.H + 0.12, L.headZ), Vector3.new(r * 2.5, r * 1.3, r * 1.3), role)
-		ellipsoid(ctx, "Muzzle", at(ctx, 0, L.H + 0.12 - r * 0.6, L.headZ - r * 0.25), Vector3.new(r * 1.0, r * 1.3, r * 0.9), role)
+		-- Mante : triangle en gradins (front large -> joues -> museau pointu vers le bas).
+		ellipsoid(ctx, "Muzzle", at(ctx, 0, hb.y - hb.hy - r * 0.15, hb.z - r * 0.1), Vector3.new(r * 1.5, r * 0.4, r * 1.1), role)
+		ellipsoid(ctx, "Muzzle", at(ctx, 0, hb.y - hb.hy - r * 0.4, hb.z - r * 0.25), Vector3.new(r * 0.8, r * 0.4, r * 0.9), role)
 	elseif plan.HeadShape == "Wide" then
-		-- Cigale : tête très large et courte, 3 ocelles rouges sur le front.
-		local z = L.headZ + r * 0.2
-		ellipsoid(ctx, "Head", at(ctx, 0, L.H + 0.05, z), Vector3.new(r * 2.9, r * 1.5, r * 1.4), role)
+		-- Cigale : 3 ocelles rouges posés sur le front (dépassent du dessus du bloc).
 		for i = -1, 1 do
-			ellipsoid(ctx, "Ocellus", at(ctx, i * r * 0.28, L.H + 0.05 + r * 0.7, z - r * (0.3 - math.abs(i) * 0.15)), Vector3.one * 0.07, "Raw", nil, nil, Color3.fromRGB(200, 60, 40))
+			ellipsoid(ctx, "Ocellus", at(ctx, i * r * 0.28, hb.y + hb.hy + 0.01, hb.z - r * (0.3 - math.abs(i) * 0.15)), Vector3.one * 0.07, "Raw", nil, nil, Color3.fromRGB(200, 60, 40))
 		end
 	else
-		ellipsoid(ctx, "Head", at(ctx, 0, L.H + 0.05, L.headZ), Vector3.new(r * 2, r * 1.8, r * 1.9), role)
-		-- Clypéus : plaque de la "bouche" qui donne du relief au visage.
-		ellipsoid(ctx, "Clypeus", at(ctx, 0, L.H - r * 0.35, L.headZ - r * 0.62), Vector3.new(r * 1.1, r * 0.8, r * 0.7), "Secondary")
+		-- Clypéus : plaque de la "bouche" qui dépasse du bas de la face (relief du visage).
+		ellipsoid(ctx, "Clypeus", at(ctx, 0, hb.y - hb.hy * 0.45, hb.z - hb.hz - r * 0.1), Vector3.new(r * 1.1, r * 0.7, r * 0.4), "Secondary")
 	end
 end
 
 local function buildEyes(ctx: Ctx, L: Layout)
 	local plan = ctx.plan
-	local r = 0.13 * plan.EyeSize * plan.HeadSize
-	local eyeY = L.H + L.headR * 0.35
-	if plan.Shape == "Spider" then
-		-- Araignées : 2 gros yeux frontaux + 2 petits (l'araignée sauteuse a des yeux énormes).
+	local hb = headBox(plan, L)
+	if plan.EyeStyle == "Simple" then
+		-- Scorpion : 2 yeux médians sur le dessus du céphalothorax + 1 petit oeil latéral par côté.
 		for _, side in ipairs(SIDES) do
-			local main = at(ctx, side * L.headR * 0.45, eyeY, L.headZ - L.headR * 0.85)
-			ellipsoid(ctx, "EyeMain", main, Vector3.one * r * 1.5, "Eye")
-			ellipsoid(ctx, "EyeShine", main + Vector3.new(side * r * 0.2, r * 0.4, -r * 0.5) * ctx.s, Vector3.one * r * 0.45, "Shine")
-			ellipsoid(ctx, "EyeSide", at(ctx, side * L.headR * 0.85, eyeY + 0.08, L.headZ - L.headR * 0.5), Vector3.one * r * 0.8, "Eye")
+			ellipsoid(ctx, "Eye", at(ctx, side * 0.07, hb.y + hb.hy + 0.02, hb.z - hb.hz * 0.2), Vector3.one * 0.1, "Eye")
+			ellipsoid(ctx, "Eye", at(ctx, side * (hb.hx + 0.01), hb.y + hb.hy * 0.5, hb.z - hb.hz + 0.04), Vector3.one * 0.07, "Eye")
 		end
 		return
 	end
-	local x, y, z = L.headR * 0.72, eyeY, L.headZ - L.headR * 0.35
+	local re = 0.13 * plan.EyeSize * plan.HeadSize -- demi-hauteur de l'oeil
+	local ew = re * 1.3
+	local y, z = hb.y + hb.hy * 0.3, hb.z - hb.hz * 0.35
 	if plan.HeadShape == "Triangle" then
-		x, y, z = L.headR * 1.1, L.H + 0.12 + L.headR * 0.15, L.headZ - L.headR * 0.2
+		y, z = hb.y + hb.hy * 0.5, hb.z - hb.hz * 0.1 -- aux coins hauts du triangle
 	elseif plan.HeadShape == "Wide" then
-		x, y, z = L.headR * 1.35, L.H + 0.1, L.headZ + L.headR * 0.05
+		y, z = hb.y + hb.hy * 0.1, hb.z
 	end
+	-- Oeil composé bombé : dépasse de 65 % de sa largeur hors du flanc de la tête.
+	local x = hb.hx + ew * 0.15
 	for _, side in ipairs(SIDES) do
-		local center = at(ctx, side * x, y, z)
-		-- Oeil composé + reflet blanc.
-		ellipsoid(ctx, "Eye", center, Vector3.new(r * 1.6, r * 2, r * 2), "Eye")
-		ellipsoid(ctx, "EyeShine", center + Vector3.new(side * r * 0.3, r * 0.55, -r * 0.55) * ctx.s, Vector3.one * r * 0.55, "Shine")
+		ellipsoid(ctx, "Eye", at(ctx, side * x, y, z), Vector3.new(ew, re * 2, re * 2), "Eye")
+		-- Reflet blanc au coin haut-avant : visible de dessus (caméra) comme de face.
+		ellipsoid(ctx, "EyeShine", at(ctx, side * (x + ew * 0.1), y + re * 0.92, z - re * 0.92), Vector3.one * re * 0.45, "Shine")
 	end
 end
 
@@ -407,6 +476,8 @@ local function buildJaws(ctx: Ctx, L: Layout)
 			local tip = at(ctx, side * r * 0.08, mouthY - 0.05, frontZ - 0.32)
 			setAnim(ctx, "Jaw", side, 1, base)
 			limb(ctx, "Mandible", base, tip, 0.09, "Dark")
+			-- Palpe maxillaire : fin "doigt" qui pend sous la mandibule (bouge avec elle).
+			limb(ctx, "Palp", at(ctx, side * r * 0.45, mouthY - 0.05, frontZ + 0.1), at(ctx, side * r * 0.55, mouthY - r * 0.2 - 0.04, frontZ - 0.12), 0.04, "Secondary")
 		end
 	elseif plan.Jaws == "Stag" then
 		-- Lucane : immenses mandibules en bois de cerf (dent intérieure + pointe fourchue).
@@ -430,7 +501,8 @@ local function buildJaws(ctx: Ctx, L: Layout)
 		-- Chélicères + crochets ; raccourcis si la tête est basse (scolopendre) pour rester hors du sol.
 		local reach = math.min(1, mouthY / 0.42)
 		for _, side in ipairs(SIDES) do
-			local base = at(ctx, side * r * 0.3, mouthY + 0.05, frontZ + 0.1)
+			-- Base à fleur de la face avant (plus en retrait, les chélicères disparaissaient dans le bloc).
+			local base = at(ctx, side * r * 0.3, mouthY + 0.05, frontZ + 0.02)
 			local knuckle = base + Vector3.new(0, -0.2 * reach, -0.08) * s
 			setAnim(ctx, "Jaw", side, 1, base)
 			limb(ctx, "Chelicera", base, knuckle, 0.15, "Secondary")
@@ -474,6 +546,9 @@ local function buildLegPair(ctx: Ctx, L: Layout, index: number, pairCount: numbe
 	local span = 0.95 * plan.LegLength
 	local kneeUp = 0.35
 	local spreadZ = (index - (pairCount + 1) / 2) * 0.35 -- pattes avant vers l'avant, arrière vers l'arrière
+	if plan.Shape == "Spider" then
+		spreadZ *= 1.5 -- araignées : pattes en étoile (paires avant tendues devant, arrière derrière)
+	end
 	local d = if plan.Fuzzy then 0.12 else 0.09
 	local isHind = index == pairCount
 	local isFront = index == 1
@@ -742,26 +817,33 @@ local function buildWings(ctx: Ctx, L: Layout)
 		local cy = L.H + L.abdH * 0.18
 		local cz = L.abdZ - 0.03
 		local rx, ry, rz = L.abdW * 0.3, L.abdH * 0.45, L.abdLen * 0.54
+		local seamShell: Shell? = nil
 		for _, side in ipairs(SIDES) do
 			local cx = side * L.abdW * 0.24
 			setAnim(ctx, "Elytron", side, 1, at(ctx, side * L.abdW * 0.2, L.H + L.abdH * 0.35, frontZ))
-			local shell = ellipsoid(ctx, "Elytron", at(ctx, cx, cy, cz), Vector3.new(rx * 2, ry * 2, rz * 2), role)
-			if plan.Metallic then
-				shell.Reflectance = 0.32 -- carapace vernie
-			end
-			-- Strie : tranche fine épousant la coupe de l'élytre (dépasse à peine de sa surface).
-			ellipsoid(ctx, "ElytronStria", at(ctx, cx + side * rx * 0.33, cy, cz), Vector3.new(0.03, ry * 1.886 + 0.02, rz * 1.886 + 0.02), "Dark")
+			-- Demi-coque bombée (couronne décalée vers la suture) ; toutes ses pièces suivent l'élytre.
+			local sh = shell(ctx, "Elytron", cx, cy, cz, Vector3.new(rx * 2, ry * 2, rz * 2), role, side)
+			seamShell = sh
+			-- Strie : rainure sombre sur le gradin bas, le long du bord externe.
+			ellipsoid(ctx, "ElytronStria", at(ctx, cx + side * rx * 0.82, sh.top, cz), Vector3.new(0.04, 0.04, rz * 1.8), "Dark")
 			if plan.Spots then
 				for k = 1, 3 do
 					local dx = if k == 2 then -0.05 else 0.1
 					local dz = (k - 2) * 0.28
-					local h = math.sqrt(math.max(0.05, 1 - (dx * L.abdW / rx) ^ 2 - (dz * L.abdLen / rz) ^ 2))
-					ellipsoid(ctx, "Spot", at(ctx, cx + side * dx * L.abdW, cy + ry * h - 0.02, cz + dz * L.abdLen), Vector3.new(0.16, 0.1, 0.16), "Accent")
+					shellSpot(ctx, sh, "Spot", cx + side * dx * L.abdW, cz + dz * L.abdLen, 0.16, "Accent")
 				end
+			end
+			if plan.Metallic then
+				shellGloss(ctx, sh, side)
 			end
 		end
 		setAnim(ctx, "Abdomen", 0, 8, abdomenPivot(ctx, L))
-		ellipsoid(ctx, "ElytraSeam", at(ctx, 0, cy, cz), Vector3.new(0.035, ry * 1.2 + 0.03, rz * 1.2 + 0.03), "Dark")
+		if seamShell then
+			-- Suture entre les élytres : dépasse juste au-dessus des couronnes.
+			local bottom = seamShell.top - 0.04
+			local topY = seamShell.crownTop + 0.02
+			ellipsoid(ctx, "ElytraSeam", at(ctx, 0, (bottom + topY) / 2, cz), Vector3.new(0.035, topY - bottom, seamShell.chz * 2 + 0.02), "Dark")
+		end
 		if plan.ElytraRim then
 			-- Liseré clair qui dépasse sous le bord des élytres (dytique bordé, luciole).
 			ellipsoid(ctx, "ElytraRim", at(ctx, 0, L.H + L.abdH * 0.05, cz), Vector3.new(L.abdW * 1.2, L.abdH * 0.3, L.abdLen * 1.14), "Accent")
@@ -792,7 +874,8 @@ local function buildWingBuds(ctx: Ctx, L: Layout)
 		return
 	end
 	for _, side in ipairs(SIDES) do
-		ellipsoid(ctx, "WingBud", at(ctx, side * L.thoraxW * 0.3, L.H + 0.05 + L.thoraxH * 0.42, L.thoraxZ + L.thoraxLen * 0.35), Vector3.new(0.24, 0.08, 0.42), "Secondary")
+		-- Posés SUR l'arrière du thorax (dépassent du bloc, hors de la selle de la sauterelle).
+		ellipsoid(ctx, "WingBud", at(ctx, side * L.thoraxW * 0.3, L.H + 0.05 + L.thoraxH * 0.5 + 0.03, L.thoraxZ + L.thoraxLen * 0.5), Vector3.new(0.24, 0.08, 0.42), "Secondary")
 	end
 end
 
@@ -803,9 +886,9 @@ local function buildThorax(ctx: Ctx, L: Layout)
 	if plan.Pronotum == "Shield" then
 		-- Coléoptères : large bouclier bombé qui recouvre le thorax.
 		local width = math.max(W * 1.2, L.abdW * 0.92)
-		local shield = ellipsoid(ctx, "Pronotum", at(ctx, 0, L.H + 0.1, L.thoraxZ - L.thoraxLen * 0.05), Vector3.new(width, L.thoraxH * 0.95, L.thoraxLen * 1.05), (plan.PronotumColor :: any) :: Role)
+		local sh = shell(ctx, "Pronotum", 0, L.H + 0.1, L.thoraxZ - L.thoraxLen * 0.05, Vector3.new(width, L.thoraxH * 0.95, L.thoraxLen * 1.05), (plan.PronotumColor :: any) :: Role, 0)
 		if plan.Metallic then
-			shield.Reflectance = 0.32
+			shellGloss(ctx, sh, -1)
 		end
 		if plan.ElytraRim then
 			ellipsoid(ctx, "PronotumRim", at(ctx, 0, L.H + 0.03, L.thoraxZ - L.thoraxLen * 0.05), Vector3.new(width * 1.08, L.thoraxH * 0.28, L.thoraxLen * 1.1), "Accent")
@@ -856,9 +939,12 @@ local function buildAbdomen(ctx: Ctx, L: Layout, covered: boolean)
 		if (alternate and i % 2 == 0) or (rearBand and i == count - 1) then
 			role = "Accent"
 		end
+		-- Tergites unis : un anneau sur deux légèrement plus sombre -> segmentation lisible.
+		ctx.shade = if role ~= "Accent" and i % 2 == 0 then 0.16 else 0
 		setAnim(ctx, "Abdomen", 0, i, pivot)
 		ellipsoid(ctx, "AbdomenSegment", at(ctx, 0, L.H - (1 - f) * L.abdH * 0.15, frontZ + (i - 0.5) * step), Vector3.new(L.abdW * f, L.abdH * f, step * 1.45), role)
 	end
+	ctx.shade = 0
 	setAnim(ctx, nil)
 end
 
@@ -949,28 +1035,31 @@ local function buildSpiderBody(ctx: Ctx, L: Layout)
 	ellipsoid(ctx, "Pedicel", at(ctx, 0, L.H + 0.08, (cephBack + abdFront) / 2), Vector3.new(0.3, 0.3, math.max(0.3, abdFront - cephBack + 0.3)), "Primary")
 
 	setAnim(ctx, "Abdomen", 0, 1, abdomenPivot(ctx, LA))
-	local abdomen = ellipsoid(ctx, "Abdomen", at(ctx, 0, abdY, L.abdZ), Vector3.new(rx * 2, ry * 2, rz * 2), "Secondary")
+	-- Abdomen bombé (couronne) ; veuve noire : laqué avec reflet.
+	local sh = shell(ctx, "Abdomen", 0, abdY, L.abdZ, Vector3.new(rx * 2, ry * 2, rz * 2), "Secondary", 0)
 	if plan.Metallic then
-		abdomen.Reflectance = 0.3 -- veuve noire : abdomen laqué
+		shellGloss(ctx, sh, -1)
 	end
 	if plan.Spots then
-		-- Veuve noire : sablier rouge (deux losanges pointe contre pointe).
+		-- Veuve noire : sablier rouge (deux losanges pointe contre pointe) sur le dôme.
 		for _, dz in ipairs({ -0.13, 0.13 }) do
-			addPart(ctx, "Hourglass", Vector3.new(0.2, 0.06, 0.2) * ctx.s, CFrame.new(at(ctx, 0, abdY + ry - 0.015, L.abdZ + dz)) * CFrame.Angles(0, math.rad(45), 0), "Accent", "Block")
+			addPart(ctx, "Hourglass", Vector3.new(0.2, 0.06, 0.2) * ctx.s, CFrame.new(at(ctx, 0, sh.crownTop + 0.01, L.abdZ + dz)) * CFrame.Angles(0, math.rad(45), 0), "Accent", "Block")
 		end
 	end
 	if plan.Stripes then
-		-- Araignée sauteuse : bandes claires (tranches épousant la coupe de l'abdomen).
+		-- Araignée sauteuse : bandes claires qui ceinturent l'abdomen (couronne comprise).
+		local bottom = abdY - ry - 0.02
+		local topY = sh.crownTop + 0.02
 		for _, t in ipairs({ -0.4, 0.3 }) do
-			local f = math.sqrt(1 - t * t)
-			ellipsoid(ctx, "Band", at(ctx, 0, abdY, L.abdZ + t * rz), Vector3.new(rx * 2 * f + 0.03, ry * 2 * f + 0.03, 0.1), "Accent")
+			ellipsoid(ctx, "Band", at(ctx, 0, (bottom + topY) / 2, L.abdZ + t * rz), Vector3.new(rx * 2 + 0.04, topY - bottom, 0.1), "Accent")
 		end
 	end
 	if plan.Fuzzy then
+		-- Touffes de poils à moitié sorties du dôme.
 		for i = 1, 4 do
 			local side = if i % 2 == 0 then 1 else -1
-			local t = if i <= 2 then 0.15 else 0.55
-			ellipsoid(ctx, "HairTuft", at(ctx, side * rx * 0.4, abdY + ry * 0.7, L.abdZ + t * rz), Vector3.new(0.28, 0.28, 0.34), "Secondary")
+			local t = if i <= 2 then -0.35 else 0.45
+			ellipsoid(ctx, "HairTuft", at(ctx, side * sh.chx * 0.6, sh.crownTop, L.abdZ + t * sh.chz), Vector3.new(0.28, 0.2, 0.34), "Secondary")
 		end
 	end
 	setAnim(ctx, nil)
@@ -979,8 +1068,23 @@ local function buildSpiderBody(ctx: Ctx, L: Layout)
 		local z = cephZ - 0.35 + (i - 1) * 0.23
 		buildLegPair(ctx, L, i, 4, z, L.H, 0.3)
 	end
-	buildEyes(ctx, withHead(L, L.H, cephZ - 0.1, 0.42 * hs))
-	buildJaws(ctx, withHead(L, L.H, cephZ, 0.5 * hs))
+
+	-- Yeux d'araignée posés sur la face avant de la tête : paire médiane (énorme chez la sauteuse)
+	-- + paire latérale aux coins hauts + paire postérieure sur le dessus.
+	local headY, headFront = L.H + 0.14, cephZ - 0.28 * hs - 0.25 * hs
+	local hx, hy = 0.31 * hs, 0.25 * hs
+	local m = 0.13 * plan.EyeSize * hs * 1.3
+	local m2 = m * 0.5
+	for _, side in ipairs(SIDES) do
+		local mainY = headY - 0.05 * hs
+		local mainZ = headFront - m * 0.1
+		ellipsoid(ctx, "EyeMain", at(ctx, side * m * 0.5, mainY, mainZ), Vector3.one * m, "Eye")
+		ellipsoid(ctx, "EyeShine", at(ctx, side * m * 0.6, mainY + m * 0.42, mainZ - m * 0.42), Vector3.one * m * 0.3, "Shine")
+		ellipsoid(ctx, "EyeSide", at(ctx, side * (hx - m2 * 0.45), headY + hy - m2 * 0.45, headFront - m2 * 0.1), Vector3.one * m2, "Eye")
+		ellipsoid(ctx, "EyeSide", at(ctx, side * hx * 0.7, headY + hy + m2 * 0.2, headFront + 0.2 * hs), Vector3.one * m2 * 0.8, "Eye")
+	end
+	-- Tête "virtuelle" reculée : bases des chélicères à fleur de l'avant du céphalothorax.
+	buildJaws(ctx, withHead(L, L.H, cephZ - 0.05 * hs, 0.5 * hs))
 	buildTail(ctx, LA)
 	buildGlowAndBubble(ctx, LA)
 end
@@ -993,31 +1097,38 @@ local function buildDomeBody(ctx: Ctx, L: Layout, withWings: boolean)
 	ellipsoid(ctx, "Head", at(ctx, 0, L.H - 0.05, domeZ - 0.85), Vector3.new(0.5, 0.35, 0.4), "Dark")
 	ellipsoid(ctx, "Pronotum", at(ctx, 0, L.H + 0.02, domeZ - 0.62), Vector3.new(0.75, 0.4, 0.4), "Dark")
 	for _, side in ipairs(SIDES) do
-		ellipsoid(ctx, "PronotumSpot", at(ctx, side * 0.24, L.H + 0.12, domeZ - 0.62), Vector3.new(0.18, 0.12, 0.16), "Raw", nil, nil, WHITE)
+		-- Taches blanches aux coins avant du pronotum, posées sur sa face supérieure.
+		ellipsoid(ctx, "PronotumSpot", at(ctx, side * 0.24, L.H + 0.24, domeZ - 0.68), Vector3.new(0.18, 0.08, 0.16), "Raw", nil, nil, WHITE)
 	end
 	ellipsoid(ctx, "Abdomen", at(ctx, 0, L.H - 0.08, domeZ), Vector3.new(1.15, 0.5, 1.2), "Dark")
 
 	local shellRole: Role = if withWings then "Primary" else "Larva"
 	local rx, ry, rz = 0.45, 0.475, 0.675
 	local spots = { { 0.42, -0.22 }, { 0.2, 0.08 }, { 0.38, 0.38 } }
+	local seamShell: Shell? = nil
 	for _, side in ipairs(SIDES) do
 		setAnim(ctx, "Elytron", side, 1, at(ctx, side * 0.15, baseY + 0.3, domeZ - 0.6))
-		local shell = ellipsoid(ctx, "Elytron", at(ctx, side * 0.2, baseY, domeZ), Vector3.new(rx * 2, ry * 2, rz * 2), shellRole)
-		if plan.Metallic then
-			shell.Reflectance = 0.32
-		end
+		-- Dôme en gradins : bloc + couronne décalée vers la suture.
+		local sh = shell(ctx, "Elytron", side * 0.2, baseY, domeZ, Vector3.new(rx * 2, ry * 2, rz * 2), shellRole, side)
+		seamShell = sh
 		if plan.Spots then
 			for _, offset in ipairs(spots) do
-				local h = math.sqrt(math.max(0.05, 1 - ((offset[1] - 0.2) / rx) ^ 2 - (offset[2] / rz) ^ 2))
-				ellipsoid(ctx, "Spot", at(ctx, side * offset[1], baseY + ry * h - 0.02, domeZ + offset[2]), Vector3.new(0.2, 0.12, 0.2), "Accent")
+				shellSpot(ctx, sh, "Spot", side * offset[1], domeZ + offset[2], 0.2, "Accent")
 			end
+		end
+		if plan.Metallic then
+			shellGloss(ctx, sh, side)
 		end
 	end
 	setAnim(ctx, nil)
-	-- Suture entre les élytres + 7e point "scutellaire" à cheval sur la suture, à l'avant.
-	ellipsoid(ctx, "Seam", at(ctx, 0, baseY, domeZ), Vector3.new(0.035, ry * 1.792 + 0.02, rz * 1.792 + 0.02), "Dark")
-	if plan.Spots then
-		ellipsoid(ctx, "Spot", at(ctx, 0, baseY + 0.23, domeZ - 0.5), Vector3.new(0.24, 0.12, 0.2), "Accent")
+	if seamShell then
+		-- Suture entre les élytres + 7e point "scutellaire" à cheval sur la suture, à l'avant.
+		local bottom = seamShell.top - 0.04
+		local topY = seamShell.crownTop + 0.02
+		ellipsoid(ctx, "Seam", at(ctx, 0, (bottom + topY) / 2, domeZ), Vector3.new(0.035, topY - bottom, seamShell.chz * 2 + 0.02), "Dark")
+		if plan.Spots then
+			shellSpot(ctx, seamShell, "Spot", 0, domeZ - 0.5, 0.24, "Accent")
+		end
 	end
 
 	for i = 1, 3 do
@@ -1025,7 +1136,7 @@ local function buildDomeBody(ctx: Ctx, L: Layout, withWings: boolean)
 	end
 	buildAntennae(ctx, withHead(L, L.H - 0.15, domeZ - 0.85, 0.25))
 	for _, side in ipairs(SIDES) do
-		ellipsoid(ctx, "Eye", at(ctx, side * 0.17, L.H, domeZ - 1.0), Vector3.one * 0.1, "Shine")
+		ellipsoid(ctx, "Eye", at(ctx, side * 0.19, L.H, domeZ - 1.03), Vector3.one * 0.1, "Shine")
 	end
 end
 
@@ -1037,7 +1148,8 @@ local function buildCentipedeBody(ctx: Ctx, L: Layout)
 	local startZ = -totalLength / 2
 	ellipsoid(ctx, "Head", at(ctx, 0, 0.3, startZ - 0.2), Vector3.new(0.6, 0.3, 0.45), "Primary")
 	for _, side in ipairs(SIDES) do
-		ellipsoid(ctx, "Eye", at(ctx, side * 0.24, 0.36, startZ - 0.3), Vector3.one * 0.09, "Eye")
+		-- Ocelles sur les coins avant de la plaque céphalique (dépassent du bloc).
+		ellipsoid(ctx, "Eye", at(ctx, side * 0.29, 0.42, startZ - 0.33), Vector3.one * 0.09, "Eye")
 	end
 	buildAntennae(ctx, withHead(L, 0.15, startZ - 0.2, 0.25))
 	buildJaws(ctx, withHead(L, 0.3, startZ - 0.15, 0.3)) -- forcipules venimeuses
@@ -1098,7 +1210,7 @@ local function buildStickBody(ctx: Ctx, L: Layout)
 	end
 	buildAntennae(ctx, withHead(L, L.H - 0.1, frontZ, 0.15))
 	for _, side in ipairs(SIDES) do
-		ellipsoid(ctx, "Eye", at(ctx, side * 0.11, L.H + 0.04, frontZ - 0.05), Vector3.one * 0.08, "Eye")
+		ellipsoid(ctx, "Eye", at(ctx, side * 0.14, L.H + 0.04, frontZ - 0.05), Vector3.one * 0.08, "Eye")
 	end
 	if plan.Tail ~= "None" then
 		buildTail(ctx, L)
@@ -1159,8 +1271,17 @@ local function buildEgg(ctx: Ctx)
 	end
 	local color = plan.LarvaColor:Lerp(WHITE, 0.55)
 	local center = at(ctx, 0, 0.55, 0)
-	ellipsoid(ctx, "Egg", center, Vector3.new(0.75, 1.05, 0.75), "Raw", nil, nil, color)
+	-- Coquille translucide : on devine l'embryon enroulé et ses deux points oculaires.
+	ellipsoid(ctx, "Egg", center, Vector3.new(0.75, 1.05, 0.75), "Raw", nil, 0.3, color)
 	ellipsoid(ctx, "EggShine", at(ctx, 0.15, 0.8, -0.2), Vector3.new(0.15, 0.25, 0.1), "Shine", nil, 0.4)
+	ctx.shade = 0.2
+	ellipsoid(ctx, "Embryo", at(ctx, 0, 0.74, -0.04), Vector3.new(0.3, 0.28, 0.3), "Larva")
+	ellipsoid(ctx, "Embryo", at(ctx, 0.02, 0.54, 0.08), Vector3.new(0.34, 0.3, 0.32), "Larva")
+	ellipsoid(ctx, "Embryo", at(ctx, 0, 0.36, -0.02), Vector3.new(0.26, 0.24, 0.26), "Larva")
+	ctx.shade = 0
+	for _, side in ipairs(SIDES) do
+		ellipsoid(ctx, "EmbryoEye", at(ctx, side * 0.07, 0.78, -0.17), Vector3.one * 0.07, "Dark")
+	end
 	if plan.Larva == "AquaticNymph" or plan.Larva == "Wiggler" or plan.Larva == "CaseLarva" then
 		-- Ponte aquatique : oeuf pris dans une gangue de gelée.
 		local jelly = ellipsoid(ctx, "EggJelly", center, Vector3.new(1.15, 1.3, 1.15), "Raw", nil, 0.7, Color3.fromRGB(200, 230, 240))
@@ -1246,6 +1367,11 @@ local function buildGrub(ctx: Ctx)
 		local size = 0.4 + math.sin(i / (count + 1) * math.pi) * 0.16
 		local center = at(ctx, -math.cos(angle) * radius, 0.05 + size * 0.45, math.sin(angle) * radius)
 		segment(ctx, "GrubSegment", i, center, Vector3.new(size, size * 0.9, 0.36), "Larva", CFrame.Angles(0, angle, 0))
+		if i % 2 == 0 then
+			-- Stigmate respiratoire : point sombre sur la face externe du "C" (suit son anneau).
+			local out = radius + size * 0.5
+			ellipsoid(ctx, "Spiracle", at(ctx, -math.cos(angle) * out, 0.05 + size * 0.55, math.sin(angle) * out), Vector3.one * 0.07, "Dark")
+		end
 		if i <= 3 then
 			-- Patte tournée vers l'intérieur du "C".
 			limb(ctx, "GrubLeg", center, at(ctx, -math.cos(angle) * radius * 0.4, 0.03, math.sin(angle) * radius * 0.4), 0.05, "Raw", Color3.fromRGB(150, 100, 50))
@@ -1280,7 +1406,7 @@ local function buildCrawler(ctx: Ctx)
 		if i == 2 or i == 5 then
 			-- Taches vives sur les flancs (orange chez la coccinelle).
 			for _, side in ipairs(SIDES) do
-				ellipsoid(ctx, "LarvaSpot", at(ctx, side * width * 0.36, 0.34, z), Vector3.new(0.14, 0.1, 0.14), "Primary")
+				ellipsoid(ctx, "LarvaSpot", at(ctx, side * width * 0.36, 0.38, z), Vector3.new(0.14, 0.08, 0.14), "Primary")
 			end
 		end
 	end
@@ -1698,6 +1824,7 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 		mutation = if mutationId then InsectBodyPlans.Mutations[mutationId] else nil,
 		partIndex = 0,
 		pale = 0,
+		shade = 0,
 		animKind = nil,
 		animSide = 0,
 		animIndex = 0,
@@ -1724,6 +1851,10 @@ function InsectVisualService.ApplyVisual(character: Model, speciesId: string, st
 	else
 		ctx.s = character:GetScale() * plan.Length * 1.5
 		buildLarva(ctx, false)
+	end
+	-- Budget mobile (~90 parts par corps) : signale toute dérive d'un constructeur.
+	if ctx.partIndex > 90 then
+		warn(string.format("InsectVisualService: %s/%s = %d parts (budget ~90)", speciesId, stage, ctx.partIndex))
 	end
 	-- Parenté en une fois : un seul recalcul d'assemblage et une seule réplication du corps complet.
 	fitRootToBody(character, root, container, ctx.groundY)

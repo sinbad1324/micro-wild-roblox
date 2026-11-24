@@ -20,6 +20,7 @@ local NestPieces = require(ReplicatedStorage.shared.NestPieces)
 local EvolutionTraits = require(ReplicatedStorage.shared.EvolutionTraits)
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local UiTheme = require(script.Parent.UiTheme)
+local ClientState = require(script.Parent.Parent.state.ClientState)
 
 local AbilityHotbarView = {}
 
@@ -64,6 +65,8 @@ local DOCK_HEIGHT = 142
 local COOLDOWN_FULL = UDim2.fromScale(1, 1)
 local COOLDOWN_EMPTY = UDim2.fromScale(1, 0)
 local PRESS_INFO = TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+local DOCK_SHOWN = UDim2.new(0.5, 0, 1, -12)
+local DOCK_HIDDEN = UDim2.new(0.5, 0, 1, DOCK_HEIGHT + 40)
 
 local mounted = false
 
@@ -79,6 +82,7 @@ type SlotCard = {
 	KeyBadge: TextLabel,
 	Title: TextLabel,
 	Cooldown: Frame,
+	SweepEdge: Frame,
 	Timer: TextLabel,
 	Press: Tween,
 	CooldownStart: number,
@@ -105,7 +109,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 	local dock = Instance.new("Frame")
 	dock.Name = "Dock"
 	dock.AnchorPoint = Vector2.new(0.5, 1)
-	dock.Position = UDim2.new(0.5, 0, 1, -12)
+	dock.Position = DOCK_SHOWN
 	dock.Size = UDim2.fromOffset(DOCK_WIDTH, DOCK_HEIGHT)
 	dock.BackgroundTransparency = 1
 	dock.Parent = screenGui
@@ -173,6 +177,16 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 		cooldown.Parent = frame
 		UiTheme.Corner(cooldown, 10)
 
+		-- Lisière lumineuse qui descend avec le voile : la recharge se lit d'un coup d'œil.
+		local sweepEdge = Instance.new("Frame")
+		sweepEdge.Name = "SweepEdge"
+		sweepEdge.Size = UDim2.new(1, 0, 0, 2)
+		sweepEdge.BackgroundColor3 = Colors.Warning
+		sweepEdge.BackgroundTransparency = 0.15
+		sweepEdge.BorderSizePixel = 0
+		sweepEdge.Visible = false
+		sweepEdge.Parent = cooldown
+
 		-- Badge de touche stylisé en pilule
 		local keyBadge = UiTheme.Label(frame, Enum.Font.GothamBlack, 12, Colors.AccentDark)
 		keyBadge.Name = "Key"
@@ -207,6 +221,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 			KeyBadge = keyBadge,
 			Title = title,
 			Cooldown = cooldown,
+			SweepEdge = sweepEdge,
 			Timer = timer,
 			Press = TweenService:Create(scale, PRESS_INFO, { Scale = 1 }),
 			CooldownStart = 0,
@@ -281,6 +296,35 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 	stats.Size = UDim2.fromScale(1, 1)
 	stats.TextXAlignment = Enum.TextXAlignment.Right
 	stats.TextYAlignment = Enum.TextYAlignment.Center
+
+	-- ---------- Effacement derrière le menu de spawn ----------
+	local menuToken = 0
+	local function applyMenuState(inMenu: boolean)
+		menuToken += 1
+		local myToken = menuToken
+		if inMenu then
+			UiTheme.Tween(statsCard, 0.2, { BackgroundTransparency = 1 })
+			stats.Visible = false
+			UiTheme.Tween(dock, 0.26, { Position = DOCK_HIDDEN }, Enum.EasingStyle.Quad, Enum.EasingDirection.In).Completed:Once(function()
+				if menuToken == myToken then
+					dock.Visible = false
+					statsCard.Visible = false
+				end
+			end)
+		else
+			dock.Visible = true
+			statsCard.Visible = true
+			stats.Visible = true
+			UiTheme.Tween(statsCard, 0.3, { BackgroundTransparency = 0.12 })
+			UiTheme.Tween(dock, 0.42, { Position = DOCK_SHOWN }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		end
+	end
+	ClientState.MenuChanged.Event:Connect(applyMenuState)
+	if ClientState.IsInMenu then
+		dock.Position = DOCK_HIDDEN
+		dock.Visible = false
+		statsCard.Visible = false
+	end
 
 	-- ---------- Rafraîchissements ----------
 	local function abilityForSlot(speciesId: string, slot: string): string?
@@ -494,6 +538,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 						card.CooldownEnd = 0
 						card.Timer.Text = ""
 						card.Cooldown.Size = COOLDOWN_EMPTY
+						card.SweepEdge.Visible = false
 						card.Stroke.Color = Colors.AccentBright
 						if card.Enabled then
 							card.Stroke.Transparency = 0
@@ -518,6 +563,7 @@ function AbilityHotbarView.Mount(abilityCooldownSignal: BindableEvent?)
 				card.CooldownStart = os.clock()
 				card.CooldownEnd = card.CooldownStart + seconds
 				card.Cooldown.Size = COOLDOWN_FULL
+				card.SweepEdge.Visible = true
 				UiTheme.Tween(card.Cooldown, seconds, { Size = COOLDOWN_EMPTY }, Enum.EasingStyle.Linear)
 				if not ticking then
 					task.spawn(tickCooldowns)

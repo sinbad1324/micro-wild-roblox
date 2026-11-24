@@ -32,6 +32,7 @@ local PROMPT_DISTANCE = 9
 local SERVER_DISTANCE_TOLERANCE = 8 -- marge pour la latence / l'échelle du personnage
 local DRINK_VALUE = 35
 local CARCASS_BITE = 20
+local BITE_XP = 2
 local NEST_TICK_SECONDS = 2
 local NEST_FEED_COST = 10
 local AI_NEST_TICK_SECONDS = 8
@@ -118,8 +119,10 @@ local function feed(player: Player, value: number)
 	local restored = newHunger - hunger
 	if restored > 0 then
 		ProgressionService.AddEvolutionPoints(player, math.ceil(restored / 5))
-		ProgressionService.AddExperience(player, restored * 0.6, "Manger") -- manger fait grandir
 	end
+	-- Manger fait grandir : petit fixe par bouchée (une larve nourrie au nid a souvent le ventre
+	-- presque plein) + la faim comblée. Le farm reste borné par les usages/la repousse des noeuds.
+	ProgressionService.AddExperience(player, BITE_XP + restored * 0.6, "Manger")
 end
 
 local function hydrate(player: Player, value: number)

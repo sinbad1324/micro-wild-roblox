@@ -18,6 +18,7 @@ export type HeadShape = "Round" | "Triangle" | "Wide"
 export type Pronotum = "None" | "Shield" | "Saddle"
 export type StripeStyle = "Alternate" | "RearBand"
 export type LegColor = "Body" | "Dark" | "Tipped" | "Thighs" | "Striped"
+export type EyeStyle = "Compound" | "Simple" -- "Simple" = ocelles d'arachnide (scorpion) au lieu d'yeux composés
 
 export type BodyPlan = {
 	Shape: BodyShape,
@@ -30,6 +31,7 @@ export type BodyPlan = {
 	HeadShape: HeadShape, -- "Triangle" = mante, "Wide" = cigale (yeux aux coins)
 	HeadColor: ColorRole, -- termite soldat (tête orange), frelon (face orange)
 	EyeSize: number,
+	EyeStyle: EyeStyle,
 	Pronotum: Pronotum, -- "Shield" = bouclier des coléoptères, "Saddle" = selle de la sauterelle
 	PronotumColor: ColorRole,
 	ThoraxLength: number,
@@ -87,6 +89,7 @@ local DEFAULTS: BodyPlan = {
 	HeadShape = "Round",
 	HeadColor = "Primary",
 	EyeSize = 1,
+	EyeStyle = "Compound",
 	Pronotum = "None",
 	PronotumColor = "Primary",
 	ThoraxLength = 1,
@@ -173,7 +176,7 @@ local Plans: { [string]: BodyPlan } = {
 	ScorpionEmpereur = plan({
 		Shape = "Flat", Primary = rgb(15, 20, 30), Secondary = rgb(25, 30, 40), Length = 1.3, Legs = 8,
 		HeadSize = 0.9, ThoraxLength = 1.2, AbdomenLength = 1.0, Antennae = "None", Jaws = "Mandibles",
-		FrontLimbs = "Pincers", Tail = "ScorpionTail", Metallic = true, Larva = "Nymph",
+		FrontLimbs = "Pincers", Tail = "ScorpionTail", Metallic = true, EyeStyle = "Simple", Larva = "Nymph",
 		LarvaColor = rgb(220, 215, 205),
 	}),
 	Sauterelle = plan({
@@ -207,14 +210,16 @@ local Plans: { [string]: BodyPlan } = {
 	-- B. VOLANTS
 	-- ==========================================
 	AbeilleMellifere = plan({
-		Primary = rgb(225, 165, 30), Secondary = rgb(60, 40, 20), Accent = rgb(25, 20, 15), Length = 0.85,
-		HeadSize = 0.9, AbdomenLength = 1.1, AbdomenWidth = 1.1, Waist = true, Antennae = "Elbowed",
+		-- Trapue et ronde (vs frelon long et guêpe émeraude fine).
+		Primary = rgb(225, 165, 30), Secondary = rgb(60, 40, 20), Accent = rgb(25, 20, 15), Length = 0.8,
+		HeadSize = 0.9, EyeSize = 1.15, AbdomenLength = 0.95, AbdomenWidth = 1.25, LegLength = 0.9, Waist = true, Antennae = "Elbowed",
 		Jaws = "Proboscis", ProboscisLength = 0.7, Tail = "Stinger", Wings = "Membrane", Stripes = true,
 		Fuzzy = true, LegColor = "Dark", PollenBaskets = true, Larva = "Grub",
 	}),
 	FrelonAsiatique = plan({
-		Primary = rgb(30, 25, 20), Secondary = rgb(25, 20, 18), Accent = rgb(230, 140, 30), Length = 1.05,
-		HeadSize = 1.0, AbdomenLength = 1.2, Waist = true, Antennae = "Elbowed", Jaws = "Mandibles",
+		-- Grand et allongé, grosse tête orange.
+		Primary = rgb(30, 25, 20), Secondary = rgb(25, 20, 18), Accent = rgb(230, 140, 30), Length = 1.2,
+		HeadSize = 1.1, AbdomenLength = 1.35, LegLength = 1.1, Waist = true, Antennae = "Elbowed", Jaws = "Mandibles",
 		Tail = "Stinger", Wings = "Membrane", WingColor = rgb(180, 150, 110), Stripes = true,
 		StripeStyle = "RearBand", HeadColor = "Accent", LegColor = "Tipped", Larva = "Grub",
 	}),
@@ -262,8 +267,9 @@ local Plans: { [string]: BodyPlan } = {
 		Wings = "Tent", WingColor = rgb(200, 225, 200), Larva = "Nymph", LarvaColor = rgb(200, 170, 120),
 	}),
 	GuepeEmeraude = plan({
-		Primary = rgb(20, 150, 110), Secondary = rgb(25, 110, 140), Accent = rgb(200, 30, 40), Length = 0.85,
-		HeadSize = 0.9, AbdomenLength = 1.25, AbdomenWidth = 0.8, Waist = true, Antennae = "Long",
+		-- Fine, longues pattes, grosse tête aux yeux saillants.
+		Primary = rgb(20, 150, 110), Secondary = rgb(25, 110, 140), Accent = rgb(200, 30, 40), Length = 0.8,
+		HeadSize = 1.0, EyeSize = 1.2, AbdomenLength = 1.1, AbdomenWidth = 0.7, LegLength = 1.25, Waist = true, Antennae = "Long",
 		Jaws = "Mandibles", Tail = "Stinger", Wings = "Membrane", WingColor = rgb(170, 200, 210),
 		Metallic = true, LegColor = "Thighs", LegTint = rgb(200, 30, 40), Larva = "Grub",
 	}),
@@ -284,8 +290,9 @@ local Plans: { [string]: BodyPlan } = {
 		LarvaColor = rgb(120, 110, 70),
 	}),
 	Nepe = plan({
-		Shape = "Flat", Primary = rgb(110, 80, 50), Secondary = rgb(90, 65, 40), Length = 1.0, HeadSize = 0.6,
-		AbdomenWidth = 0.9, AbdomenLength = 1.25, Antennae = "None", Jaws = "Rostrum",
+		-- Feuille morte étroite et grise (vs punaise d'eau géante large et brun chaud).
+		Shape = "Flat", Primary = rgb(95, 85, 65), Secondary = rgb(75, 65, 50), Length = 1.0, HeadSize = 0.6,
+		ThoraxLength = 0.85, AbdomenWidth = 0.75, AbdomenLength = 1.3, LegLength = 0.9, Antennae = "None", Jaws = "Rostrum",
 		FrontLimbs = "WaterGrabbers", Tail = "Siphon", TailLength = 1.4, Wings = "Folded",
 		WingColor = rgb(120, 90, 60), Larva = "Nymph",
 		LarvaColor = rgb(130, 100, 70),
@@ -315,7 +322,7 @@ local Plans: { [string]: BodyPlan } = {
 	}),
 	PunaiseEauGeante = plan({
 		Shape = "Flat", Primary = rgb(105, 75, 45), Secondary = rgb(80, 55, 35), Accent = rgb(60, 40, 25),
-		Length = 1.35, HeadSize = 0.7, AbdomenWidth = 1.35, AbdomenLength = 1.3, Antennae = "None",
+		Length = 1.45, HeadSize = 0.75, EyeSize = 1.3, AbdomenWidth = 1.5, AbdomenLength = 1.3, Antennae = "None",
 		Jaws = "Rostrum", FrontLimbs = "WaterGrabbers", LegStyle = "Oars", Tail = "Siphon", TailLength = 0.35,
 		Wings = "Folded",
 		WingColor = rgb(120, 90, 55), Larva = "Nymph", LarvaColor = rgb(160, 150, 100),

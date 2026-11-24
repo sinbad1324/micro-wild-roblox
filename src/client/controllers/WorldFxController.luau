@@ -11,6 +11,7 @@
 
 local CollectionService = game:GetService("CollectionService")
 local Lighting = game:GetService("Lighting")
+local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
@@ -1139,6 +1140,32 @@ local function updateFalls(cameraPosition: Vector3)
 end
 
 -- ============================================================
+-- Laisse des larves : l'écran se ternit et rougit à mesure que la larve tire (attribut joueur
+-- LeashStrain 0..1, GrowthAndNestService, écrit à 2 Hz) : tween local pour un fondu continu.
+-- ============================================================
+
+local LEASH_TWEEN_INFO = TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out)
+local LEASH_TINT = Color3.fromRGB(255, 205, 190)
+
+local function watchLeash()
+	local player = Players.LocalPlayer
+	local grading = Instance.new("ColorCorrectionEffect")
+	grading.Name = "LeashGrading"
+	grading.Parent = Lighting
+	local function refresh()
+		local raw = player:GetAttribute("LeashStrain")
+		local strain = if type(raw) == "number" then math.clamp(raw, 0, 1) else 0
+		TweenService:Create(grading, LEASH_TWEEN_INFO, {
+			Saturation = -0.55 * strain,
+			Contrast = 0.12 * strain,
+			TintColor = Color3.new(1, 1, 1):Lerp(LEASH_TINT, strain),
+		}):Play()
+	end
+	player:GetAttributeChangedSignal("LeashStrain"):Connect(refresh)
+	refresh()
+end
+
+-- ============================================================
 -- Démarrage
 -- ============================================================
 
@@ -1180,6 +1207,7 @@ function WorldFxController.Start()
 		onFallingAdded(instance)
 	end
 	CollectionService:GetInstanceAddedSignal("FxFalling"):Connect(onFallingAdded)
+	watchLeash()
 
 	-- Avant le rendu : une valeur ClockTime répliquée (en retard) n'est jamais affichée une image.
 	RunService:BindToRenderStep("WorldFxClock", Enum.RenderPriority.First.Value, updateClock)

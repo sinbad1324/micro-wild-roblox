@@ -126,9 +126,14 @@ function GrabPromptView.Mount()
 		return Enum.ContextActionResult.Sink
 	end
 
+	local hideToken = 0
+
 	local function showPrompt(grabberName: string?)
 		isGrabbed = true
+		hideToken += 1
 		setEscapeProgress(0)
+		promptLabel.TextColor3 = Colors.Danger
+		promptStroke.Color = Colors.Danger
 		ContextActionService:BindActionAtPriority(ESCAPE_ACTION, onEscapeAction, true, Enum.ContextActionPriority.High.Value, Enum.KeyCode.Space, Enum.KeyCode.ButtonA)
 		ContextActionService:SetTitle(ESCAPE_ACTION, "Libérer")
 		ContextActionService:SetPosition(ESCAPE_ACTION, UDim2.new(0.5, -40, 0.6, 0))
@@ -144,12 +149,42 @@ function GrabPromptView.Mount()
 	end
 
 	local function hidePrompt()
+		local wasGrabbed = isGrabbed
 		isGrabbed = false
 		ContextActionService:UnbindAction(ESCAPE_ACTION)
-		promptFrame.Visible = false
 		strokePulse:Cancel()
 		promptStroke.Transparency = 0.5
-		setEscapeProgress(0)
+		if not wasGrabbed or not promptFrame.Visible then
+			promptFrame.Visible = false
+			setEscapeProgress(0)
+			return
+		end
+		hideToken += 1
+		local myToken = hideToken
+		-- Libération réussie (encore en vie) : bref flash vert avant de replier le cadre.
+		local character = player.Character
+		local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+		local alive = humanoid ~= nil and humanoid.Health > 0
+		local holdSeconds = 0
+		if alive then
+			promptLabel.Text = "🌿 Libéré !"
+			promptLabel.TextColor3 = Colors.AccentBright
+			promptStroke.Color = Colors.Accent
+			setEscapeProgress(1)
+			holdSeconds = 0.45
+		end
+		task.delay(holdSeconds, function()
+			if hideToken ~= myToken then
+				return
+			end
+			UiTheme.Tween(promptFrame, 0.18, { Size = PROMPT_POP_START }, Enum.EasingStyle.Quad, Enum.EasingDirection.In).Completed:Once(function()
+				if hideToken == myToken then
+					promptFrame.Visible = false
+					promptFrame.Size = PROMPT_SIZE
+					setEscapeProgress(0)
+				end
+			end)
+		end)
 	end
 
 	task.spawn(function()

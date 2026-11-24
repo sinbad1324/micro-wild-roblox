@@ -155,6 +155,24 @@ function DeathScreenView.Mount()
 
 	local countdown = line(6, Enum.Font.GothamBlack, 15, Colors.Accent)
 
+	-- Jauge d'incubation : se remplit pendant le délai de réapparition (un seul tween linéaire).
+	local respawnTrack = Instance.new("Frame")
+	respawnTrack.Name = "RespawnTrack"
+	respawnTrack.LayoutOrder = 7
+	respawnTrack.Size = UDim2.new(0.7, 0, 0, 6)
+	respawnTrack.BackgroundColor3 = Colors.Track
+	respawnTrack.BorderSizePixel = 0
+	respawnTrack.Parent = panel
+	UiTheme.Corner(respawnTrack, 3)
+
+	local respawnFill = Instance.new("Frame")
+	respawnFill.Name = "Fill"
+	respawnFill.Size = UDim2.fromScale(0, 1)
+	respawnFill.BackgroundColor3 = Colors.Accent
+	respawnFill.BorderSizePixel = 0
+	respawnFill.Parent = respawnTrack
+	UiTheme.Corner(respawnFill, 3)
+
 	-- ---------- Suivi de la vie en cours ----------
 	local lifeStage = "Oeuf"
 	player:GetAttributeChangedSignal("Stage"):Connect(function()
@@ -214,6 +232,8 @@ function DeathScreenView.Mount()
 		UiTheme.Tween(root, 0.55, { GroupTransparency = 0 })
 		UiTheme.Tween(panel, 0.5, { Position = PANEL_SHOWN }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 		eggPreview3D.SpinOnce()
+		respawnFill.Size = UDim2.fromScale(0, 1)
+		UiTheme.Tween(respawnFill, math.max(Players.RespawnTime, 0.1), { Size = UDim2.fromScale(1, 1) }, Enum.EasingStyle.Linear)
 
 		task.spawn(function()
 			local respawnAt = os.clock() + Players.RespawnTime

@@ -58,6 +58,14 @@ function EvolutionDomain.GrowthCapForLevel(level: number): number
 	return t.LARVE + (t.MAX_GROWTH - t.LARVE) * (level - 1) / (EvolutionDomain.MAX_LEVEL - 1)
 end
 
+-- Niveau qui libère la fin de croissance larvaire (cocon / dernières mues, non plafonnées : voir
+-- GrowthAndNestService). Le rythme d'XP de ProgressionService est calé sur ce niveau.
+EvolutionDomain.LARVA_TARGET_LEVEL = 10
+assert(
+	EvolutionDomain.GrowthCapForLevel(EvolutionDomain.LARVA_TARGET_LEVEL) >= GameConstants.STAGE_THRESHOLDS.COCON,
+	"LARVA_TARGET_LEVEL doit débloquer le palier COCON"
+)
+
 function EvolutionDomain.GetLevel(player: Player): number
 	local level = player:GetAttribute("Level")
 	return if type(level) == "number" then math.clamp(math.floor(level), 1, EvolutionDomain.MAX_LEVEL) else 1

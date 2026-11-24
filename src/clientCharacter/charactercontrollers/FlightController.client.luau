@@ -6,7 +6,8 @@
 -- qu'en ligne droite) -> élan réel, virages en courbe à pleine vitesse, freinage progressif.
 -- Le corps s'incline selon l'ACCÉLÉRATION (nez en bas pour accélérer, roulis vers l'intérieur du
 -- virage, cabré pour freiner / se poser), vol stationnaire qui dérive et vibre comme un vrai insecte.
--- Décollage : nouvel appui sur Saut en chute libre (clavier, manette, bouton tactile).
+-- Décollage : nouvel appui sur Saut en l'air (double appui), ou Saut maintenu pendant le saut
+-- (clavier, manette, bouton tactile). Étourdi : les ailes lâchent ; englué : impossible de décoller.
 -- Monter = Saut maintenu ; Descendre = bouton "Bas" (CharacterState) ; ou incliner la caméra.
 
 local Players = game:GetService("Players")
@@ -48,9 +49,11 @@ local LANDING_PROBE = 10 -- distance au sol (sous les pieds) où commence l'amor
 local LANDING_SHARPNESS = 1.5 -- vitesse de descente max = clearance * ceci + minimum
 local LANDING_MIN_SPEED = 2
 local TWO_PI = math.pi * 2
+local HOLD_TAKEOFF_TIME = 0.35 -- Saut maintenu aussi longtemps en l'air = décollage
 
 local isFlying = false
 local lastJumpHeld = false
+local jumpPressedAt = 0
 local flightVelocity = Vector3.zero
 local yaw = 0
 local bank = 0
@@ -261,6 +264,10 @@ local function canFlyNow(): boolean
 	if player:GetAttribute("FlightBlocked") == true or player:GetAttribute("IsGrabbed") == true then
 		return false
 	end
+	-- Statuts posés sur le Model (StatusEffectService) : étourdi = les ailes lâchent, on tombe.
+	if character:GetAttribute("Status_Stun") == true then
+		return false
+	end
 	if player:GetAttribute("Stage") ~= "Adulte" then
 		return false -- le vol ne se débloque qu'à l'âge adulte (GDD), jamais en Larve/Mue
 	end
@@ -297,20 +304,30 @@ local function startFlying()
 	pitch = 0
 end
 
-RunService.RenderStepped:Connect(function(deltaTime: number)
+local connection: RBXScriptConnection? = nil
+connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 	local dt = math.max(deltaTime, 1 / 240)
 	-- Front montant lu chaque frame (même au sol) : le saut initial ne déclenche pas le vol.
 	local jumpHeld = CharacterState.IsJumpHeld(humanoid)
 	local jumpPressed = jumpHeld and not lastJumpHeld
 	lastJumpHeld = jumpHeld
+	local now = os.clock()
+	if jumpPressed then
+		jumpPressedAt = now
+	end
 
 	if not isFlying then
+		-- En l'air (montée du saut comprise) : double appui, ou appui maintenu depuis le sol.
+		local state = humanoid:GetState()
+		local airborne = state == Enum.HumanoidStateType.Freefall or state == Enum.HumanoidStateType.Jumping
+		local holdTakeoff = jumpHeld and now - jumpPressedAt >= HOLD_TAKEOFF_TIME
 		if
-			jumpPressed
+			(jumpPressed or holdTakeoff)
+			and airborne
 			and not CharacterState.IsClimbingWall
 			and not CharacterState.IsSwinging
-			and os.clock() >= CharacterState.WallJumpUntil
-			and humanoid:GetState() == Enum.HumanoidStateType.Freefall
+			and now >= CharacterState.WallJumpUntil
+			and character:GetAttribute("Status_Glue") ~= true
 			and canFlyNow()
 		then
 			startFlying()
@@ -443,4 +460,14 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	end
 end)
 
-humanoid.Died:Connect(stopFlying)
+local function cleanup()
+	stopFlying()
+	if connection then
+		connection:Disconnect()
+		connection = nil
+	end
+	slipstreamBox:Destroy()
+end
+
+humanoid.Died:Connect(cleanup)
+script.Destroying:Connect(cleanup)

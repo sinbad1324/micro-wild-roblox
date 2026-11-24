@@ -705,8 +705,11 @@ local function growPlayer(player: Player, seasonInfo: SeasonConfig.SeasonInfo, n
 	end
 
 	growth = math.clamp(growth + rate * GROWTH_TICK_SECONDS, 0, thresholds.MAX_GROWTH)
-	-- Après l'éclosion, la croissance est plafonnée par le niveau (XP). Le cocon, immobile, va au bout.
-	if previousGrowth >= thresholds.LARVE and previousStage ~= "Cocon" then
+	-- Après l'éclosion, la croissance est plafonnée par le niveau (XP) jusqu'au palier COCON. Le cocon,
+	-- immobile, va au bout ; les espèces à mues grandissent librement de COCON à ADULTE elles aussi
+	-- (sinon elles devraient monter ~5 niveaux de plus que les espèces à métamorphose).
+	local freeLateGrowth = previousGrowth >= thresholds.COCON and previousGrowth < thresholds.ADULTE
+	if previousGrowth >= thresholds.LARVE and previousStage ~= "Cocon" and not freeLateGrowth then
 		local cap = EvolutionDomain.GrowthCapForLevel(EvolutionDomain.GetLevel(player))
 		if previousGrowth >= cap then
 			if player:GetAttribute("GrowthBlocked") ~= true then

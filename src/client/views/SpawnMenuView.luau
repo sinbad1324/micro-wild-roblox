@@ -1228,7 +1228,7 @@ function SpawnMenuView.Mount()
 			return
 		end
 		shown = show
-		ClientState.IsInMenu = show
+		ClientState.SetInMenu(show)
 		showcase3D.SetTurntableActive(show)
 		visibilityToken += 1
 		local token = visibilityToken

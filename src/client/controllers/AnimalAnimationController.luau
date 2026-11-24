@@ -17,8 +17,12 @@
 -- de ses nageoires, claquements de pinces du crabe, yeux du caméléon pivotant chacun de leur côté,
 -- respiration (tête) et coups d'oeil.
 --
--- Vitesse : la Root est ancrée et déplacée par PivotTo (AssemblyLinearVelocity = 0), on la déduit
--- donc du déplacement de la Root entre deux mises à jour, lissé (la réplication arrive par à-coups).
+-- Lissage de la Root (animaux de l'IA seulement) : le serveur pose le CFrame d'une Root ANCRÉE, que
+-- Roblox n'interpole pas -> l'animal avancerait par à-coups au rythme réseau (20-30 Hz). On mémorise
+-- la dernière valeur serveur (cible) et on y glisse en douceur une copie locale (filtre exponentiel,
+-- ~70 ms de retard) ; une écriture serveur se reconnaît à un CFrame différent du dernier écrit ici.
+-- Vitesse : la Root est ancrée (AssemblyLinearVelocity = 0), on la déduit donc du déplacement de la
+-- Root (lissée) entre deux mises à jour.
 -- Perf : aucun tableau alloué par frame, rien au-delà de FAR_DISTANCE, une frame sur deux au-delà
 -- de NEAR_DISTANCE, une seule rotation calculée par membre (toutes ses parts la partagent).
 
@@ -37,6 +41,8 @@ local FAR_DISTANCE_SQ = 350 * 350
 local FRY_FAR_DISTANCE_SQ = 150 * 150 -- alevins : petits et nombreux
 local MAX_SPEED = 150 -- au-delà : téléportation / respawn, on ignore la mesure
 local SNAP_DURATION = 0.45
+local SMOOTH_RATE = 15 -- 1/s : constante de temps ~70 ms
+local SMOOTH_SNAP_DISTANCE = 25 -- au-delà : réapparition / téléportation, on saute directement
 local TWO_PI = math.pi * 2
 
 local K_LEG = 1
@@ -89,6 +95,11 @@ type Record = {
 	root: BasePart?,
 	humanoid: Humanoid?,
 	owner: Humanoid?, -- animal joué : Humanoid du personnage (sol / vol / mort)
+	smooth: boolean, -- Root lissée localement (animal de l'IA uniquement)
+	visual: CFrame?, -- CFrame local affiché (nil = recaler sur la cible)
+	target: CFrame?, -- dernière valeur reçue du serveur
+	written: CFrame?, -- dernier CFrame écrit localement (relu, pour la comparaison exacte)
+	smoothAt: number,
 	addConn: RBXScriptConnection?,
 	attackConn: RBXScriptConnection?,
 	dirty: boolean,
@@ -550,6 +561,35 @@ local function animate(rec: Record, root: BasePart, now: number)
 	end
 end
 
+-- Glisse la Root vers la dernière position serveur (voir l'en-tête).
+local function smoothRoot(rec: Record, root: BasePart, now: number)
+	local dt = math.min(now - rec.smoothAt, 0.1)
+	rec.smoothAt = now
+	local current = root.CFrame
+	if current ~= rec.written then
+		rec.target = current -- nouvelle valeur serveur
+	end
+	local target = rec.target or current
+	local visual = rec.visual
+	-- Tenu par un prédateur (suivi serveur à chaque frame) ou saut trop grand : pas de retard.
+	if not visual or rec.model:GetAttribute("GrabbedBy") ~= nil or (visual.Position - target.Position).Magnitude > SMOOTH_SNAP_DISTANCE then
+		visual = target
+	else
+		visual = visual:Lerp(target, 1 - math.exp(-dt * SMOOTH_RATE))
+		-- Convergé : on se cale exactement (plus aucune écriture tant que le serveur ne bouge pas).
+		if (visual.Position - target.Position).Magnitude < 0.01 and visual.LookVector:Dot(target.LookVector) > 0.99999 and visual.UpVector:Dot(target.UpVector) > 0.99999 then
+			visual = target
+		end
+	end
+	rec.visual = visual
+	if visual ~= current then
+		root.CFrame = visual
+		rec.written = root.CFrame -- relu : valeur stockée exacte
+	else
+		rec.written = current
+	end
+end
+
 local function untrack(instance: Instance)
 	local rec = records[instance]
 	if not rec then
@@ -574,6 +614,11 @@ local function track(instance: Instance)
 		root = nil,
 		humanoid = nil,
 		owner = nil,
+		smooth = CollectionService:HasTag(instance, TAG) and not CollectionService:HasTag(instance, PLAYER_TAG),
+		visual = nil,
+		target = nil,
+		written = nil,
+		smoothAt = os.clock(),
 		addConn = nil,
 		attackConn = nil,
 		dirty = true,
@@ -674,7 +719,13 @@ local function onHeartbeat()
 		local distanceSq = offset.X * offset.X + offset.Y * offset.Y + offset.Z * offset.Z
 		if distanceSq > (if rec.fry then FRY_FAR_DISTANCE_SQ else FAR_DISTANCE_SQ) then
 			rec.lastPos = nil -- pas de pic de vitesse au retour dans le champ
+			rec.visual = nil -- recalage direct au retour
 			continue
+		end
+		-- Lissage à chaque frame (avant le demi-régime) : sinon les animaux à mi-distance repasseraient
+		-- par à-coups.
+		if rec.smooth then
+			smoothRoot(rec, root, now)
 		end
 		rec.odd = not rec.odd
 		if distanceSq > NEAR_DISTANCE_SQ and rec.odd then

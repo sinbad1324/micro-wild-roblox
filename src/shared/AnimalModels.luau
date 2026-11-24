@@ -263,6 +263,11 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 	ellipsoid(b, "BreastLow", Vector3.new(10.2, 7, 10), CFrame.new(0, -4.4, -4.6), breastLow)
 	ellipsoid(b, "Belly", Vector3.new(10, 8, 12), CFrame.new(0, -4, 1.5), belly)
 	ellipsoid(b, "Undertail", Vector3.new(6, 4, 8), CFrame.new(0, -2.2, 8.5), belly)
+	-- Liserés de plumes en écailles à la jonction plastron / ventre : fondent le dégradé.
+	for k = -3, 3 do
+		local a = math.abs(k)
+		strand(b, "BreastScallop", Vector3.new(k * 1.3, -5.3 + a * 0.35, -9.4 + a * 0.7), Vector3.new(k * 1.45, -7.1 + a * 0.3, -8.2 + a * 0.7), 2.2, 0.6, if k % 2 == 0 then breastLow else tint(breastLow, 0.35))
+	end
 
 	-- Tête : calotte sombre, face rouge-orangé, bec fin, oeil cerclé.
 	local headCenter = Vector3.new(0, 5, -10)
@@ -277,8 +282,10 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 	ellipsoid(b, "Cap", Vector3.new(8.8, 4.5, 9), CFrame.new(0, 8, -9.4), olive)
 	ellipsoid(b, "Face", Vector3.new(8.6, 7.2, 6.4), CFrame.new(0, 3.6, -12.4), breastTop)
 	ellipsoid(b, "BeakTop", Vector3.new(2.2, 1.5, 6.6), CFrame.new(0, 4.7, -16.1) * CFrame.Angles(math.rad(-6), 0, 0), beak)
+	block(b, "BeakTip", Vector3.new(1.1, 0.9, 1.4), CFrame.new(0, 4.3, -19) * CFrame.Angles(math.rad(-10), 0, 0), shade(beak, 0.35))
 	for _, side in ipairs(SIDES) do
 		ringedEye(b, headCenter, headRadii, Vector3.new(side * 4.2, 1.2, -2.5), 1.2, Color3.fromRGB(205, 190, 165))
+		block(b, "Nostril", Vector3.new(0.35, 0.3, 0.8), CFrame.new(side * 0.75, 5.3, -15.2), EYE_BLACK)
 	end
 	-- Mandibule inférieure articulée à la base du bec.
 	b.Group = newGroup("Jaw", 0, 1, Vector3.new(0, 4, -13), headGroup)
@@ -288,6 +295,10 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 		b.Group = nil
 		-- Liseré gris-bleu entre le plastron et le brun.
 		ellipsoid(b, "FlankBand", Vector3.new(1.2, 5, 9), CFrame.new(side * 5.9, -2.6, -3.5), grey)
+		-- Plumes de flanc ébouriffées : transition orange -> brun sous l'aile.
+		for j = 1, 2 do
+			strand(b, "FlankFeather", Vector3.new(side * 6.3, 0.5 - j * 1.6, -6 + j), Vector3.new(side * 6.6, -1.5 - j * 1.5, 0 + j * 1.5), 2.2, 0.6, breastMid:Lerp(brown, 0.3 * j), nil, Vector3.xAxis)
+		end
 
 		-- Aile repliée : base + couvertures + rémiges superposées vers l'arrière.
 		-- Aile en deux segments : bras (couvertures, secondaires) + main (primaires) qui fouette en retard.
@@ -307,6 +318,11 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 			local base = Vector3.new(side * 7.5, 3.6 - 1.4 * (j - 1), -3.5)
 			local tip = Vector3.new(side * 7.7, 3.2 - 1.3 * (j - 1), 3)
 			strand(b, "Covert", base, tip, 2.6, 0.5, if j % 2 == 0 then brown else olive, nil, Vector3.xAxis)
+		end
+		-- Barre alaire chamois (pointe des grandes couvertures) + tertiaires étagées sur le dos.
+		strand(b, "WingBar", Vector3.new(side * 8, -0.1, -2), Vector3.new(side * 8, -0.5, 3.4), 1, 0.4, Color3.fromRGB(196, 160, 112), nil, Vector3.xAxis)
+		for j = 1, 3 do
+			strand(b, "Tertial", Vector3.new(side * (7.2 - j * 0.5), 4.6 - j * 0.4, -0.5 + j), Vector3.new(side * (5.8 - j * 0.5), 4.2 - j * 0.5, 9 + j * 1.5), 2.4, 0.5, if j == 2 then olive else wingDarker, nil, Vector3.xAxis)
 		end
 
 		-- Patte : cuisse emplumée, tarse écailleux, 3 doigts avant + 1 arrière, griffes.
@@ -341,6 +357,10 @@ function AnimalModels.BuildBird(maxHealth: number): Model
 		local layer = (3 - a) * 0.15 -- les plumes centrales passent au-dessus
 		strand(b, "TailFeather", Vector3.new(k * 0.5, 2.2 + layer, 10), Vector3.new(k * 1.8, 4.8 - a * 0.3 + layer, 22 - a * 0.7), 2.4, 0.4, if a % 2 == 0 then wingDarker else wingDark)
 	end
+	-- Sus-caudales olive qui recouvrent la base de l'éventail.
+	for _, side in ipairs(SIDES) do
+		strand(b, "TailCovert", Vector3.new(side * 0.9, 3.6, 9.5), Vector3.new(side * 1.2, 4.6, 15), 2.6, 0.5, olive)
+	end
 	b.Group = nil
 
 	addHumanoid(b, maxHealth, "Rouge-Gorge")
@@ -372,6 +392,8 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 	end
 	-- Écailles granuleuses : 3 rangées par flanc, teintes alternées.
 	for _, side in ipairs(SIDES) do
+		-- Bande latérale claire (caméléon casqué), du coude à la hanche.
+		block(b, "Stripe", Vector3.new(0.3, 1.1, 12), CFrame.new(side * 4.05, -0.8, 0), Color3.fromRGB(225, 220, 150))
 		for row = 1, 3 do
 			local elevation = math.rad(38 - (row - 1) * 34)
 			for col = 1, 5 do
@@ -417,7 +439,7 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 			local hand = Vector3.new(side * 6, -7.5, z - 2)
 			local leg = newGroup("Leg", side, index, shoulder)
 			b.Group = leg
-			ellipsoid(b, "Shoulder", Vector3.one * 2.6, CFrame.new(shoulder), green)
+			ellipsoid(b, "Shoulder", Vector3.one * 2.3, CFrame.new(shoulder), green) -- < 2.4 : un seul bloc (budget)
 			limb(b, "Leg", shoulder, elbow, 1.8, green)
 			-- Avant-bras + pied en pince : articulé au coude.
 			b.Group = newGroup("Knee", side, index, elbow, leg)
@@ -444,7 +466,7 @@ function AnimalModels.BuildChameleon(maxHealth: number): Model
 		segment = newGroup("Tail", 0, i, previous, segment)
 		b.Group = segment
 		limb(b, "Tail", previous, point, thickness, color)
-		ellipsoid(b, "TailJoint", Vector3.one * thickness, CFrame.new(point), color)
+		ellipsoid(b, "TailJoint", Vector3.one * math.min(thickness, 2.3), CFrame.new(point), color)
 		previous = point
 	end
 	b.Group = nil
@@ -461,7 +483,7 @@ end
 
 -- ============================================================
 -- 3. Poisson Rouge + alevins
--- Membres : Head(0,1) > Jaw(0,1) | Tail(0,1) pédoncule > Tail(0,2) caudale | Fin(±1,1) pectorales | Fin(±1,2) pelviennes |
+-- Membres : Head(0,1) > Jaw(0,1) | Tail(0,1) pédoncule > Tail(0,2) caudale > Tail(0,3) voile (adulte) | Fin(±1,1) pectorales | Fin(±1,2) pelviennes |
 -- Fin(0,3) dorsale | Fin(0,4) anale. L'alevin (scale < 0.5) n'a que Head, Tail, Fin 1 et 3
 -- (~10 parts : ils sont nombreux).
 -- ============================================================
@@ -477,9 +499,9 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 		return Vector3.new(x, y, z) * s
 	end
 	-- Rayon de nageoire : voile translucide, mince latéralement.
-	local function fin(name: string, a: Vector3, c: Vector3, width: number)
+	local function fin(name: string, a: Vector3, c: Vector3, width: number, transparency: number?)
 		local part = strand(b, name, a, c, width * s, 0.4 * s, finColor, nil, Vector3.xAxis)
-		part.Transparency = 0.3
+		part.Transparency = transparency or 0.3
 	end
 
 	ellipsoid(b, "Body", Vector3.new(7, 11, 20) * s, CFrame.new(0, 0, 0), orange)
@@ -496,11 +518,16 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 					local u = -0.3 + (col - 1) * 0.2 + (row % 2) * 0.1
 					local ring = math.sqrt(1 - u * u)
 					local direction = Vector3.new(side * math.cos(elevation) * ring, math.sin(elevation) * ring, u)
-					local part = bump(b, "Scale", Vector3.zero, bodyRadii, direction, Vector3.new(2.4, 2.4, 0.5) * s, if (row + col) % 2 == 0 then gold else deep)
+					local part = bump(b, "Scale", Vector3.zero, bodyRadii, direction, Vector3.new(2.3, 2.3, 0.5) * s, if (row + col) % 2 == 0 then gold else deep)
 					part.Reflectance = 0.12
 				end
 			end
+			-- Ligne latérale sombre le long du flanc.
+			block(b, "LateralLine", Vector3.new(0.3, 0.4, 12) * s, CFrame.new(P(side * 3.7, 1.5, 0.5)), shade(orange, 0.35))
 		end
+	else
+		-- Alevin : dos sombre translucide (il se fond dans l'eau trouble).
+		block(b, "Back", Vector3.new(0.6, 0.5, 14) * s, CFrame.new(P(0, 5.6, 0.5)), shade(orange, 0.45))
 	end
 
 	-- Tête.
@@ -543,6 +570,14 @@ function AnimalModels.BuildGoldfish(maxHealth: number, scale: number, displayNam
 			local angle = math.rad(if isFry then 30 else 8 + ray * 13)
 			local length = if isFry then 8 else 10 - (ray - 2.5) ^ 2 * 0.7
 			fin("TailFin", P(0, lobe * 0.6, 12), P(0, lobe * math.sin(angle) * length, 12.5 + math.cos(angle) * length), if isFry then 5 else 3.2)
+		end
+	end
+	if not isFry then
+		-- Voile de caudale (3e maillon de la chaîne) : traîne plus translucide qui ondule en retard.
+		b.Group = newGroup("Tail", 0, 3, P(0, 0, 18), b.Group)
+		for _, lobe in ipairs(SIDES) do
+			fin("TailVeil", P(0, lobe * 2.2, 18.5), P(0, lobe * 5.5, 27), 4, 0.45)
+			fin("TailVeil", P(0, lobe * 5, 17), P(0, lobe * 9.5, 23), 3.5, 0.5)
 		end
 	end
 
@@ -621,6 +656,12 @@ function AnimalModels.BuildCrab(maxHealth: number): Model
 		local angle = i / 10 * math.pi * 2 + 0.3
 		bump(b, "Tubercle", carapaceCenter, carapaceRadii, Vector3.new(math.cos(angle) * 0.8, 0.6, math.sin(angle) * 0.8), Vector3.new(1.6, 1.6, 1), shellDark)
 	end
+	-- Granulation du dôme : petites perles claires entre les arêtes.
+	for i = 1, 6 do
+		local angle = i / 6 * math.pi * 2
+		local point = domePoint(math.cos(angle) * 5.5, 0.8 + math.sin(angle) * 3.6)
+		block(b, "Granule", Vector3.new(0.9, 0.6, 0.9), CFrame.new(point) * CFrame.Angles(0, angle, 0), tint(shellLight, 0.15))
+	end
 
 	for _, side in ipairs(SIDES) do
 		b.Group = nil
@@ -657,6 +698,7 @@ function AnimalModels.BuildCrab(maxHealth: number): Model
 		limb(b, "ClawArm", elbow, wrist, 2.8 * k, clawColor)
 		strand(b, "Spine", elbow, elbow + Vector3.new(side * 2.4 * k, 1.2 * k, -0.5), 1.1 * k, 1.1 * k, shellDark)
 		ellipsoid(b, "ClawPalm", Vector3.new(6, 5, 8) * k, CFrame.new(wrist + Vector3.new(0, 0, -3 * k)), clawColor)
+		strand(b, "Spine", wrist + Vector3.new(0, 2.2 * k, -1.5 * k), wrist + Vector3.new(side * 0.6, 3.6 * k, -2.6 * k), 0.9 * k, 0.9 * k, shellDark)
 		local fixedBase = wrist + Vector3.new(side * 0.4, -1.2 * k, -5 * k)
 		local fixedTip = wrist + Vector3.new(side * -0.5, -1.6 * k, -11 * k)
 		strand(b, "ClawFinger", fixedBase, fixedTip, 2.2 * k, 1.7 * k, fingerColor)
@@ -680,9 +722,13 @@ function AnimalModels.BuildCrab(maxHealth: number): Model
 			b.Group = leg
 			limb(b, "Leg", hip, knee, 1.6, shell)
 			ellipsoid(b, "LegJoint", Vector3.one * 1.9, CFrame.new(knee), shellLight)
+			-- Soie raide sur le méros (relief de la patte).
+			local merus = hip:Lerp(knee, 0.55)
+			strand(b, "Seta", merus, merus + Vector3.new(side * 0.5, 1.4, 0.3), 0.4, 0.4, shellDark)
 			-- Segment bas + pointe : se relève pendant le pas, s'enfonce en appui.
 			b.Group = newGroup("Knee", side, i, knee, leg)
 			limb(b, "Leg", knee, ankle, 1.3, shell)
+			ellipsoid(b, "LegJoint", Vector3.one * 1.4, CFrame.new(ankle), shellLight)
 			strand(b, "LegTip", ankle + Vector3.new(0, 0.6, 0), foot, 1.2, 1.2, fingerColor)
 		end
 	end
@@ -721,6 +767,10 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 	for k = -2, 2 do
 		local a = math.abs(k)
 		strand(b, "ChestTuft", Vector3.new(k * 1.3, 2.2 - a * 0.3, -9.6), Vector3.new(k * 1.6, -0.6 - a * 0.2, -11.4), 1.8, 1.2, tint(white, 0.3), fur)
+	end
+	-- Fourrure du ventre : mèches qui pendent sous le buste.
+	for k = -1.5, 1.5 do
+		strand(b, "BellyFur", tilt * Vector3.new(k * 1.8, -6.6, -6), tilt * Vector3.new(k * 2.1, -8.4, -4.4), 1.8, 1, tint(white, 0.15), fur)
 	end
 
 	-- Tête : joues, museau, incisives, moustaches, oreilles à pinceaux.
@@ -799,7 +849,10 @@ function AnimalModels.BuildSquirrel(maxHealth: number): Model
 		ellipsoid(b, "Tail", Vector3.new(radius * 2, radius * 2, radius * 1.9), CFrame.new(point), if i % 2 == 0 then red else dark, fur)
 		for t, spread in ipairs(TUFT_SPREAD) do
 			local offset = Vector3.xAxis * spread.X + outer * spread.Y
-			strand(b, "TailTuft", point + offset * radius * 0.45, point + offset * radius * 1.05 + tangent * radius * 0.7, radius * 0.85, radius * 0.85, if (i + t) % 2 == 0 then light else red, fur)
+			-- Mèche plate (épaisseur < 2.4 : un seul bloc) couchée dans le plan offset/tangente :
+			-- panache en plumets superposés au lieu de boules.
+			local normal = offset:Cross(tangent)
+			strand(b, "TailTuft", point + offset * radius * 0.45, point + offset * radius * 1.05 + tangent * radius * 0.7, radius * 0.85, 2.2, if (i + t) % 2 == 0 then light else red, fur, if normal.Magnitude > 0.01 then normal.Unit else nil)
 		end
 	end
 	b.Group = nil
@@ -881,6 +934,27 @@ function AnimalModels.BuildBirdNest(center: Vector3): (Model, BasePart)
 		local angle = i / 6 * math.pi * 2 + 0.5
 		decorPart(model, "Mousse", Vector3.new(3.5, 3.5, 3.5), CFrame.new(center + Vector3.new(math.cos(angle) * 12.5, 4.9, math.sin(angle) * 12.5)), Color3.fromRGB(85, 130, 60), Enum.Material.Grass, Enum.PartType.Ball)
 	end
+	-- Dessous en coupe : brindilles tressées en biais sous le fond (plus de disque plat vu d'en bas).
+	for i = 1, 12 do
+		local angle = i / 12 * math.pi * 2
+		local cf = CFrame.new(center + Vector3.new(math.cos(angle) * 8.5, -1.4, math.sin(angle) * 8.5))
+			* CFrame.Angles(0, -angle + math.rad(90 + (i % 2) * 25), math.rad(-25))
+		decorPart(model, "Tressage", Vector3.new(9, 1.1, 1.1), cf, TWIG_COLORS[i % 3 + 1], Enum.Material.Wood, Enum.PartType.Cylinder)
+	end
+	-- Garniture d'herbes sèches sur la paroi intérieure, qui épouse la pente de la coupe.
+	for i = 1, 10 do
+		local angle = i / 10 * math.pi * 2 + 0.15
+		local cf = CFrame.new(center + Vector3.new(math.cos(angle) * 9.6, 2.6, math.sin(angle) * 9.6))
+			* CFrame.Angles(0, -angle, 0) * CFrame.Angles(0, 0, math.rad(-35))
+		decorPart(model, "Herbe", Vector3.new(0.3, 5, 1.6), cf, Color3.fromRGB(190, 170, 110), Enum.Material.Grass)
+	end
+	-- Herbes et brins qui pendent par-dessus le rebord.
+	for i = 1, 6 do
+		local angle = i / 6 * math.pi * 2 + 0.9
+		local cf = CFrame.new(center + Vector3.new(math.cos(angle) * 15.2, 1.2, math.sin(angle) * 15.2))
+			* CFrame.Angles(0, -angle, 0) * CFrame.Angles(0, 0, math.rad(15))
+		decorPart(model, "HerbePendante", Vector3.new(0.3, 6 + (i % 3), 1), cf, Color3.fromRGB(170, 150, 95), Enum.Material.Grass)
+	end
 	-- Oeufs mouchetés.
 	for i = 1, 3 do
 		local angle = i / 3 * math.pi * 2
@@ -940,6 +1014,27 @@ function AnimalModels.BuildDrey(center: Vector3): (Model, BasePart)
 		if not isDreyEntrance(direction) then
 			decorPart(model, "Brindille", Vector3.new(6, 0.6, 0.6), CFrame.lookAt(center + direction * 9, center + direction * 10) * CFrame.Angles(0, math.rad(90), 0), TWIG_COLORS[i % 3 + 1], Enum.Material.Wood, Enum.PartType.Cylinder)
 		end
+	end
+	-- Seconde couche de feuilles, plus large : silhouette ébouriffée.
+	for i = 1, 8 do
+		local direction = spiralDirection(i, 8, 3.1)
+		if not isDreyEntrance(direction) then
+			local leaf = decorPart(model, "Feuille", Vector3.new(6, 5, 0.7), CFrame.lookAt(center + direction * 9.4, center + direction * 10.4) * CFrame.Angles(math.rad(-25), 0, i * 1.3), LEAF_COLORS[(i + 2) % 4 + 1], Enum.Material.Grass)
+			sphereMesh(leaf)
+		end
+	end
+	-- Feuilles sèches qui pendent sous la hotte.
+	for i = 1, 5 do
+		local angle = i / 5 * math.pi * 2 + 0.4
+		local leaf = decorPart(model, "FeuillePendante", Vector3.new(4.5, 6, 0.6), CFrame.new(center + Vector3.new(math.cos(angle) * 5.5, -9, math.sin(angle) * 5.5)) * CFrame.Angles(0, -angle, math.rad(10)), LEAF_COLORS[i % 4 + 1], Enum.Material.Grass)
+		sphereMesh(leaf)
+	end
+	-- Fourche de brindilles qui relie la hotte à la branche (la hotte est posée 9 studs au-dessus).
+	local fork = center + Vector3.new(0, -9.5, 0)
+	for i = 1, 3 do
+		local angle = i / 3 * math.pi * 2
+		local top = center + Vector3.new(math.cos(angle) * 5, -6.5, math.sin(angle) * 5)
+		decorPart(model, "Fourche", Vector3.new((top - fork).Magnitude, 1.2, 1.2), CFrame.lookAt(fork:Lerp(top, 0.5), top) * CFrame.Angles(0, math.rad(90), 0), TWIG_COLORS[i % 3 + 1], Enum.Material.Wood, Enum.PartType.Cylinder)
 	end
 	-- Cadre de brindilles autour de l'entrée.
 	for i = 1, 6 do

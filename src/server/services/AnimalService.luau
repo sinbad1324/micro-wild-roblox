@@ -567,10 +567,14 @@ local function onAnimalDied(animal: Animal)
 	animal.Mode = "Dead"
 	-- Respawn et retrait planifiés AVANT les effets de bord : une erreur plus bas ne doit pas faire disparaître l'animal à jamais.
 	task.delay(animal.RespawnSeconds, animal.Respawn)
-	local index = table.find(animals, animal)
-	if index then
-		table.remove(animals, index)
-	end
+	-- Retrait différé : la mort peut survenir pendant la boucle Heartbeat qui parcourt `animals`
+	-- (un retrait immédiat décale les indices : un animal sauté ou mis à jour deux fois).
+	task.defer(function()
+		local index = table.find(animals, animal)
+		if index then
+			table.remove(animals, index)
+		end
+	end)
 	local ok, err = pcall(function()
 		local held = animal.Data.HeldPlayer :: Player?
 		if held then
@@ -837,7 +841,9 @@ end
 local function chameleonRecolor(chameleon: Animal)
 	local target = CHAMELEON_PALETTE[rng:NextInteger(1, #CHAMELEON_PALETTE)]
 	for _, part in ipairs(chameleon.Model:GetChildren()) do
-		if part:IsA("BasePart") and not CHAMELEON_SKIP_COLOR[part.Name] then
+		-- AnimalModels découpe les formes épaisses en "X" + "XRound" : même règle pour les morceaux.
+		local baseName = string.gsub(part.Name, "Round$", "")
+		if part:IsA("BasePart") and not CHAMELEON_SKIP_COLOR[part.Name] and not CHAMELEON_SKIP_COLOR[baseName] then
 			part.Color = part.Color:Lerp(target, 0.6)
 		end
 	end
@@ -890,7 +896,17 @@ local function climbStep(chameleon: Animal, goalAngle: number, goalHeight: numbe
 	local deltaHeight = goalHeight - height
 	local arc = deltaAngle * CHAMELEON_TRUNK_OFFSET
 	local distance = math.sqrt(arc * arc + deltaHeight * deltaHeight)
-	local step = speed * speedFactor(chameleon) * dt
+	-- Élan : démarre doucement et freine à l'arrivée (plancher de 10 % : l'arrivée reste garantie).
+	local now = os.clock()
+	local data = chameleon.Data
+	local current: number = if now - ((data.ClimbAt :: number?) or 0) <= MOVE_RESUME_WINDOW then (data.ClimbSpeed :: number?) or 0 else 0
+	data.ClimbAt = now
+	local maxSpeed = speed * speedFactor(chameleon)
+	local accel = maxSpeed * ACCEL_RATE
+	local targetSpeed = math.min(maxSpeed, math.sqrt(2 * accel * distance) + maxSpeed * 0.1)
+	local newSpeed = if targetSpeed > current then math.min(targetSpeed, current + accel * dt) else math.max(targetSpeed, current - accel * 2 * dt)
+	data.ClimbSpeed = newSpeed
+	local step = newSpeed * dt
 	local arrived = distance <= math.max(step, 0.05)
 	local fraction = if arrived then 1 else step / distance
 	local newAngle = angle + deltaAngle * fraction
@@ -1153,7 +1169,11 @@ local function goldfishUpdate(fish: Animal, dt: number)
 			-- Cap de nage (sans l'ondulation) plutôt que l'orientation affichée.
 			local swimHeading = fish.Data.Heading :: CFrame?
 			local forward = if swimHeading then swimHeading.LookVector else fish.Root.CFrame.LookVector
-			local target = fish.Root.Position + Vector3.new(forward.X, 0, forward.Z).Unit * 14
+			local flat = Vector3.new(forward.X, 0, forward.Z)
+			if flat.Magnitude < 0.05 then
+				flat = Vector3.xAxis -- cap vertical : .Unit donnerait NaN (poisson hors carte)
+			end
+			local target = fish.Root.Position + flat.Unit * 14
 			fish.Data.JumpTo = Vector3.new(
 				math.clamp(target.X, center.X - size.X / 2 + 9, center.X + size.X / 2 - 9),
 				cruiseY,

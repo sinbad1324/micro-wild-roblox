@@ -103,7 +103,18 @@ local function spawnMushroomsAround(model: Model, position: Vector3, count: numb
 	-- Sol inégal : chaque champignon est recalé sur le terrain (ni enterré, ni flottant).
 	local groundParams = RaycastParams.new()
 	groundParams.FilterType = Enum.RaycastFilterType.Exclude
-	groundParams.FilterDescendantsInstances = { foliage }
+	-- Le sol seulement : ni joueurs, ni animaux, ni nourriture debout à cet endroit.
+	local ignore: { Instance } = { foliage }
+	for _, other in ipairs(game:GetService("Players"):GetPlayers()) do
+		if other.Character then
+			table.insert(ignore, other.Character)
+		end
+	end
+	local animalsFolder = workspace:FindFirstChild("Animals")
+	if animalsFolder then
+		table.insert(ignore, animalsFolder)
+	end
+	groundParams.FilterDescendantsInstances = ignore
 	for i = 1, count do
 		local angle = (i / count) * math.pi * 2
 		local offset = Vector3.new(math.cos(angle) * radius, 0, math.sin(angle) * radius)

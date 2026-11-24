@@ -31,7 +31,10 @@ Un jeu de survie, d'évolution et de PvP à l'échelle microscopique sur **Roblo
 | **C** (maintenir) | Creuser là où regarde la caméra (espèces fouisseuses) |
 | **G** | Manger / Boire (approcher une nourriture, une goutte, la berge, une carcasse) |
 | **T** | Transporter la nourriture / un morceau de carcasse jusqu'au nid |
-| **Espace** | Sauter, puis décoller (volants adultes, nouvel appui en l'air) ; monter en vol / à la nage ; se détacher d'un mur. **Ctrl** ou **Q** pour descendre (inclinaison de la caméra en vol/nage aussi) |
+| **Espace** | Sauter, puis décoller (volants adultes : nouvel appui en l'air, ou Espace maintenu ~0,35 s) ; monter en vol / à la nage ; saut mural. **Ctrl** ou **Q** pour descendre (inclinaison de la caméra en vol/nage aussi) |
+| **Maj gauche** (maintenir) | Boost de vitesse (marche, vol, nage) |
+| **V** | Force de creusement |
+| **B** | Mode construction du nid (**R** pivoter, **X** retirer, **Échap** quitter) |
 | **H** | Afficher / masquer l'aide des commandes (bouton **?** sur mobile) |
 
 ## ✅ Systèmes implémentés
@@ -46,10 +49,10 @@ Un jeu de survie, d'évolution et de PvP à l'échelle microscopique sur **Roblo
 * **5 animaux géants** avec IA, nids/terriers et carcasses : Oiseau (piqué, nid géant), Caméléon (langue-grappin, terrier), Poisson Rouge (aspiration, saut, alevins, cuvettes de frai), Crabe (blindé de face, terrier), Écureuil (tremblements, miettes, caches enterrées).
 * **Carcasses** en 4 étapes (fraîche → putréfaction → champignons → squelette-abri) et **Festin de Kaiju**.
 * **4 saisons visibles** : pluie et bombes d'eau, rosée, flaques qui sèchent l'été, feuilles mortes, fruits qui tombent, vent, neige, mare gelée.
-* **Progression** : Points d'Évolution, kills, classement (leaderstats), sauvegarde DataStore.
-* **Carte 1500 × 1500 studs** : toutes les coordonnées du monde viennent de `src/shared/WorldLayout.luau` (jamais en dur).
+* **Progression** : Points d'Évolution, niveaux d'XP (le niveau 10 libère le cocon / les dernières mues ; XP passive d'une larve bien nourrie), branches d'évolution, défis, kills, classement (leaderstats), sauvegarde DataStore.
+* **Carte 4000 × 4000 studs** (un biome par quadrant, chêne au centre) : toutes les coordonnées du monde viennent de `src/shared/WorldLayout.luau` (jamais en dur).
 * **Mouvement fluide** : escalade spider-walk multi-rayons (murs, plafonds, passage d'arête), vol avec inertie/roulis/tangage, nage avec flottabilité et sortie d'eau, vitesse de marche lissée côté serveur, caméra adaptée à l'échelle (zoom réduit en tunnel, FOV à la vitesse).
-* **Animations procédurales** (client) : pattes, ailes, antennes des insectes et membres des 5 animaux géants, limitées par la distance.
+* **Animations procédurales** (client) : pattes en IK, ailes, antennes, fente de morsure des insectes ; membres des 5 animaux géants et lissage local de leur position (le serveur les déplace par à-coups) ; limitées par la distance.
 * **Effets côté client** : VFX de combat (remote `CombatFx` : chiffres de dégâts, projectiles, télégraphes, auras de statut), jour/nuit fluide calé sur l'heure serveur, pluie/neige locales, chutes de fruits et bombes d'eau animées localement.
 * **Interface** : écran de chargement, HUD de survie réactif (mobile/tablette/PC), barre de pouvoirs avec recharges, toasts, écran de mort (cause + retour à l'œuf), aide des commandes (H).
 
@@ -68,6 +71,8 @@ micro-wild-roblox/
     │   ├── AnimalData.luau                   # Les 5 animaux géants
     │   ├── FoodData.luau                     # Qui peut manger quoi
     │   ├── SeasonConfig.luau                 # Les 4 saisons
+    │   ├── WorldLayout.luau                  # Coordonnées de la carte (source unique)
+    │   ├── AnimalModels.luau                 # Modèles 3D des animaux et de leurs nids
     │   └── Remotes.luau                      # Contrat réseau (RemoteEvents)
     ├── server/                               # ServerScriptService
     │   ├── bootstrap/ServerBootstrap.server.luau   # Ordre de démarrage des services
@@ -87,8 +92,7 @@ micro-wild-roblox/
     │   │   ├── MovementService.luau          # Vitesse/saut (modificateurs empilables)
     │   │   ├── DigService.luau               # Creusement du Terrain
     │   │   ├── AnimalService.luau            # IA des 5 animaux + alevins, nids, terriers
-    │   │   ├── AnimalModels.luau             # Modèles 3D des animaux et de leurs nids
-    │   │   ├── CarcassService.luau           # Décomposition + Festin de Kaiju
+        │   │   ├── CarcassService.luau           # Décomposition + Festin de Kaiju
     │   │   ├── InsectVisualService.luau      # Corps 3D procéduraux des insectes
     │   │   ├── ProgressionService.luau       # PE, kills, mutations, DataStore, leaderstats
     │   │   ├── PlayerLifecycleService.luau   # Apparition / mort
@@ -98,12 +102,13 @@ micro-wild-roblox/
     ├── client/                               # StarterPlayer.StarterPlayerScripts
     │   ├── bootstrap/ClientBootstrap.client.luau
     │   ├── controllers/                      # Ability, StatusEffect, Marker, CombatFx, InsectAnimation,
-    │   │                                     #   AnimalAnimation, Camera, WorldFx (jour/nuit, météo, chutes)
+    │   │                                     #   AnimalAnimation, Camera, WorldFx (jour/nuit, météo, chutes, laisse),
+    │   │                                     #   BuildMode, EvolutionChoice, Sfx
     │   ├── managers/UIManager.luau
     │   ├── state/ClientState.luau
     │   └── views/                            # HUD survie, pouvoirs, menu de spawn, QTE, toasts, mort, aide (H)
     ├── clientCharacter/                      # StarterPlayer.StarterCharacterScripts
-    │   ├── charactercontrollers/             # Escalade 360°, Vol, Nage
+    │   ├── charactercontrollers/             # Escalade 360°, Vol, Nage, Saut, Balancier, Marches
     │   └── characterstate/CharacterState.luau
     └── starterFirst/LoadingScreen.client.luau  # ReplicatedFirst
 ```

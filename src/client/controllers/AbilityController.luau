@@ -219,6 +219,12 @@ local function findBiteTarget(root: BasePart, scale: number): (Model?, BasePart?
 			consider(wild, wild.PrimaryPart, (wild:GetAttribute("HitRadius") :: number?) or 2)
 		end
 	end
+	-- Mamans PNJ (comme le serveur) : sauf celle de sa propre famille.
+	for _, mother in ipairs(CollectionService:GetTagged("NpcMother")) do
+		if mother:IsA("Model") and mother.PrimaryPart and (familyId == nil or mother:GetAttribute("FamilyId") ~= familyId) then
+			consider(mother, mother.PrimaryPart, (mother:GetAttribute("HitRadius") :: number?) or 2)
+		end
+	end
 	return bestModel, bestRoot, bestDistance
 end
 

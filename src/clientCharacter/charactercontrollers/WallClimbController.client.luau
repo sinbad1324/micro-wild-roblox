@@ -447,6 +447,11 @@ connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 	end
 
 	local reach = getBodyReach()
+	-- Bond / recul en cours (ImpulseUntil) : on ne s'accroche pas pour se décrocher aussitôt
+	-- (sinon accroche/décroche toutes les 0.4 s, saccade visible, araignée sauteuse jamais agrippée).
+	if not climbing and ((character:GetAttribute("ImpulseUntil") :: number?) or 0) > os.clock() then
+		return
+	end
 	if not climbing then
 		tryEngage(reach)
 		if not climbing then
@@ -454,7 +459,8 @@ connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 		end
 	end
 
-	if jumpPressed then
+	-- Étourdi : reste agrippé (vitesse 0 via MovementService), pas de saut mural.
+	if jumpPressed and character:GetAttribute("Status_Stun") ~= true then
 		CharacterState.WallJumpUntil = os.clock() + 0.3
 		-- Saut mural : on se détache le long de la normale, avec un peu de hauteur.
 		local jumpNormal = up

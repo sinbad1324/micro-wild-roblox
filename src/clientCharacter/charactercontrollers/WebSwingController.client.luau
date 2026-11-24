@@ -325,7 +325,13 @@ for _, attribute in ipairs({ "Species", "Stage", "IsGrabbed" }) do
 end
 character:GetAttributeChangedSignal("Status_Stun"):Connect(refreshBinding)
 
+local cleaned = false
 local function cleanup()
+	-- Une seule fois (Died puis Destroying) : release toucherait le Parent d'une part détruite.
+	if cleaned then
+		return
+	end
+	cleaned = true
 	release(false)
 	stepConnection:Disconnect()
 	anchorPart:Destroy()

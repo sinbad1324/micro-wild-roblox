@@ -31,6 +31,7 @@ local STAGE_COCON = 50
 local STAGE_ADULTE = 75
 local GROWTH_PAUSE_THRESHOLD = 20
 local LOW_STAT_THRESHOLD = 25
+local CRITICAL_THRESHOLD = 15
 
 local STAGE_NAMES: { [string]: string } = {
 	Oeuf = "🥚 Œuf",
@@ -44,11 +45,16 @@ local BANNER_HIDDEN = UDim2.new(0.5, 0, 0.13, 0)
 local BANNER_SHOWN = UDim2.new(0.5, 0, 0.19, 0)
 local BANNER_SECONDS = 5
 
+-- Traîne pâle qui rattrape la jauge après une perte (lecture immédiate des dégâts/consommation).
+local GHOST_INFO = TweenInfo.new(0.55, Enum.EasingStyle.Quad, Enum.EasingDirection.Out, 0, false, 0.35)
+local PULSE_INFO = TweenInfo.new(0.7, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true)
+
 type Bar = {
 	Container: Frame,
 	Value: TextLabel,
 	Track: Frame,
 	Fill: Frame,
+	Ghost: Frame,
 	Stroke: UIStroke,
 	Pulse: Tween,
 	Ratio: number,
@@ -85,12 +91,22 @@ local function createBar(parent: Instance, order: number, title: string): Bar
 	UiTheme.Corner(track, 5)
 	local stroke = UiTheme.Stroke(track, Colors.Danger, 1.5, 1)
 
+	local ghost = Instance.new("Frame")
+	ghost.Name = "Ghost"
+	ghost.Size = UDim2.new(1, 0, 1, 0)
+	ghost.BorderSizePixel = 0
+	ghost.BackgroundColor3 = Color3.fromRGB(255, 236, 210)
+	ghost.BackgroundTransparency = 0.55
+	ghost.ZIndex = 2
+	ghost.Parent = track
+	UiTheme.Corner(ghost, 5)
+
 	local fill = Instance.new("Frame")
 	fill.Name = "Fill"
 	fill.Size = UDim2.new(1, 0, 1, 0)
 	fill.BorderSizePixel = 0
 	fill.BackgroundColor3 = Colors.Accent
-	fill.ZIndex = 2
+	fill.ZIndex = 3
 	fill.Parent = track
 	UiTheme.Corner(fill, 5)
 
@@ -115,6 +131,7 @@ local function createBar(parent: Instance, order: number, title: string): Bar
 		Value = value,
 		Track = track,
 		Fill = fill,
+		Ghost = ghost,
 		Stroke = stroke,
 		Pulse = pulse,
 		Ratio = 1,
@@ -126,8 +143,16 @@ end
 local function setBar(bar: Bar, ratio: number, color: Color3, valueText: string, warn: boolean)
 	bar.Value.Text = valueText
 	if math.abs(ratio - bar.Ratio) > 0.001 then
+		local target = UDim2.new(ratio, 0, 1, 0)
+		if ratio < bar.Ratio - 0.03 then
+			-- Perte nette (coup, chute) : la traîne reste un instant à l'ancienne valeur puis glisse.
+			-- Les petites baisses régulières (faim) la font suivre directement, sinon le délai la figerait.
+			TweenService:Create(bar.Ghost, GHOST_INFO, { Size = target }):Play()
+		else
+			UiTheme.Tween(bar.Ghost, 0.35, { Size = target }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		end
 		bar.Ratio = ratio
-		UiTheme.Tween(bar.Fill, 0.35, { Size = UDim2.new(ratio, 0, 1, 0) }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
+		UiTheme.Tween(bar.Fill, 0.35, { Size = target }, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 	end
 	if color ~= bar.Color then
 		bar.Color = color
@@ -176,6 +201,8 @@ function SurvivalHudView.Mount()
 	screenGui.ResetOnSpawn = false
 	screenGui.IgnoreGuiInset = true
 	screenGui.DisplayOrder = 5
+	-- Garde le panneau hors des encoches / coins arrondis des téléphones.
+	screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
 	screenGui.Parent = playerGui
 
 	local touchOnly = UiTheme.IsTouchOnly()
@@ -195,6 +222,9 @@ function SurvivalHudView.Mount()
 	panel.Parent = screenGui
 	local panelStroke = UiTheme.StylePanel(panel, 13, Colors.Border, 0.45)
 	UiTheme.Padding(panel, 11, 10)
+
+	local panelShown = panel.Position
+	local panelHidden = UDim2.new(panelShown.X.Scale, panelShown.X.Offset - 420, panelShown.Y.Scale, panelShown.Y.Offset)
 
 	local panelScale = Instance.new("UIScale")
 	panelScale.Parent = panel
@@ -363,6 +393,76 @@ function SurvivalHudView.Mount()
 		end)
 	end
 
+	-- ---------- Vignette d'alerte vitale (bords d'écran pulsants) ----------
+	-- 4 bandes en dégradé plutôt qu'un CanvasGroup plein écran (trop coûteux en mémoire sur mobile).
+	local EDGES: { { Position: UDim2, Size: UDim2, Rotation: number } } = {
+		{ Position = UDim2.fromScale(0, 0), Size = UDim2.fromScale(1, 0.16), Rotation = 90 },
+		{ Position = UDim2.fromScale(0, 0.84), Size = UDim2.fromScale(1, 0.16), Rotation = -90 },
+		{ Position = UDim2.fromScale(0, 0), Size = UDim2.fromScale(0.1, 1), Rotation = 0 },
+		{ Position = UDim2.fromScale(0.9, 0), Size = UDim2.fromScale(0.1, 1), Rotation = 180 },
+	}
+	local vignetteTransparency = NumberSequence.new(0, 1)
+	local vignetteEdges: { Frame } = {}
+	local vignettePulses: { Tween } = {}
+	for index, edge in ipairs(EDGES) do
+		local frame = Instance.new("Frame")
+		frame.Name = "DangerEdge" .. index
+		frame.Position = edge.Position
+		frame.Size = edge.Size
+		frame.BackgroundColor3 = Colors.Danger
+		frame.BackgroundTransparency = 0.75
+		frame.BorderSizePixel = 0
+		frame.Active = false
+		frame.Visible = false
+		frame.ZIndex = 0
+		frame.Parent = screenGui
+		local gradient = Instance.new("UIGradient")
+		gradient.Rotation = edge.Rotation
+		gradient.Transparency = vignetteTransparency
+		gradient.Parent = frame
+		table.insert(vignetteEdges, frame)
+		table.insert(vignettePulses, TweenService:Create(frame, PULSE_INFO, { BackgroundTransparency = 0.45 }))
+	end
+
+	local dangerOn = false
+	local function setDanger(on: boolean)
+		if on == dangerOn then
+			return
+		end
+		dangerOn = on
+		for index, frame in ipairs(vignetteEdges) do
+			frame.Visible = on
+			if on then
+				frame.BackgroundTransparency = 0.75
+				vignettePulses[index]:Play()
+			else
+				vignettePulses[index]:Cancel()
+			end
+		end
+	end
+
+	-- ---------- Effacement derrière le menu de spawn ----------
+	local menuToken = 0
+	local function applyMenuState(inMenu: boolean)
+		menuToken += 1
+		local myToken = menuToken
+		if inMenu then
+			UiTheme.Tween(panel, 0.28, { Position = panelHidden }, Enum.EasingStyle.Quad, Enum.EasingDirection.In).Completed:Once(function()
+				if menuToken == myToken then
+					panel.Visible = false
+				end
+			end)
+		else
+			panel.Visible = true
+			UiTheme.Tween(panel, 0.4, { Position = panelShown }, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+		end
+	end
+	ClientState.MenuChanged.Event:Connect(applyMenuState)
+	if ClientState.IsInMenu then
+		panel.Position = panelHidden
+		panel.Visible = false
+	end
+
 	-- ---------- Rafraîchissements ----------
 	local function speciesInfo(): InsectData.InsectInfo?
 		local speciesId = player:GetAttribute("Species")
@@ -456,17 +556,28 @@ function SurvivalHudView.Mount()
 		hintLabel.TextColor3 = hintColor
 	end
 
+	local function refreshDanger()
+		setDanger(
+			numberAttribute("Hunger", 100) < CRITICAL_THRESHOLD
+				or numberAttribute("Thirst", 100) < CRITICAL_THRESHOLD
+				or numberAttribute("Oxygen", 100) < CRITICAL_THRESHOLD
+		)
+	end
+
 	local function refreshHunger()
 		updatePercentBar(hungerBar, numberAttribute("Hunger", 0))
 		refreshGrowth()
+		refreshDanger()
 	end
 	local function refreshThirst()
 		updatePercentBar(thirstBar, numberAttribute("Thirst", 0))
 		refreshGrowth()
+		refreshDanger()
 	end
 	local function refreshOxygen()
 		local oxygen = updatePercentBar(oxygenBar, numberAttribute("Oxygen", 100))
 		oxygenBar.Container.Visible = oxygen < 99.5
+		refreshDanger()
 	end
 
 	-- Jauge de boost (MovementService) : masquée quand pleine.
@@ -576,7 +687,8 @@ function SurvivalHudView.Mount()
 			return
 		end
 		local precip = workspace:GetAttribute("Precipitation")
-		local rainIntensity = (workspace:GetAttribute("RainIntensity") :: number?) or 0
+		local rainAttr = workspace:GetAttribute("RainIntensity")
+		local rainIntensity = if typeof(rainAttr) == "number" then rainAttr else 0
 		local isHeavyRain = workspace:GetAttribute("RainHeavy") == true or rainIntensity >= 0.7
 		local rainPrefix = ""
 		if precip == "Rain" and rainIntensity > 0.03 then

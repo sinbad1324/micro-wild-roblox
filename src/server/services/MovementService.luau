@@ -201,7 +201,8 @@ function MovementService.Start()
 	-- Nouveau corps : le boost repart éteint (le client renvoie l'appui s'il maintient encore Shift).
 	local function watchCharacter(player: Player)
 		player.CharacterAdded:Connect(function()
-			boostWanted[player] = nil
+			-- false (pas nil) : le joueur reste dans la boucle, la jauge se recharge et le HUD suit.
+			boostWanted[player] = false
 			setBoost(player, false)
 		end)
 	end

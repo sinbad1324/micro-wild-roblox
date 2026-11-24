@@ -34,8 +34,8 @@ local InsectAnimationController = {}
 local CONTAINER_NAME = "InsectVisual"
 -- Repos des parts NON étiquetées (oeuf/cocon), mémorisé côté client pour ne jamais relire un C0 déjà animé.
 local LOCAL_REST_ATTRIBUTE = "AnimRestC0"
-local NEAR_DISTANCE_SQ = 40 * 40
-local FAR_DISTANCE_SQ = 100 * 100
+local NEAR_DISTANCE_SQ = 60 * 60 -- au-delà : une frame sur deux
+local FAR_DISTANCE_SQ = 150 * 150 -- au-delà : plus animé du tout
 -- Mamans PNJ : plus grosses (MOTHER_SCALE) et peu nombreuses -> visibles de plus loin.
 local NPC_TAG = "NpcMother"
 local WILD_TAG = "WildInsect" -- insectes sauvages PNJ (WildInsectService), animés comme les Mamans
@@ -43,6 +43,8 @@ local NPC_NEAR_DISTANCE_SQ = 60 * 60
 local NPC_FAR_DISTANCE_SQ = 150 * 150
 local MAX_SPEED = 150 -- au-delà : téléportation / réapparition, on ignore la mesure
 local BITE_DURATION = 0.3
+local BITE_LUNGE = 0.25 -- avancée du corps au claquement (fraction de l'échelle)
+local BITE_DIP = 0.1 -- rad : la tête plonge vers la proie
 local ZONE_REFRESH_PERIOD = 2
 local TWO_PI = math.pi * 2
 
@@ -1065,27 +1067,39 @@ local function animate(rec: Record, root: BasePart, humanoid: Humanoid, now: num
 	local gait, wingPhase = rec.gait, rec.wingPhase
 
 	-- Morsure : les mâchoires s'ouvrent (> 0) puis claquent au-delà du repos (< 0) et reviennent.
+	-- Le corps recule un peu (armé) puis se détend vers l'avant au claquement et revient.
 	local jawOpen = 0
+	local lunge = 0
 	local u = (now - rec.biteAt) / BITE_DURATION
 	if u >= 0 and u < 1 then
 		if u < 0.4 then
 			jawOpen = 0.6 * u / 0.4
+			lunge = -0.3 * u / 0.4
 		elseif u < 0.55 then
 			jawOpen = 0.6 - 0.85 * (u - 0.4) / 0.15
+			lunge = -0.3 + 1.3 * (u - 0.4) / 0.15
 		else
 			jawOpen = -0.25 * (1 - (u - 0.55) / 0.45)
+			lunge = 1 - (u - 0.55) / 0.45
 		end
 	end
 
 	local body = updateBody(rec, root, dt)
 	local segmented = rec.segmented
+	-- Pas de bond pour un corps segmenté : les anneaux suivent le chemin, la tête s'en décollerait.
+	local lungeZ, lungePitch = 0, 0
+	if lunge ~= 0 and not segmented then
+		lungeZ = -lunge * BITE_LUNGE * rec.scale
+		lungePitch = -lunge * BITE_DIP
+		body = CFrame.new(0, 0, lungeZ) * body * CFrame.Angles(lungePitch, 0, 0)
+	end
 	if segmented then
 		updateSegments(rec, root, fresh)
 	end
 	local segOf, segFrames = rec.segOf, rec.segFrames
 	local headCf = body * updateHead(rec, root, body, dt)
 	-- Parts fixes : réécrites seulement quand la pose bouge (sinon des centaines de C0 par frame et par insecte).
-	local bodySig = Vector3.new(rec.bodyHeight, rec.bodyPitch, rec.bodyRoll)
+	local bodySig = Vector3.new(rec.bodyHeight + lungeZ, rec.bodyPitch + lungePitch, rec.bodyRoll)
 	local headSig = Vector3.new(rec.headYaw, rec.headPitch, 0)
 	local drawn = rec.drawnBody
 	-- Seuil ~0.1° / 2 millièmes de studs : le lissage ne réécrit pas tout pour des écarts invisibles.

@@ -6,6 +6,9 @@
 -- + CollectionService tag "PondZone" (une boîte par bassin : mare + tronçons du ruisseau, test XZ).
 -- Tant que ce contrat n'est pas rempli, on reste idle sans erreur.
 -- Monter = Saut maintenu ; Descendre = bouton "Bas" (CharacterState) ; ou incliner la caméra.
+-- Propulsion propre à l'espèce (SwimProfiles) : coups de rames par à-coups (dytique, notonecte),
+-- jet (larve de libellule), tortillement (larves), marche sur le fond (nèpe, crabe), glisse (poisson).
+-- Le gerris rame à la surface (à-coups des pattes médianes) au lieu de glisser en continu.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -18,11 +21,16 @@ local rootPart = character:WaitForChild("HumanoidRootPart") :: BasePart
 local humanoid = character:WaitForChild("Humanoid") :: Humanoid
 
 local InsectData = require(ReplicatedStorage.shared.InsectData)
+local SwimProfiles = require(ReplicatedStorage.shared.SwimProfiles)
 local CharacterState = require(character:WaitForChild("characterState"):WaitForChild("CharacterState"))
 
 local SWIM_SPEED_FACTOR = 0.6
 local VERTICAL_SPEED_FACTOR = 0.7
-local DRAG_SHARPNESS = 6 -- plus haut = la vitesse suit la consigne plus vite (moins de "glisse")
+local WIGGLE_FREQUENCY = 12 -- tortillement des larves (rad/s)
+local BOTTOM_CRAWL_FACTOR = 0.5 -- marcheurs du fond : vitesse de marche sous l'eau
+local ROW_PERIOD = 0.3 -- gerris : un coup de pattes médianes toutes les 0.3 s
+local ROW_IMPULSE = 0.8
+local ROW_DRAG = 1.6
 local ENTRY_MOMENTUM = 0.5 -- part de l'élan conservée en entrant dans l'eau (pas d'arrêt net)
 local BUOYANCY_RISE = 1.2 -- remontée lente sans commande (studs/s)
 local SURFACE_BAND = 3 -- profondeur sous laquelle on se cale doucement à la surface
@@ -79,6 +87,8 @@ waterFloater.Size = Vector3.new(6, 1, 6)
 
 local swimVelocity = Vector3.zero
 local glide = Vector3.zero
+local strokeTimer = 0
+local rowTimer = 0
 local breachUntil = 0
 
 -- Zones en cache (GetTagged alloue une table à chaque appel) ; rafraîchies sur ajout/retrait du tag.
@@ -153,18 +163,34 @@ local function updateWaterWalker(deltaTime: number, waterLevel: number)
 	local surfaceWind = if typeof(rawWind) == "Vector3" and player:GetAttribute("InShelterOrColony") ~= true
 		then Vector3.new(rawWind.X, 0, rawWind.Z) * 0.42
 		else Vector3.zero
-	local desired = horizontal * humanoid.WalkSpeed * GLIDE_SPEED_FACTOR + surfaceWind
-	local sharpness = if horizontal.Magnitude > 0.05 then GLIDE_ACCEL_SHARPNESS else GLIDE_DECEL_SHARPNESS
 	if not glideVelocity.Enabled then
 		local velocity = rootPart.AssemblyLinearVelocity
 		glide = Vector3.new(velocity.X, 0, velocity.Z)
 	end
-	glide = glide:Lerp(desired, 1 - math.exp(-sharpness * deltaTime))
+	if player:GetAttribute("Species") == "Gerris" then
+		-- Rame : poussée par à-coups puis longue glisse sur le film d'eau.
+		rowTimer -= deltaTime
+		if horizontal.Magnitude > 0.05 and rowTimer <= 0 then
+			rowTimer = ROW_PERIOD
+			glide += horizontal.Unit * humanoid.WalkSpeed * ROW_IMPULSE
+		end
+		glide *= math.exp(-ROW_DRAG * deltaTime)
+		local cap = humanoid.WalkSpeed * GLIDE_SPEED_FACTOR * 1.4
+		if glide.Magnitude > cap then
+			glide = glide.Unit * cap
+		end
+		glide += surfaceWind * deltaTime
+	else
+		local desired = horizontal * humanoid.WalkSpeed * GLIDE_SPEED_FACTOR + surfaceWind
+		local sharpness = if horizontal.Magnitude > 0.05 then GLIDE_ACCEL_SHARPNESS else GLIDE_DECEL_SHARPNESS
+		glide = glide:Lerp(desired, 1 - math.exp(-sharpness * deltaTime))
+	end
 	glideVelocity.PlaneVelocity = Vector2.new(glide.X, glide.Z)
 	glideVelocity.Enabled = true
 end
 
-RunService.RenderStepped:Connect(function(deltaTime: number)
+local connection: RBXScriptConnection? = nil
+connection = RunService.RenderStepped:Connect(function(deltaTime: number)
 	if humanoid.Health <= 0 or CharacterState.IsFlying or not stageAllowsWater() or player:GetAttribute("IsGrabbed") == true then
 		stopAll()
 		return
@@ -236,28 +262,72 @@ RunService.RenderStepped:Connect(function(deltaTime: number)
 	vectorForce.Force = Vector3.new(0, workspace.Gravity * rootPart.AssemblyMass, 0)
 	vectorForce.Enabled = true
 
-	local desiredY = vertical * swimSpeed * VERTICAL_SPEED_FACTOR
-	if vertical == 0 then
-		-- Flottabilité : remontée lente, puis calage en douceur juste sous la surface.
-		if depth < SURFACE_BAND then
-			local restY = waterLevel - SURFACE_REST_DEPTH + math.sin(os.clock() * SURFACE_BOB_FREQUENCY) * SURFACE_BOB_AMPLITUDE * 0.5
-			desiredY = math.clamp((restY - y) * SURFACE_SPRING, -BUOYANCY_RISE * 2, BUOYANCY_RISE * 2)
-		else
-			desiredY = BUOYANCY_RISE
-		end
-	end
-	local desiredVelocity = Vector3.new(horizontal.X * swimSpeed, desiredY, horizontal.Z * swimSpeed)
-
 	-- Impulsion externe (recul, ruée, bond) : reprise dans l'inertie au lieu d'être écrasée.
 	if linearVelocity.Enabled and (rootPart.AssemblyLinearVelocity - linearVelocity.VectorVelocity).Magnitude > 25 then
 		swimVelocity = rootPart.AssemblyLinearVelocity
 	end
-	-- Effet de traînée de l'eau : on amortit vers la vitesse voulue au lieu d'un arrêt/départ instantané.
-	swimVelocity = swimVelocity:Lerp(desiredVelocity, 1 - math.exp(-DRAG_SHARPNESS * deltaTime))
+
+	local profile = SwimProfiles.For(speciesId)
+	local input = Vector3.new(horizontal.X, vertical * VERTICAL_SPEED_FACTOR, horizontal.Z)
+	local hasInput = input.Magnitude > 0.05
+	local direction = if hasInput then input.Unit else Vector3.zero
+	local grounded = humanoid.FloorMaterial ~= Enum.Material.Air
+
+	if profile.Style == "Fond" and grounded and vertical <= 0 then
+		-- Marcheur du fond (nèpe, phrygane, crabe) : il marche lentement sur le fond, il ne nage pas.
+		local crawl = humanoid.WalkSpeed * BOTTOM_CRAWL_FACTOR
+		swimVelocity = Vector3.new(horizontal.X * crawl, math.min(swimVelocity.Y, 0), horizontal.Z * crawl)
+	elseif profile.StrokePeriod > 0 then
+		-- Coups de pattes / jets : poussée par à-coups, puis glisse freinée par l'eau.
+		strokeTimer -= deltaTime
+		if hasInput and strokeTimer <= 0 then
+			strokeTimer = profile.StrokePeriod
+			swimVelocity += direction * swimSpeed * profile.StrokeImpulse
+		elseif not hasInput then
+			strokeTimer = math.min(strokeTimer, 0.05) -- le prochain appui part tout de suite
+		end
+		swimVelocity *= math.exp(-profile.Drag * deltaTime)
+	else
+		-- Poussée continue (poisson) ou tortillement en zigzag (larves).
+		local target = direction * swimSpeed * profile.StrokeImpulse
+		if profile.Wiggle > 0 and hasInput then
+			local side = Vector3.yAxis:Cross(direction)
+			if side.Magnitude > 0.01 then
+				target += side.Unit * math.sin(os.clock() * WIGGLE_FREQUENCY) * swimSpeed * profile.Wiggle
+			end
+		end
+		swimVelocity = swimVelocity:Lerp(target, 1 - math.exp(-profile.Drag * deltaTime))
+	end
+
+	-- Flottabilité : les rameurs (pleins d'air) remontent, les marcheurs du fond coulent.
+	if vertical == 0 and profile.Buoyancy > 0 and depth < SURFACE_BAND then
+		-- Calage en douceur juste sous la surface (respiration), petit tangage.
+		local restY = waterLevel - SURFACE_REST_DEPTH + math.sin(os.clock() * SURFACE_BOB_FREQUENCY) * SURFACE_BOB_AMPLITUDE * 0.5
+		local springY = math.clamp((restY - y) * SURFACE_SPRING, -BUOYANCY_RISE * 2, BUOYANCY_RISE * 2)
+		swimVelocity = Vector3.new(swimVelocity.X, springY, swimVelocity.Z)
+	else
+		swimVelocity += Vector3.new(0, profile.Buoyancy * deltaTime, 0)
+	end
+	local cap = swimSpeed * profile.MaxSpeed
+	if swimVelocity.Magnitude > cap and cap > 0 then
+		swimVelocity = swimVelocity.Unit * cap
+	end
 	linearVelocity.VectorVelocity = swimVelocity
 	linearVelocity.Enabled = true
 end)
 
-humanoid.Died:Connect(stopAll)
+local function cleanup()
+	-- Une seule fois (Died puis Destroying) : stopAll toucherait le Parent du flotteur détruit.
+	if not connection then
+		return
+	end
+	stopAll()
+	if connection then
+		connection:Disconnect()
+		connection = nil
+	end
+	waterFloater:Destroy()
+end
 
-script.Destroying:Connect(stopAll)
+humanoid.Died:Connect(cleanup)
+script.Destroying:Connect(cleanup)

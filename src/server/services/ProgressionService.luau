@@ -211,10 +211,23 @@ end
 -- Expérience et niveaux (par vie) : chasser et manger font monter de niveau
 -- ============================================================
 
--- XP nécessaire pour passer du niveau `level` au suivant (~3000 XP du niveau 1 à 20).
+-- XP nécessaire pour passer du niveau `level` au suivant : ~470 XP jusqu'au niveau 10 (plafond de
+-- croissance >= COCON, voir EvolutionDomain.LARVA_TARGET_LEVEL), ~1750 XP jusqu'au niveau 20.
+-- Rythme visé pour une larve tenue en laisse : ~25-30 XP/min de croissance passive (bien nourrie,
+-- voir GROWING_XP_PER_SECOND) + bouchées (~2-8 XP) + défis (35 % d'un niveau) => niveau 10 en
+-- ~11-13 min, puis cocon/mues jusqu'à l'âge adulte en ~1-2 min.
 local function xpToNext(level: number): number
-	return 25 + 15 * (level - 1)
+	return 20 + 8 * (level - 1)
 end
+
+-- Croissance "passive" d'un bébé éclos bien nourri (Faim et Soif >= 20) : la larve progresse même si
+-- peu de nourriture pousse dans le rayon de sa laisse. XP de récompense (ne compte pas comme action).
+-- Versée par paquets (l'attribut XP est entier et chaque gain affiche un "+N XP" côté client).
+local GROWING_XP_TICK_SECONDS = 1
+local GROWING_XP_PER_SECOND = 0.35
+local GROWING_XP_GRANT = 5 -- ~1 paquet toutes les 15 s
+local GROWING_MIN_STAT = 20
+local growingXp: { [Player]: number } = {}
 
 local function publishExperience(player: Player, level: number, xp: number)
 	player:SetAttribute("Level", level)
@@ -508,6 +521,7 @@ function ProgressionService.Start()
 		profiles[player] = nil
 		loadFailed[player] = nil
 		xpBySource[player] = nil
+		growingXp[player] = nil
 	end)
 
 	game:BindToClose(function()
@@ -522,6 +536,30 @@ function ProgressionService.Start()
 		local deadline = os.clock() + 25
 		while pending > 0 and os.clock() < deadline do
 			task.wait(0.2)
+		end
+	end)
+
+	task.spawn(function()
+		while true do
+			task.wait(GROWING_XP_TICK_SECONDS)
+			for _, player in ipairs(Players:GetPlayers()) do
+				local stage = player:GetAttribute("Stage")
+				local hunger = (player:GetAttribute("Hunger") :: number?) or 0
+				local thirst = (player:GetAttribute("Thirst") :: number?) or 0
+				if (stage == "Larve" or stage == "Mue") and player:GetAttribute("HasConfirmedSpawn") == true
+					and hunger >= GROWING_MIN_STAT and thirst >= GROWING_MIN_STAT then
+					local pending = (growingXp[player] or 0) + GROWING_XP_PER_SECOND * GROWING_XP_TICK_SECONDS
+					if pending >= GROWING_XP_GRANT then
+						pending = 0
+						local source = EvolutionDomain.MainXpSource((player:GetAttribute("Species") :: string?) or "") or "Manger"
+						local ok, err = pcall(ProgressionService.AddExperience, player, GROWING_XP_GRANT, source, true)
+						if not ok then
+							warn("[ProgressionService] XP de croissance de " .. player.Name .. " : " .. tostring(err))
+						end
+					end
+					growingXp[player] = pending
+				end
+			end
 		end
 	end)
 

@@ -6,6 +6,7 @@
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService = game:GetService("TweenService")
 
 local Remotes = require(ReplicatedStorage.shared.Remotes)
 local UiTheme = require(script.Parent.UiTheme)
@@ -34,6 +35,10 @@ local KIND_ICONS: { [string]: string } = {
 local CARD_OFFSCREEN = UDim2.fromOffset(48, 0)
 local CARD_SHOWN = UDim2.fromOffset(0, 0)
 local SLOT_COLLAPSED = UDim2.fromScale(1, 0)
+-- Filet de durée de vie sous le texte (déborde dans le padding gauche pour courir sous l'icône).
+local LIFE_FULL = UDim2.new(1, 30, 0, 2)
+local LIFE_EMPTY = UDim2.new(0, 0, 0, 2)
+local LIFE_INFO = TweenInfo.new(TOAST_LIFETIME, Enum.EasingStyle.Linear)
 local FEEDBACK_REST = UDim2.new(0.5, 0, 1, -146)
 local FEEDBACK_START = UDim2.new(0.5, 0, 1, -132)
 
@@ -44,6 +49,7 @@ type Toast = {
 	Accent: Frame,
 	Icon: TextLabel,
 	Label: TextLabel,
+	Life: Frame,
 	Message: string,
 	Kind: string,
 	Count: number,
@@ -65,6 +71,7 @@ function NotificationToastView.Mount()
 	screenGui.ResetOnSpawn = false
 	screenGui.IgnoreGuiInset = true
 	screenGui.DisplayOrder = 20
+	screenGui.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
 	screenGui.Parent = playerGui
 
 	local toastsFolder = Instance.new("Frame")
@@ -103,6 +110,7 @@ function NotificationToastView.Mount()
 		UiTheme.Tween(toast.Accent, 0.25, { BackgroundTransparency = 1 })
 		UiTheme.Tween(toast.Icon, 0.25, { TextTransparency = 1 })
 		UiTheme.Tween(toast.Label, 0.25, { TextTransparency = 1 })
+		UiTheme.Tween(toast.Life, 0.25, { BackgroundTransparency = 1 })
 		local fadeOut = UiTheme.Tween(toast.Card, 0.25, { BackgroundTransparency = 1, Position = CARD_OFFSCREEN }, Enum.EasingStyle.Quad, Enum.EasingDirection.In)
 		fadeOut.Completed:Once(function()
 			local slot = toast.Slot
@@ -119,6 +127,8 @@ function NotificationToastView.Mount()
 	end
 
 	local function armLifetime(toast: Toast)
+		toast.Life.Size = LIFE_FULL
+		TweenService:Create(toast.Life, LIFE_INFO, { Size = LIFE_EMPTY }):Play()
 		toast.Token += 1
 		local myToken = toast.Token
 		task.delay(TOAST_LIFETIME, function()
@@ -211,6 +221,16 @@ function NotificationToastView.Mount()
 		label.TextTransparency = 1
 		label.Text = message
 
+		local life = Instance.new("Frame")
+		life.Name = "Life"
+		life.AnchorPoint = Vector2.new(0, 1)
+		life.Position = UDim2.new(0, -30, 1, 6)
+		life.Size = LIFE_FULL
+		life.BackgroundColor3 = color
+		life.BackgroundTransparency = 1
+		life.BorderSizePixel = 0
+		life.Parent = card
+
 		local toast: Toast = {
 			Slot = slot,
 			Card = card,
@@ -218,6 +238,7 @@ function NotificationToastView.Mount()
 			Accent = accent,
 			Icon = icon,
 			Label = label,
+			Life = life,
 			Message = message,
 			Kind = kind,
 			Count = 1,
@@ -231,6 +252,7 @@ function NotificationToastView.Mount()
 		UiTheme.Tween(accent, 0.32, { BackgroundTransparency = 0 })
 		UiTheme.Tween(icon, 0.32, { TextTransparency = 0 })
 		UiTheme.Tween(label, 0.32, { TextTransparency = 0 })
+		UiTheme.Tween(life, 0.32, { BackgroundTransparency = 0.45 })
 		armLifetime(toast)
 	end
 
